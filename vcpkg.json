@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "open-st",
+  "version-semver": "0.1.0",
+  "description": "Windows 平台的便携截图、OCR 与翻译工具",
+  "builtin-baseline": "4334d8b4c8916018600212ab4dd4bbdc343065d1",
+  "dependencies": [
+    "nlohmann-json"
+  ],
+  "default-features": [],
+  "features": {
+    "ocr": {
+      "description": "通过 Tesseract 和 Leptonica 提供本地 OCR",
+      "dependencies": [
+        "tesseract"
+      ]
+    },
+    "translation": {
+      "description": "启用翻译服务模块",
+      "dependencies": []
+    },
+    "tests": {
+      "description": "基于 GoogleTest 和 GoogleMock 的自动化测试",
+      "dependencies": [
+        "gtest"
+      ]
+    }
+  }
+}

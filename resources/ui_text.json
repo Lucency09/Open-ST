@@ -1,0 +1,170 @@
+{
+  "schemaVersion": 1,
+  "texts": {
+    "app.title": {
+      "zh-CN": "Open-ST",
+      "en-US": "Open-ST",
+      "ja-JP": "Open-ST"
+    },
+    "app.already_running": {
+      "zh-CN": "Open-ST 已在运行。",
+      "en-US": "Open-ST is already running.",
+      "ja-JP": "Open-ST はすでに実行されています。"
+    },
+    "hotkey.registration_failed": {
+      "zh-CN": "无法注册 Ctrl+Alt+Q；该快捷键可能已被占用。仍可从托盘启动截图。",
+      "en-US": "Could not register Ctrl+Alt+Q because it may already be in use. You can still start a capture from the notification area.",
+      "ja-JP": "Ctrl+Alt+Q を登録できませんでした。すでに使用されている可能性があります。通知領域からキャプチャを開始できます。"
+    },
+    "common_resources.read_failed": {
+      "zh-CN": "部分设置或界面资源暂时无法读取，应用将使用可用内容。请稍后重试。",
+      "en-US": "Some settings or interface resources could not be read. The app will use available content. Please try again later.",
+      "ja-JP": "一部の設定または画面リソースを読み込めませんでした。利用可能な内容を使用します。しばらくしてから再試行してください。"
+    },
+    "tray.tooltip": {
+      "zh-CN": "Open-ST - Ctrl+Alt+Q 截图",
+      "en-US": "Open-ST - Capture with Ctrl+Alt+Q",
+      "ja-JP": "Open-ST - Ctrl+Alt+Q でキャプチャ"
+    },
+    "tray.capture": {
+      "zh-CN": "截图\tCtrl+Alt+Q",
+      "en-US": "Capture\tCtrl+Alt+Q",
+      "ja-JP": "キャプチャ\tCtrl+Alt+Q"
+    },
+    "tray.settings": {
+      "zh-CN": "设置",
+      "en-US": "Settings",
+      "ja-JP": "設定"
+    },
+    "tray.about": {
+      "zh-CN": "关于",
+      "en-US": "About",
+      "ja-JP": "バージョン情報"
+    },
+    "tray.exit": {
+      "zh-CN": "退出",
+      "en-US": "Exit",
+      "ja-JP": "終了"
+    },
+    "window.message.title": {
+      "zh-CN": "Open-ST",
+      "en-US": "Open-ST",
+      "ja-JP": "Open-ST"
+    },
+    "window.capture.title": {
+      "zh-CN": "Open-ST 截图",
+      "en-US": "Open-ST Capture",
+      "ja-JP": "Open-ST キャプチャ"
+    },
+    "about.title": {
+      "zh-CN": "关于 Open-ST",
+      "en-US": "About Open-ST",
+      "ja-JP": "Open-ST について"
+    },
+    "about.body": {
+      "zh-CN": "Open-ST {version}\n原生 Windows 截图、OCR 与翻译工具（开发中）",
+      "en-US": "Open-ST {version}\nNative Windows capture, OCR, and translation tool (in development)",
+      "ja-JP": "Open-ST {version}\nWindows ネイティブのキャプチャ、OCR、翻訳ツール（開発中）"
+    },
+    "settings.title": {
+      "zh-CN": "Open-ST 设置",
+      "en-US": "Open-ST Settings",
+      "ja-JP": "Open-ST 設定"
+    },
+    "settings.language.label": {
+      "zh-CN": "界面语言",
+      "en-US": "Interface language",
+      "ja-JP": "インターフェイス言語"
+    },
+    "settings.ok": {
+      "zh-CN": "确定",
+      "en-US": "OK",
+      "ja-JP": "OK"
+    },
+    "settings.cancel": {
+      "zh-CN": "取消",
+      "en-US": "Cancel",
+      "ja-JP": "キャンセル"
+    },
+    "settings.save_failed": {
+      "zh-CN": "无法保存设置。请检查 settings.json 是否有效以及应用目录是否可写。",
+      "en-US": "Could not save settings. Check that settings.json is valid and the application directory is writable.",
+      "ja-JP": "設定を保存できませんでした。settings.json が有効で、アプリケーションフォルダーに書き込めることを確認してください。"
+    },
+    "settings.open_failed": {
+      "zh-CN": "无法打开设置窗口。",
+      "en-US": "Could not open the settings window.",
+      "ja-JP": "設定ウィンドウを開けませんでした。"
+    },
+    "settings.load_failed": {
+      "zh-CN": "无法加载默认设置。应用将继续使用内置的英文界面。",
+      "en-US": "Default settings could not be loaded. The application will continue with the English interface.",
+      "ja-JP": "既定の設定を読み込めませんでした。アプリケーションは英語のインターフェイスで続行します。"
+    },
+    "settings.persistence_unavailable": {
+      "zh-CN": "用户设置无法读取或写入。应用将保留该文件并临时使用默认设置。",
+      "en-US": "User settings cannot be read or written. The file will be preserved and defaults will be used temporarily.",
+      "ja-JP": "ユーザー設定を読み書きできません。ファイルは保持され、一時的に既定値が使用されます。"
+    },
+    "capture.error.message": {
+      "zh-CN": "无法开始截图。\n\n{detail}",
+      "en-US": "Unable to start capture.\n\n{detail}",
+      "ja-JP": "キャプチャを開始できません。\n\n{detail}"
+    },
+    "capture.error.register_overlay_class": {
+      "zh-CN": "无法注册截图覆盖窗口类。",
+      "en-US": "Could not register the capture overlay window class.",
+      "ja-JP": "キャプチャオーバーレイのウィンドウクラスを登録できませんでした。"
+    },
+    "capture.error.create_overlay_window": {
+      "zh-CN": "无法创建截图覆盖窗口。",
+      "en-US": "Could not create the capture overlay window.",
+      "ja-JP": "キャプチャオーバーレイウィンドウを作成できませんでした。"
+    },
+    "capture.error.unknown": {
+      "zh-CN": "发生了未知的截图错误。",
+      "en-US": "An unknown capture error occurred.",
+      "ja-JP": "不明なキャプチャエラーが発生しました。"
+    },
+    "export.com_failed": {
+      "zh-CN": "无法初始化图片保存服务。",
+      "en-US": "Could not initialize image saving services.",
+      "ja-JP": "画像保存サービスを初期化できませんでした。"
+    },
+    "export.dialog.png": {
+      "zh-CN": "PNG 图片",
+      "en-US": "PNG image",
+      "ja-JP": "PNG 画像"
+    },
+    "export.dialog.jpeg": {
+      "zh-CN": "JPEG 图片",
+      "en-US": "JPEG image",
+      "ja-JP": "JPEG 画像"
+    },
+    "export.dialog.title": {
+      "zh-CN": "保存截图",
+      "en-US": "Save screenshot",
+      "ja-JP": "スクリーンショットを保存"
+    },
+    "export.generate_failed": {
+      "zh-CN": "无法生成截图图像。当前选区已保留，请重试或取消截图。",
+      "en-US": "Could not generate the image. Your selection is kept; retry or cancel the capture.",
+      "ja-JP": "画像を生成できませんでした。選択範囲は保持されています。再試行するかキャプチャをキャンセルしてください。"
+    },
+    "export.copy_failed": {
+      "zh-CN": "复制失败。当前选区已保留，请重试。",
+      "en-US": "Copy failed. Your selection is kept; please retry.",
+      "ja-JP": "コピーに失敗しました。選択範囲は保持されています。再試行してください。"
+    },
+    "export.save_failed": {
+      "zh-CN": "保存失败。当前选区已保留，请重试或更换保存位置。",
+      "en-US": "Save failed. Your selection is kept; retry or choose another location.",
+      "ja-JP": "保存に失敗しました。選択範囲は保持されています。再試行するか保存先を変更してください。"
+    },
+    "export.directory_failed": {
+      "zh-CN": "截图已保存，但无法记录上次保存目录。",
+      "en-US": "The screenshot was saved, but the last save directory could not be recorded.",
+      "ja-JP": "スクリーンショットを保存しましたが、前回の保存先を記録できませんでした。"
+    }
+  }
+}

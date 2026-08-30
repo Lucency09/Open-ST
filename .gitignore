@@ -1,0 +1,15 @@
+/build/
+/artifacts/
+/.cache/*
+!/.cache/README.md
+/.vs/
+/.vscode/
+/data/
+*.user
+*.suo
+*.VC.db
+*.pdb
+*.obj
+*.ilk
+/testing/testoutput/
+.codegraph/

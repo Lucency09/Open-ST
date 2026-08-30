@@ -1,0 +1,2 @@
+// 应用图标包含多个尺寸，供资源管理器及运行时按需选择。
+OPEN_ST_ICON ICON "open-st.ico"

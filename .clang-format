@@ -1,0 +1,12 @@
+BasedOnStyle: Microsoft
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+BreakBeforeBraces: Allman
+AllowShortFunctionsOnASingleLine: Empty
+SortIncludes: CaseSensitive
+PointerAlignment: Left
+DerivePointerAlignment: false
+

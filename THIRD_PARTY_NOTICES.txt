@@ -1,0 +1,7 @@
+Open-ST uses the following third-party software in its product build:
+
+nlohmann/json 3.12.0
+Copyright (c) 2013-2025 Niels Lohmann
+License: MIT
+Full license text: licenses/nlohmann-json.txt
+

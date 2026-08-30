@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows-x64",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "OPEN_ST_ALLOW_WARNINGS": "OFF",
+        "OPEN_ST_ENABLE_OCR": "OFF",
+        "OPEN_ST_ENABLE_TRANSLATION": "OFF",
+        "OPEN_ST_BUILD_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-x64",
+      "configurePreset": "windows-x64"
+    }
+  ]
+}
