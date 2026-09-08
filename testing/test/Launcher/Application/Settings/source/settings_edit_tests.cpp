@@ -206,4 +206,41 @@ TEST_F(SettingsEditTest, layout_uses_initialized_resource_directory)
     EXPECT_FALSE(open_st::ReadSettingsLayout(layout));
     EXPECT_TRUE(layout.at("pages").is_array());
 }
+// 布尔和字符串保持类型安全，并在欢迎确认时保存默认意图。
+TEST_F(SettingsEditTest, boolean_drafts_and_required_welcome_fields)
+{
+    this->Write(
+        "resources/default_settings.json",
+        R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {"startup.enabled", "onboarding.completed"}));
+    EXPECT_EQ(session.ReadBool("startup.enabled"), true);
+    EXPECT_FALSE(session.ReadString("startup.enabled").has_value());
+    EXPECT_FALSE(session.ChangeString("startup.enabled", "false"));
+    EXPECT_FALSE(session.ChangeBool("ui.language", false));
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Unchanged);
+    ASSERT_TRUE(session.ChangeBool("onboarding.completed", true));
+    ASSERT_EQ(session.Commit({"startup.enabled", "onboarding.completed"}), open_st::SettingsCommitResult::Saved);
+    EXPECT_TRUE(this->ReadUser().at("settings").at("startup.enabled").get<bool>());
+    EXPECT_EQ(session.VerifySavedBool("startup.enabled", true), open_st::SettingsCommitResult::Unchanged);
+    ASSERT_TRUE(session.ChangeBool("startup.enabled", false));
+    EXPECT_TRUE(session.IsDirty("startup.enabled"));
+    ASSERT_TRUE(session.RestoreDefaults({"startup.enabled"}));
+    EXPECT_FALSE(session.IsDirty());
+}
+
+// 同批布尔字段冲突阻止语言一起保存；重试校验不接受字符串冒充布尔。
+TEST_F(SettingsEditTest, boolean_conflict_preserves_entire_batch)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {"startup.enabled"}));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    ASSERT_TRUE(session.ChangeBool("startup.enabled", false));
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"startup.enabled":"false"}})");
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Conflict);
+    EXPECT_FALSE(this->ReadUser().at("settings").contains("ui.language"));
+    EXPECT_EQ(session.VerifySavedBool("startup.enabled", false), open_st::SettingsCommitResult::Conflict);
+}
 } // namespace

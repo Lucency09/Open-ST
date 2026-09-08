@@ -387,4 +387,157 @@ TEST_F(RendererBindingTest, initial_unavailable_value_reports_error)
     EXPECT_EQ(this->draft_, "unavailable");
     EXPECT_EQ(this->changes_, 0);
 }
+// 通过原生样式识别复选框，避免依赖创建顺序或业务 ID。
+BOOL CALLBACK FindCheckbox(HWND window, LPARAM context)
+{
+    wchar_t name[64]{};
+    GetClassNameW(window, name, 64);
+    if (wcscmp(name, L"Button") == 0 && (GetWindowLongPtrW(window, GWL_STYLE) & BS_TYPEMASK) == BS_AUTOCHECKBOX)
+    {
+        *reinterpret_cast<HWND*>(context) = window;
+        return FALSE;
+    }
+    return TRUE;
+}
+class RendererBoolTest : public RendererBindingTest
+{
+  protected:
+    bool value_ = true;
+    bool reject_ = false;
+    bool throw_ = false;
+    bool readFailure_ = false;
+    bool throwRead_ = false;
+    // 在现有窗口加入通用布尔字段及其独立草稿。
+    void PrepareBool()
+    {
+        nlohmann::json document = WindowDocument();
+        document["pages"][0]["content"]["children"].push_back(
+            {{"type", "checkbox"}, {"id", "checked"}, {"labelKey", "checkbox.label"}});
+        this->Prepare(document);
+        ASSERT_TRUE(this->renderer_.BindBool(
+            "checked",
+            [this]()
+            {
+                if (this->throwRead_)
+                    throw std::runtime_error("bool read failed");
+                return open_st::RendererBoolResult{!this->readFailure_, this->value_,
+                                                   this->readFailure_ ? L"read failed" : L""};
+            },
+            [this](bool value)
+            {
+                if (this->throw_)
+                    throw std::runtime_error("bool change failed");
+                if (this->reject_)
+                    return open_st::RendererChangeResult{false, L"rejected"};
+                this->value_ = value;
+                ++this->changes_;
+                return open_st::RendererChangeResult{};
+            }));
+    }
+    // 查找属于当前测试窗口的复选框。
+    HWND Checkbox()
+    {
+        HWND checkbox{};
+        EnumChildWindows(this->renderer_.NativeHandle(), FindCheckbox, reinterpret_cast<LPARAM>(&checkbox));
+        return checkbox;
+    }
+};
+// 布尔槽位不能重复、跨类型或缺失回调。
+TEST_F(RendererBoolTest, validates_bool_binding_type_and_uniqueness)
+{
+    this->PrepareBool();
+    const auto read = []() { return open_st::RendererBoolResult{}; };
+    const auto change = [](bool) { return open_st::RendererChangeResult{}; };
+    EXPECT_EQ(this->renderer_.BindBool("checked", read, change).code, "duplicate_binding");
+    EXPECT_EQ(this->renderer_.BindBool("choice", read, change).code, "wrong_control_type");
+    EXPECT_EQ(this->renderer_.BindBool("unknown", read, change).code, "unknown_id");
+    EXPECT_EQ(this->renderer_.BindBool("checked", {}, change).code, "empty_callback");
+    EXPECT_EQ(this->renderer_.BindOptions("checked", []() { return open_st::RendererOptionsResult{}; }).code,
+              "wrong_control_type");
+    EXPECT_TRUE(this->renderer_.ValidateBindings());
+}
+// 缺少布尔读取或修改绑定时，不创建半成品窗口。
+TEST_F(RendererBoolTest, missing_bool_binding_prevents_window_creation)
+{
+    nlohmann::json document = WindowDocument();
+    document["pages"][0]["content"]["children"].push_back(
+        {{"type", "checkbox"}, {"id", "checked"}, {"labelKey", "checkbox.label"}});
+    this->Prepare(document);
+    EXPECT_EQ(this->renderer_.ValidateBindings().code, "field_binding_missing");
+    EXPECT_FALSE(this->renderer_.Show());
+    EXPECT_EQ(this->renderer_.NativeHandle(), nullptr);
+}
+// 读取失败保留已显示草稿，读取异常只返回结构错误且不修改业务。
+TEST_F(RendererBoolTest, failed_read_keeps_previous_visual_value)
+{
+    this->PrepareBool();
+    this->Show();
+    const HWND checkbox = this->Checkbox();
+    ASSERT_NE(checkbox, nullptr);
+    this->value_ = false;
+    this->readFailure_ = true;
+    EXPECT_TRUE(this->renderer_.RefreshValues());
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    this->throwRead_ = true;
+    EXPECT_EQ(this->renderer_.RefreshValues().code, "callback_failed");
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    EXPECT_EQ(this->changes_, 0);
+}
+// 原生点击修改草稿，程序刷新和文字刷新保留布尔值且不回写。
+TEST_F(RendererBoolTest, click_updates_bool_and_refresh_is_read_only)
+{
+    this->PrepareBool();
+    this->Show();
+    const HWND checkbox = this->Checkbox();
+    ASSERT_NE(checkbox, nullptr);
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    SendMessageW(checkbox, BM_CLICK, 0, 0);
+    EXPECT_FALSE(this->value_);
+    EXPECT_EQ(this->changes_, 1);
+    this->value_ = true;
+    ASSERT_TRUE(this->renderer_.RefreshValues());
+    this->longText_ = true;
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    EXPECT_EQ(this->changes_, 1);
+    EXPECT_TRUE(this->renderer_.SetFieldError("checked", L"field error"));
+}
+// 拒绝和异常均恢复视觉值，异常带控件 ID 汇报。
+TEST_F(RendererBoolTest, rejected_or_throwing_change_restores_previous_check)
+{
+    this->PrepareBool();
+    this->Show();
+    const HWND checkbox = this->Checkbox();
+    ASSERT_NE(checkbox, nullptr);
+    this->reject_ = true;
+    SendMessageW(checkbox, BM_CLICK, 0, 0);
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    this->throw_ = true;
+    SendMessageW(checkbox, BM_CLICK, 0, 0);
+    EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
+    EXPECT_EQ(this->changes_, 0);
+    ASSERT_FALSE(this->errors_.empty());
+    EXPECT_EQ(this->errors_.back().code, "callback_failed");
+    EXPECT_EQ(this->errors_.back().id, "checked");
+}
+// 忙状态与单控件禁用均禁止通知修改业务草稿。
+TEST_F(RendererBoolTest, disabled_and_busy_checkbox_do_not_dispatch)
+{
+    this->PrepareBool();
+    this->Show();
+    const HWND checkbox = this->Checkbox();
+    ASSERT_NE(checkbox, nullptr);
+    ASSERT_TRUE(this->renderer_.SetEnabled("checked", false));
+    SendMessageW(GetParent(checkbox), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(checkbox), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(checkbox));
+    EXPECT_EQ(this->changes_, 0);
+    ASSERT_TRUE(this->renderer_.SetBusy(true));
+    ASSERT_TRUE(this->renderer_.SetEnabled("checked", true));
+    EXPECT_FALSE(IsWindowEnabled(checkbox));
+    SendMessageW(GetParent(checkbox), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(checkbox), BN_CLICKED),
+                 reinterpret_cast<LPARAM>(checkbox));
+    EXPECT_EQ(this->changes_, 0);
+    ASSERT_TRUE(this->renderer_.SetBusy(false));
+    EXPECT_TRUE(IsWindowEnabled(checkbox));
+}
 } // namespace

@@ -1,7 +1,7 @@
 #include <settings.h>
 
-#include "settings_internal.h"
 #include "json_file_test_access.h"
+#include "settings_internal.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -137,8 +137,7 @@ TEST_F(SettingsTest, getter_observes_external_file_changes)
 TEST_F(SettingsTest, typed_setters_preserve_unknown_keys)
 {
     this->WriteDefault();
-    const nlohmann::json user{{"schemaVersion", 1},
-                              {"settings", {{"ui.language", "en-US"}, {"unknown", 42}}}};
+    const nlohmann::json user{{"schemaVersion", 1}, {"settings", {{"ui.language", "en-US"}, {"unknown", 42}}}};
     SettingsTest::WriteRaw(this->root_ / "data" / "settings.json", user.dump(2));
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
 
@@ -159,8 +158,7 @@ TEST_F(SettingsTest, getters_fall_back_to_default_values)
     const nlohmann::json defaults{{"schemaVersion", 1},
                                   {"settings", {{"name", "default"}, {"enabled", true}, {"count", 7}}}};
     SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json", defaults.dump(2));
-    const nlohmann::json user{{"schemaVersion", 1},
-                              {"settings", {{"name", false}, {"enabled", "wrong"}}}};
+    const nlohmann::json user{{"schemaVersion", 1}, {"settings", {{"name", false}, {"enabled", "wrong"}}}};
     SettingsTest::WriteRaw(this->root_ / "data" / "settings.json", user.dump(2));
 
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
@@ -273,5 +271,17 @@ TEST_F(SettingsTest, default_read_warning_tracks_file_failure_not_missing_keys)
     open_st::ShutdownSettings();
     EXPECT_FALSE(open_st::GetStringSetting("missing").has_value());
     EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
+}
+// 第二实例的早期提示读取用户语言，完全不初始化或创建文件。
+TEST_F(SettingsTest, startup_language_reads_without_initialization_or_writes)
+{
+    this->WriteDefault("en-US");
+    EXPECT_EQ(open_st::ReadStartupLanguage(this->root_), "en-US");
+    EXPECT_FALSE(std::filesystem::exists(this->root_ / "data" / "settings.json"));
+    this->WriteRaw(this->root_ / "data" / "settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"zh-CN"}})");
+    EXPECT_EQ(open_st::ReadStartupLanguage(this->root_), "zh-CN");
+    this->WriteRaw(this->root_ / "data" / "settings.json", R"({"schemaVersion":1,"settings":{"ui.language":false}})");
+    EXPECT_EQ(open_st::ReadStartupLanguage(this->root_), "en-US");
+    EXPECT_FALSE(open_st::IsSettingsPersistenceAvailable());
 }
 } // namespace

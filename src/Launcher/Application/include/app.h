@@ -1,7 +1,11 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <windows.h>
 
 namespace open_st
@@ -12,6 +16,11 @@ class SelectionModel;
 class SettingsWindow;
 class SelectionOutputRenderer;
 class CaptureCompletion;
+class SingleInstance;
+class StartupRegistration;
+class WelcomeWindow;
+class WindowRenderer;
+struct SettingsWindowCallbacks;
 
 // 进程级应用协调器：拥有隐藏消息窗口、托盘、全局热键和当前截图会话。
 // 捕获与呈现的具体实现由独立模块完成，App 只负责按 Win32 消息驱动它们的生命周期。
@@ -56,6 +65,18 @@ class App final
     void ShowTrayMenu();
     // 创建或激活单实例非模态设置窗口。
     void ShowSettings();
+    // 为设置和欢迎窗口提供当前语言及系统集成业务回调。
+    SettingsWindowCallbacks MakeSettingsCallbacks();
+    // 查询当前用户启动入口并生成当前语言的状态文本。
+    std::wstring StartupStatusText() const;
+    // 在用户明确提交后应用启动入口，修复旧路径由这次提交授权。
+    bool ApplyStartup(bool enabled);
+    // 显示可重试的退出清理窗口，普通退出不经过此入口。
+    void ShowCleanup();
+    // 优先以可见设置窗口作为系统模态提示的 owner，避免显示期间更改语言。
+    HWND DialogOwner() const noexcept;
+    // 更新跨线程截图准入代次，使忙操作前排队的旧请求失效。
+    void UpdateCaptureGate() noexcept;
     // 捕获冻结桌面帧并建立一次覆盖窗口、渲染器和选区模型会话。
     void StartCapture();
     // 按“当前拖动、已有选区、覆盖窗口”三级语义处理 Esc 或右键取消。
@@ -65,26 +86,35 @@ class App final
     // 显示本地化的程序版本与说明信息。
     void ShowAbout();
     // 使用本地化外壳显示一次截图失败详情。
-    void ShowCaptureError(const std::wstring& detail);
+    void ShowCaptureError(std::string_view detailKey);
     // 以模态 Renderer 显示简单消息，异常或创建失败退回系统提示，守卫阻止托盘和热键重入。
-    void ShowSimpleMessage(const std::wstring& message, const std::wstring& title, UINT fallbackFlags);
+    void ShowSimpleMessage(std::function<std::wstring()> message, std::function<std::wstring()> title,
+                           UINT fallbackFlags);
 
     // 协调统一完成流程与错误提示；save 为 true 时选择文件目标。
     void CompleteSelection(bool save);
 
     bool completionBusy_{}; // 包括错误弹窗在内的忙状态。
-    bool dialogActive_{}; // 简单模态弹窗及其系统兜底期间禁止重新打开业务入口。
+    bool dialogActive_{};   // 简单模态弹窗及其系统兜底期间禁止重新打开业务入口。
+    bool welcoming_{};
+    bool shuttingDown_{};
+    bool settingsBusy_{};
+    std::atomic<std::uint64_t> captureGate_{1}; // 低位为暂停标记，初始化期间拒绝截图。
+    std::unique_ptr<SingleInstance> singleInstance_;
+    std::unique_ptr<StartupRegistration> startup_;
+    std::unique_ptr<WelcomeWindow> welcomeWindow_;
+    WindowRenderer* messageRenderer_{}; // 借用当前模态提示，语言切换时同步刷新。
+    std::function<void()> messageStatusRefresh_;
     bool comInitialized_{}; // 仅成功初始化时配对 CoUninitialize。
     std::unique_ptr<SelectionOutputRenderer> outputRenderer_;
     std::unique_ptr<CaptureCompletion> completion_;
 
-    HICON largeIcon_{}; // 自有非共享图标，窗口关闭后由 App 析构释放。
-    HICON smallIcon_{}; // 托盘与设置窗口借用，移除后再释放。
-    HINSTANCE instance_{};   // 模块实例句柄，不拥有。
-    HWND messageWindow_{};   // HWND_MESSAGE：接收热键、托盘和退出消息，不显示界面。
-    HANDLE instanceMutex_{}; // 命名互斥体句柄，用于限制每个用户会话只运行一个实例。
-    bool trayAdded_{};       // 只有成功加入系统托盘后，析构时才发送 NIM_DELETE。
-    bool overlayPreparing_{}; // 创建/显示 HWND 的同步消息期间禁止销毁正在使用的会话记录。
+    HICON largeIcon_{};         // 自有非共享图标，窗口关闭后由 App 析构释放。
+    HICON smallIcon_{};         // 托盘与设置窗口借用，移除后再释放。
+    HINSTANCE instance_{};      // 模块实例句柄，不拥有。
+    HWND messageWindow_{};      // HWND_MESSAGE：接收热键、托盘和退出消息，不显示界面。
+    bool trayAdded_{};          // 只有成功加入系统托盘后，析构时才发送 NIM_DELETE。
+    bool overlayPreparing_{};   // 创建/显示 HWND 的同步消息期间禁止销毁正在使用的会话记录。
     bool overlayInvalidated_{}; // 准备期间布局或窗口失效时，在同步调用返回后统一回收。
 
     // frozen frame、renderer 和 selection 仅在一次截图会话中存在；renderer 不把预览帧当作输出源。

@@ -302,4 +302,83 @@ TEST_F(LoggerTest, directory_failure_is_non_fatal)
     EXPECT_FALSE(open_st::Logger::Initialize(blockingPath));
     EXPECT_NO_THROW(OPEN_ST_LOG_ERROR("discarded"));
 }
+// 清理只删除命名规则认可的普通日志，保留设置、无关文件和子目录。
+TEST_F(LoggerTest, shutdown_and_clear_preserves_unrelated_files)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    OPEN_ST_LOG_ERROR("before cleanup");
+    const std::filesystem::path directory = this->root_ / "data" / "logs";
+    const std::filesystem::path settings = this->root_ / "data" / "settings.json";
+    const std::filesystem::path notes = directory / "notes.log";
+    const std::filesystem::path malformed = directory / "Open-ST-not-a-date.log";
+    const std::filesystem::path nested = directory / "Open-ST-2020-01-01.log";
+    std::ofstream(settings) << "settings";
+    std::ofstream(notes) << "notes";
+    std::ofstream(malformed) << "unrelated";
+    std::filesystem::create_directory(nested);
+    std::ofstream(nested / "Open-ST-2020-01-02.log") << "nested";
+    std::ofstream(directory / "Open-ST-2020-01-03.log") << "legacy";
+    ASSERT_TRUE(open_st::Logger::ShutdownAndClear());
+    EXPECT_EQ(this->ReadFile(settings), "settings");
+    EXPECT_EQ(this->ReadFile(notes), "notes");
+    EXPECT_EQ(this->ReadFile(malformed), "unrelated");
+    EXPECT_EQ(this->ReadFile(nested / "Open-ST-2020-01-02.log"), "nested");
+    EXPECT_FALSE(std::filesystem::exists(directory / "Open-ST-2020-01-03.log"));
+    EXPECT_EQ(this->LogFiles().size(), 2U);
+    OPEN_ST_LOG_ERROR("must stay stopped");
+    EXPECT_EQ(this->LogFiles().size(), 2U);
+    EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
+}
+// 被其他进程打开且不共享删除的日志导致失败，释放后同一入口可重试。
+TEST_F(LoggerTest, failed_cleanup_can_retry_without_resuming_logging)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    OPEN_ST_LOG_ERROR("keep");
+    const std::vector<std::filesystem::path> files = this->LogFiles();
+    ASSERT_EQ(files.size(), 1U);
+    const HANDLE locked = CreateFileW(files.front().c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(locked, INVALID_HANDLE_VALUE);
+    EXPECT_FALSE(open_st::Logger::ShutdownAndClear());
+    const std::string before = this->ReadFile(files.front());
+    OPEN_ST_LOG_ERROR("must not append");
+    EXPECT_EQ(this->ReadFile(files.front()), before);
+    CloseHandle(locked);
+    EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
+    EXPECT_TRUE(this->LogFiles().empty());
+}
+// 已识别名称的文件链接不能借清理删除链接或目标，移除链接后可重试。
+TEST_F(LoggerTest, cleanup_refuses_symbolic_log_file)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path target = this->root_ / "keep.txt";
+    std::ofstream(target) << "preserve";
+    const std::filesystem::path link = this->root_ / "data" / "logs" / "Open-ST-2020-01-01.log";
+    std::error_code error;
+    std::filesystem::create_symlink(target, link, error);
+    if (error)
+        GTEST_SKIP() << "Symbolic links unavailable: " << error.message();
+    EXPECT_FALSE(open_st::Logger::ShutdownAndClear());
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(this->ReadFile(target), "preserve");
+    std::filesystem::remove(link);
+    EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
+}
+// 日志目录为链接时清理拒绝进入，即使初始化阶段曾使用该路径。
+TEST_F(LoggerTest, cleanup_refuses_symbolic_log_directory)
+{
+    const std::filesystem::path target = this->root_ / "elsewhere";
+    const std::filesystem::path data = this->root_ / "data";
+    std::filesystem::create_directories(target);
+    std::filesystem::create_directory(data);
+    std::error_code error;
+    std::filesystem::create_directory_symlink(target, data / "logs", error);
+    if (error)
+        GTEST_SKIP() << "Directory symbolic links unavailable: " << error.message();
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    OPEN_ST_LOG_ERROR("preserve target");
+    EXPECT_FALSE(open_st::Logger::ShutdownAndClear());
+    EXPECT_FALSE(std::filesystem::is_empty(target));
+    EXPECT_TRUE(std::filesystem::is_symlink(data / "logs"));
+}
 } // namespace

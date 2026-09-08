@@ -7,6 +7,8 @@
 
 namespace open_st
 {
+// 仅通过 Common 读取启动语言，不创建设置文件，允许在初始化前调用。
+[[nodiscard]] std::optional<std::string> ReadStartupLanguage() noexcept;
 // 读取默认设置并检查用户设置；仅在用户文件缺失时安全创建默认文档。
 [[nodiscard]] bool InitializeSettings() noexcept;
 // 释放设置业务持有的句柄，不干预 Common 内部缓存生命周期。

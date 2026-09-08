@@ -72,6 +72,8 @@ class Logger final
     static bool Initialize(const std::filesystem::path& applicationDirectory,
                            const LogOptions& options = LogOptions{}) noexcept;
     static void Shutdown() noexcept;
+    // 停止日志写入并仅删除已识别的本程序日志；失败保留目录以便重试。
+    static bool ShutdownAndClear() noexcept;
     static void WriteText(log_detail::LogLevel level, const std::string& message, std::string_view sourceFile,
                           std::uint_least32_t sourceLine) noexcept;
 };

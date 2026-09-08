@@ -2,6 +2,7 @@
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
 #include <app.h>
+#include <array>
 #include <clipboard_writer.h>
 #include <desktop_capturer.h>
 #include <desktop_preview.h>
@@ -13,11 +14,16 @@
 #include <selection_output_renderer.h>
 #include <settings.h>
 #include <settings_window.h>
+#include <single_instance.h>
+#include <startup_registration.h>
 #include <ui_text.h>
+#include <vector>
+#include <welcome_window.h>
+#include <window_renderer.h>
 
+#include "capture_overlay_session.h"
 #include "open_st/version.h"
 #include "resource.h"
-#include "capture_overlay_session.h"
 
 #include <exception>
 #include <limits>
@@ -36,7 +42,7 @@ namespace
 #define OPEN_ST_WIDEN(value) OPEN_ST_WIDEN_IMPL(value)
 constexpr wchar_t MESSAGE_CLASS[] = L"OpenST.MessageWindow";
 constexpr wchar_t OVERLAY_CLASS[] = L"OpenST.CaptureOverlay";
-constexpr wchar_t INSTANCE_MUTEX[] = L"Local\\OpenST.SingleInstance";
+constexpr UINT LAUNCH_MESSAGE = WM_APP + 3;
 constexpr UINT PREPARE_OUTPUT_MESSAGE = WM_APP + 2;
 constexpr UINT TRAY_MESSAGE = WM_APP + 1;
 constexpr UINT TRAY_ID = 1;
@@ -47,9 +53,14 @@ class CompletionBusyGuard final
 {
   public:
     // 借用应用状态，开始阻止会话消息重入。
-    explicit CompletionBusyGuard(bool& busy) noexcept : busy_(busy)
+    explicit CompletionBusyGuard(bool& busy, std::function<void()> changed = {})
+        : busy_(busy), changed_(std::move(changed))
     {
         this->busy_ = true;
+        if (this->changed_)
+        {
+            this->changed_();
+        }
     }
     // 提示或资源分配抛异常时也恢复可操作状态。
     ~CompletionBusyGuard()
@@ -63,11 +74,47 @@ class CompletionBusyGuard final
     // 正常收尾前先解除忙状态，使 CloseOverlay 可以释放资源。
     void Release() noexcept
     {
-        this->busy_ = false;
+        if (!this->released_)
+        {
+            this->busy_ = false;
+            this->released_ = true;
+            if (this->changed_)
+            {
+                this->changed_();
+            }
+        }
     }
 
   private:
     bool& busy_;
+    std::function<void()> changed_;
+    bool released_{};
+};
+
+// 系统模态对话框期间暂停设置输入，保留原来的启用状态。
+class WindowDisableGuard final
+{
+  public:
+    // 只禁用调用前已启用的窗口。
+    explicit WindowDisableGuard(HWND window) : window_(window), restore_(window != nullptr && IsWindowEnabled(window))
+    {
+        if (this->restore_)
+        {
+            EnableWindow(this->window_, FALSE);
+        }
+    }
+    // 异常和取消同样恢复交互。
+    ~WindowDisableGuard()
+    {
+        if (this->restore_ && IsWindow(this->window_))
+        {
+            EnableWindow(this->window_, TRUE);
+        }
+    }
+
+  private:
+    HWND window_;
+    bool restore_;
 };
 
 // 日志文件使用 UTF-8；底层捕获模块使用宽字符串返回 Win32/DXGI 诊断信息。
@@ -177,6 +224,10 @@ App::App(HINSTANCE instance) noexcept : instance_(instance) {}
 // 按截图会话、设置、本地化、托盘、消息窗口、互斥体和日志的依赖逆序清理。
 App::~App()
 {
+    if (this->singleInstance_ != nullptr)
+    {
+        this->singleInstance_->Stop();
+    }
     OPEN_ST_LOG_INFO("Application shutting down.");
     // 按“会话资源 → 系统集成 → 消息窗口 → 互斥体”的逆初始化顺序清理。
     if (this->settingsWindow_ != nullptr)
@@ -201,10 +252,6 @@ App::~App()
         UnregisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID);
         DestroyWindow(this->messageWindow_);
     }
-    if (this->instanceMutex_ != nullptr)
-    {
-        CloseHandle(this->instanceMutex_);
-    }
     this->completion_.reset();
     this->outputRenderer_.reset();
     if (this->comInitialized_)
@@ -217,40 +264,61 @@ App::~App()
 // 初始化进程级服务、托盘与全局热键，并阻塞运行 Win32 消息循环直至退出。
 int App::Run(int)
 {
-    // 日志初始化失败时保持静默，不能阻止托盘、截图或后续 OCR/翻译流程启动。
-    (void)InitializeLogging();
-    OPEN_ST_LOG_INFO("Application starting.");
-
+    // 先确定实例身份，第二实例只读取语言，不创建设置或日志。
+    this->singleInstance_ = std::make_unique<SingleInstance>();
+    const InstanceStatus instanceStatus = this->singleInstance_->Acquire();
+    int argumentCount = 0;
+    LPWSTR* argumentValues = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    std::vector<std::wstring> arguments;
+    if (argumentValues != nullptr)
+    {
+        for (int index = 1; index < argumentCount; ++index)
+        {
+            arguments.emplace_back(argumentValues[index]);
+        }
+        LocalFree(argumentValues);
+    }
+    LaunchCommand command{};
+    const bool argumentsValid = argumentValues != nullptr && ParseLaunchCommand(arguments, command);
+    if (argumentsValid && command == LaunchCommand::Startup && instanceStatus.result == InstanceResult::Forwarded)
+    {
+        return 0;
+    }
     if (!InitializeUiText() || !IsUiTextAvailable())
     {
         OPEN_ST_LOG_FATAL("Failed to initialize UI text resources.");
-        (void)MessageBoxW(nullptr,
-                          L"Language resources could not be loaded.\n\n无法加载语言资源。\n\n言語リソースを読み込めませんでした。",
-                          L"Open-ST", MB_OK | MB_ICONERROR);
+        (void)MessageBoxW(
+            nullptr,
+            L"Language resources could not be loaded.\n\n无法加载语言资源。\n\n言語リソースを読み込めませんでした。",
+            L"Open-ST", MB_OK | MB_ICONERROR);
         return 1;
     }
-
-    // 创建一个系统级互斥体(如果存在就获取，类似懒汉单例),nullptr 表示默认安全属性，FALSE
-    // 表示不立即占用，Local\ 前缀表示互斥体在当前登录会话内唯一。
-    // Local\ 命名空间将单实例范围限制在当前登录会话，不要求管理员权限。
-    this->instanceMutex_ = CreateMutexW(nullptr, FALSE, INSTANCE_MUTEX);
-    if (this->instanceMutex_ == nullptr)
+    const std::optional<std::string> startupLanguage = ReadStartupLanguage();
+    if (startupLanguage.has_value())
     {
-        const DWORD error = GetLastError();
-        OPEN_ST_LOG_FATAL("Failed to create the single-instance mutex. win32_error=", error);
+        (void)SetUiLanguage(*startupLanguage);
+    }
+    if (!argumentsValid || instanceStatus.result == InstanceResult::Failed)
+    {
+        const std::wstring message = GetUiText(!argumentsValid ? "launch.invalid_arguments" : "launch.failed");
+        (void)MessageBoxW(nullptr, message.c_str(), GetUiText("app.title").c_str(), MB_OK | MB_ICONERROR);
         return 1;
     }
-    // 获取当前线程最近一次设置的 Win32 错误码或状态码。
-    // ERROR_ALREADY_EXISTS 表示互斥体已存在，说明已有一个实例在运行。
-    if (GetLastError() == ERROR_ALREADY_EXISTS)
+    if (instanceStatus.result != InstanceResult::Primary)
     {
-        OPEN_ST_LOG_INFO("A second application instance was rejected.");
-        // Windows弹窗，阻塞当前线程，直到用户关闭消息框(获取到返回值)后才会继续执行。
-        const std::wstring message = GetUiText("app.already_running");
-        const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(nullptr, message.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
-        return 0;
+        const InstanceStatus forwarded = this->singleInstance_->Forward(command);
+        if (forwarded.result == InstanceResult::Forwarded)
+        {
+            return 0;
+        }
+        const std::wstring message = GetUiText(forwarded.result == InstanceResult::OtherSession ? "launch.other_session"
+                                               : forwarded.error == ERROR_BUSY                  ? "launch.busy"
+                                                                               : "launch.forward_failed");
+        (void)MessageBoxW(nullptr, message.c_str(), GetUiText("app.title").c_str(), MB_OK | MB_ICONWARNING);
+        return 1;
     }
+    (void)InitializeLogging();
+    OPEN_ST_LOG_INFO("Application starting.");
 
     // 只有确认当前实例唯一后才读取或创建用户设置，避免第二实例参与配置写入。
     const bool settingsInitialized = InitializeSettings();
@@ -274,13 +342,13 @@ int App::Run(int)
     {
         const std::wstring message = GetUiText("settings.load_failed");
         const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
     }
     else if (!IsSettingsPersistenceAvailable())
     {
         const std::wstring message = GetUiText("settings.persistence_unavailable");
         const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
     }
     if (!settingsInitialized || !IsSettingsPersistenceAvailable())
     {
@@ -292,13 +360,57 @@ int App::Run(int)
     {
         const std::wstring error = GetUiText("export.com_failed");
         const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, error.c_str(), title.c_str(), MB_OK | MB_ICONERROR);
+        (void)MessageBoxW(this->DialogOwner(), error.c_str(), title.c_str(), MB_OK | MB_ICONERROR);
         return 1;
     }
     this->comInitialized_ = true;
     this->outputRenderer_ = std::make_unique<SelectionOutputRenderer>();
     this->completion_ = std::make_unique<CaptureCompletion>();
     this->AddTrayIcon();
+    std::array<wchar_t, 32768> executable{};
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    this->singleInstance_->SetCaptureGate(
+        [this]() -> std::optional<LPARAM>
+        {
+            const std::uint64_t gate = this->captureGate_.load(std::memory_order_acquire);
+            return (gate & 1) != 0 ? std::nullopt : std::optional<LPARAM>(static_cast<LPARAM>(gate));
+        });
+    if (length == 0 || length >= executable.size() ||
+        !this->singleInstance_->StartListening(this->messageWindow_, LAUNCH_MESSAGE))
+    {
+        (void)MessageBoxW(this->DialogOwner(), GetUiText("launch.failed").c_str(), GetUiText("app.title").c_str(),
+                          MB_OK | MB_ICONERROR);
+        return 1;
+    }
+    this->startup_ = std::make_unique<StartupRegistration>(std::wstring(executable.data(), length));
+    if (!GetBoolSetting("onboarding.completed").value_or(false))
+    {
+        CompletionBusyGuard welcomeGuard(this->welcoming_, [this]() { this->UpdateCaptureGate(); });
+        this->welcomeWindow_ = std::make_unique<WelcomeWindow>();
+        const bool accepted = this->welcomeWindow_->ShowModal(this->instance_, this->MakeSettingsCallbacks());
+        const bool failed = this->welcomeWindow_->Failed();
+        this->welcomeWindow_.reset();
+        if (!accepted)
+        {
+            if (failed)
+            {
+                (void)MessageBoxW(this->DialogOwner(), GetUiText("welcome.failed").c_str(),
+                                  GetUiText("welcome.title").c_str(), MB_OK | MB_ICONERROR);
+            }
+            return failed ? 1 : 0;
+        }
+    }
+    else
+    {
+        const StartupStatus status = this->startup_->Query();
+        const bool wanted = GetBoolSetting("startup.enabled").value_or(false);
+        if ((wanted && status.state != StartupState::CurrentPath) || (!wanted && status.state != StartupState::Missing))
+        {
+            this->ShowSimpleMessage([this]()
+                                    { return GetUiText("startup.mismatch") + L"\n\n" + this->StartupStatusText(); },
+                                    []() { return GetUiText("app.title"); }, MB_OK | MB_ICONWARNING);
+        }
+    }
     (void)PostMessageW(this->messageWindow_, PREPARE_OUTPUT_MESSAGE, 0, 0);
     if (!RegisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q'))
     {
@@ -306,10 +418,16 @@ int App::Run(int)
         OPEN_ST_LOG_WARNING("Failed to register the capture hotkey. win32_error=", error);
         const std::wstring message = GetUiText("hotkey.registration_failed");
         const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
     }
 
     this->ReportDataReadWarnings();
+    this->UpdateCaptureGate();
+    if (command == LaunchCommand::Capture)
+    {
+        (void)PostMessageW(this->messageWindow_, LAUNCH_MESSAGE, static_cast<WPARAM>(LaunchCommand::Capture),
+                           static_cast<LPARAM>(this->captureGate_.load(std::memory_order_acquire)));
+    }
     // 程序空闲时 GetMessageW 会阻塞，不轮询桌面，所以托盘常驻阶段几乎不消耗 CPU。
     MSG message{};
     BOOL messageResult = 0;
@@ -350,7 +468,7 @@ void App::ReportDataReadWarnings()
     const std::wstring title = GetUiText("app.title");
     // 读取告警文本本身若遇到新故障，本次合并提示已经覆盖，不留到下一条消息重复报告。
     (void)ConsumeUiTextReadWarning();
-    (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+    (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
 }
 
 // 注册并创建不可见的 message-only window，供热键、托盘和退出事件统一投递。
@@ -374,8 +492,8 @@ bool App::CreateMessageWindow()
     // HWND_MESSAGE 创建的窗口不可见、没有任务栏按钮，也不会参与普通顶层窗口枚举。
     // 最后的 this 会通过 WM_NCCREATE 传给 WindowProc，建立 HWND 到 App 的绑定。
     const std::wstring title = GetUiText("window.message.title");
-    this->messageWindow_ = CreateWindowExW(0, MESSAGE_CLASS, title.c_str(), 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr,
-                                           this->instance_, this);
+    this->messageWindow_ =
+        CreateWindowExW(0, MESSAGE_CLASS, title.c_str(), 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, this->instance_, this);
     if (this->messageWindow_ == nullptr)
     {
         const DWORD error = GetLastError();
@@ -407,7 +525,36 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 真正的窗口消息处理逻辑在实例方法中实现，静态窗口过程负责绑定或找回 App 实例，并将消息转发给它。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    if ((this->completionBusy_ || this->dialogActive_) &&
+    if (message == LAUNCH_MESSAGE)
+    {
+        if (this->welcoming_)
+        {
+            if (this->welcomeWindow_ != nullptr)
+            {
+                this->welcomeWindow_->Activate();
+            }
+            return 0;
+        }
+        if (this->completionBusy_ || this->dialogActive_ || this->shuttingDown_)
+        {
+            return 0;
+        }
+        if (wParam == static_cast<WPARAM>(LaunchCommand::Normal))
+        {
+            this->ShowSettings();
+        }
+        else if (wParam == static_cast<WPARAM>(LaunchCommand::Capture))
+        {
+            const std::uint64_t gate = this->captureGate_.load(std::memory_order_acquire);
+            if ((gate & 1) == 0 && static_cast<std::uint64_t>(lParam) == gate)
+            {
+                this->StartCapture();
+            }
+        }
+        return 0;
+    }
+    if ((this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+         this->settingsBusy_) &&
         (message == WM_HOTKEY || message == WM_COMMAND || message == TRAY_MESSAGE))
     {
         return 0;
@@ -442,6 +589,9 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         // 用户选择托盘菜单中的“关于”。
         case ID_TRAY_ABOUT:
             this->ShowAbout();
+            return 0;
+        case ID_TRAY_CLEANUP:
+            this->ShowCleanup();
             return 0;
         // 用户选择托盘菜单中的“退出”，向当前线程投递 WM_QUIT 以结束消息循环。
         case ID_TRAY_EXIT:
@@ -487,12 +637,13 @@ void App::AddTrayIcon()
     if (this->largeIcon_ == nullptr)
     {
         this->largeIcon_ = static_cast<HICON>(LoadImageW(this->instance_, L"OPEN_ST_ICON", IMAGE_ICON,
-                                                        GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+                                                         GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
     }
     if (this->smallIcon_ == nullptr)
     {
-        this->smallIcon_ = static_cast<HICON>(LoadImageW(this->instance_, L"OPEN_ST_ICON", IMAGE_ICON,
-                                                        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+        this->smallIcon_ =
+            static_cast<HICON>(LoadImageW(this->instance_, L"OPEN_ST_ICON", IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                                          GetSystemMetrics(SM_CYSMICON), 0));
     }
     if (this->largeIcon_ == nullptr || this->smallIcon_ == nullptr)
     {
@@ -527,6 +678,22 @@ void App::RemoveTrayIcon() noexcept
 // 设置窗口确认新的界面语言后，刷新所有窗口标题和托盘提示文本。
 void App::RefreshLocalizedUi()
 {
+    if (this->settingsWindow_ != nullptr)
+    {
+        this->settingsWindow_->RefreshTexts();
+    }
+    if (this->welcomeWindow_ != nullptr)
+    {
+        this->welcomeWindow_->RefreshTexts();
+    }
+    if (this->messageRenderer_ != nullptr)
+    {
+        (void)this->messageRenderer_->RefreshTexts();
+        if (this->messageStatusRefresh_)
+        {
+            this->messageStatusRefresh_();
+        }
+    }
     if (this->messageWindow_ != nullptr)
     {
         const std::wstring messageWindowTitle = GetUiText("window.message.title");
@@ -563,10 +730,12 @@ void App::ShowTrayMenu()
     const std::wstring settingsText = GetUiText("tray.settings");
     const std::wstring aboutText = GetUiText("tray.about");
     const std::wstring exitText = GetUiText("tray.exit");
+    const std::wstring cleanupText = GetUiText("tray.cleanup");
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_CAPTURE, captureText.c_str());
     (void)AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settingsText.c_str());
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_ABOUT, aboutText.c_str());
+    (void)AppendMenuW(menu, MF_STRING, ID_TRAY_CLEANUP, cleanupText.c_str());
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exitText.c_str());
     // Win32 托盘菜单需要先把所属窗口设为前台，否则用户点击菜单外部时菜单可能无法自动收起。
     SetForegroundWindow(this->messageWindow_);
@@ -577,7 +746,7 @@ void App::ShowTrayMenu()
 // 懒创建或激活设置窗口，并在语言保存成功后刷新应用现有界面。
 void App::ShowSettings()
 {
-    if (this->dialogActive_)
+    if (this->dialogActive_ || this->shuttingDown_)
     {
         return;
     }
@@ -585,22 +754,25 @@ void App::ShowSettings()
     {
         this->settingsWindow_ = std::make_unique<SettingsWindow>();
     }
+    if (!this->settingsWindow_->Show(this->instance_, this->MakeSettingsCallbacks()))
+    {
+        const std::wstring message = GetUiText("settings.open_failed");
+        const std::wstring title = GetUiText("app.title");
+        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+    }
+}
+
+// 将业务能力注入 Settings，避免设置窗口直接依赖系统集成和本地化模块。
+SettingsWindowCallbacks App::MakeSettingsCallbacks()
+{
     SettingsWindowCallbacks callbacks;
     // 只向设置窗口传入所请求键的文本，不暴露本地化模块类型或状态。
-    callbacks.text = [](std::string_view key)
-    {
-        return GetUiText(key);
-    };
+    callbacks.text = [](std::string_view key) { return GetUiText(key); };
     // 当前语言仅用于设置缺失时选中运行时语言。
-    callbacks.currentLanguage = []()
-    {
-        return CurrentUiLanguageCode();
-    };
+    callbacks.currentLanguage = []() { return CurrentUiLanguageCode(); };
     // 每次查询读取本地化模块动态提供的语言集合。
     callbacks.availableLanguages = []()
-    {
-        return IsUiTextAvailable() ? GetAvailableUiLanguages() : std::vector<std::string>{};
-    };
+    { return IsUiTextAvailable() ? GetAvailableUiLanguages() : std::vector<std::string>{}; };
     // 设置持久化成功后才切换运行语言，并刷新现有应用界面。
     callbacks.languageApplied = [this](std::string_view language)
     {
@@ -610,19 +782,69 @@ void App::ShowSettings()
     };
     callbacks.largeIcon = this->largeIcon_;
     callbacks.smallIcon = this->smallIcon_;
-    if (!this->settingsWindow_->Show(this->instance_, std::move(callbacks)))
+    callbacks.startupApplied = [this](bool enabled) { return this->ApplyStartup(enabled); };
+    callbacks.startupStatus = [this]() { return this->StartupStatusText(); };
+    callbacks.busyChanged = [this](bool busy)
     {
-        const std::wstring message = GetUiText("settings.open_failed");
-        const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        this->settingsBusy_ = busy;
+        this->UpdateCaptureGate();
+    };
+    return callbacks;
+}
+
+// 仅报告已登记入口状态，Windows 的启动许可仍由系统管理。
+std::wstring App::StartupStatusText() const
+{
+    const StartupStatus status = this->startup_ != nullptr ? this->startup_->Query() : StartupStatus{};
+    const char* key = status.state == StartupState::CurrentPath ? "startup.current"
+                      : status.state == StartupState::Missing   ? "startup.missing"
+                      : status.state == StartupState::OtherPath ? "startup.other_path"
+                      : status.state == StartupState::Conflict  ? "startup.conflict"
+                                                                : "startup.failed";
+    return GetUiText(key);
+}
+
+// 仅由欢迎确认、设置应用或明确修复触发系统写入。
+bool App::ApplyStartup(bool enabled)
+{
+    if (this->startup_ == nullptr)
+    {
+        return false;
     }
+    const StartupStatus result = this->startup_->Apply(enabled, true);
+    const bool applied = result.state == (enabled ? StartupState::CurrentPath : StartupState::Missing);
+    if (!applied)
+    {
+        OPEN_ST_LOG_ERROR("Startup registration failed. state=", static_cast<int>(result.state),
+                          " error=", result.error);
+    }
+    return applied;
+}
+
+// 原生模态提示使用可见 owner，Windows 会在提示期间禁用该窗口。
+HWND App::DialogOwner() const noexcept
+{
+    if (this->settingsWindow_ != nullptr && this->settingsWindow_->IsOpen())
+    {
+        return this->settingsWindow_->NativeHandle();
+    }
+    return this->messageWindow_;
+}
+
+// 所有布尔忙状态仅在 UI 线程改变；一次原子发布同时传递暂停状态和新代次。
+void App::UpdateCaptureGate() noexcept
+{
+    const bool paused =
+        this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_;
+    const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
+    this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
 }
 
 // 在显示遮罩前冻结虚拟桌面，并建立覆盖窗口、渲染器和选区模型的一次会话。
 void App::StartCapture()
 try
 {
-    if (this->completionBusy_ || this->dialogActive_)
+    if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_)
     {
         return;
     }
@@ -642,23 +864,23 @@ try
     if (!capturer.Capture(*capturedFrame, captureError))
     {
         OPEN_ST_LOG_ERROR("Desktop capture failed. detail=", WideToUtf8(captureError));
-        this->ShowCaptureError(GetUiText("capture.error.unknown"));
+        this->ShowCaptureError("capture.error.unknown");
         return;
     }
 
     // 一个注册窗口类的描述结构体，必须在创建窗口通过其注册窗口类。
     WNDCLASSEXW overlayClass{sizeof(overlayClass)};
-    overlayClass.lpfnWndProc = App::OverlayProc; // 设置窗口过程回调函数
-    overlayClass.hInstance = this->instance_; // 设置窗口类所属的实例句柄
-    overlayClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);  // 设置鼠标光标为十字准星
-    overlayClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));  // 设置背景画刷为黑色
+    overlayClass.lpfnWndProc = App::OverlayProc;                                        // 设置窗口过程回调函数
+    overlayClass.hInstance = this->instance_;                                           // 设置窗口类所属的实例句柄
+    overlayClass.hCursor = LoadCursorW(nullptr, IDC_CROSS);                             // 设置鼠标光标为十字准星
+    overlayClass.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)); // 设置背景画刷为黑色
     overlayClass.lpszClassName = OVERLAY_CLASS; // 设置窗口类名为 OVERLAY_CLASS L"OpenST.CaptureOverlay"
     // 注册窗口类；已经由上一截图会话注册不属于错误。
     if (RegisterClassExW(&overlayClass) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
     {
         const DWORD error = GetLastError();
         OPEN_ST_LOG_ERROR("Failed to register the capture overlay class. win32_error=", error);
-        this->ShowCaptureError(GetUiText("capture.error.register_overlay_class"));
+        this->ShowCaptureError("capture.error.register_overlay_class");
         return;
     }
 
@@ -676,8 +898,8 @@ try
     const std::wstring overlayTitle = GetUiText("window.capture.title");
     // 同一次会话只读取一次业务设置；各显示器初始化时借用同一份颜色字符串。
     const std::optional<std::string> configuredBorderColor = GetStringSetting("capture.selection_border_color");
-    const std::optional<std::string_view> borderColor = configuredBorderColor.has_value()
-        ? std::optional<std::string_view>(*configuredBorderColor) : std::nullopt;
+    const std::optional<std::string_view> borderColor =
+        configuredBorderColor.has_value() ? std::optional<std::string_view>(*configuredBorderColor) : std::nullopt;
     for (const CapturedOutputPlane& plane : this->frozenDesktopFrame_->Outputs())
     {
         OutputPreviewFrame previewFrame;
@@ -685,20 +907,20 @@ try
         {
             OPEN_ST_LOG_ERROR("Output preview generation failed. detail=", WideToUtf8(captureError));
             this->CloseOverlay();
-            this->ShowCaptureError(GetUiText("capture.error.unknown"));
+            this->ShowCaptureError("capture.error.unknown");
             return;
         }
         const RectI outputBounds = plane.Bounds();
         // 先登记空记录，再创建 HWND；记录分配失败时尚未拥有窗口，避免未登记 HWND 泄漏。
         CaptureOverlayOutput& output = this->overlaySession_->Add(nullptr);
-        output.window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OVERLAY_CLASS, overlayTitle.c_str(),
-                                        WS_POPUP, outputBounds.left, outputBounds.top, outputBounds.Width(),
+        output.window = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, OVERLAY_CLASS, overlayTitle.c_str(), WS_POPUP,
+                                        outputBounds.left, outputBounds.top, outputBounds.Width(),
                                         outputBounds.Height(), nullptr, nullptr, this->instance_, this);
         if (output.window == nullptr)
         {
             OPEN_ST_LOG_ERROR("Failed to create a capture output window. win32_error=", GetLastError());
             this->CloseOverlay();
-            this->ShowCaptureError(GetUiText("capture.error.create_overlay_window"));
+            this->ShowCaptureError("capture.error.create_overlay_window");
             return;
         }
         output.renderer = std::make_unique<OverlayRenderer>();
@@ -707,7 +929,7 @@ try
         {
             OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=", WideToUtf8(captureError));
             this->CloseOverlay();
-            this->ShowCaptureError(GetUiText("capture.error.unknown"));
+            this->ShowCaptureError("capture.error.unknown");
             return;
         }
         OPEN_ST_LOG_INFO("Capture output prepared. display=", WideToUtf8(plane.ColorMetadata().deviceName.data()),
@@ -735,7 +957,7 @@ catch (const std::exception&)
     // 预览、记录或渲染器分配失败不能让已准备的隐藏 HWND 和冻结帧遗留在半初始化会话中。
     OPEN_ST_LOG_ERROR("Failed to allocate capture overlay session resources.");
     this->CloseOverlay();
-    this->ShowCaptureError(GetUiText("capture.error.unknown"));
+    this->ShowCaptureError("capture.error.unknown");
 }
 
 // 驱动覆盖窗口绘制、选区鼠标捕获、光标反馈、分层取消和会话销毁。
@@ -750,8 +972,8 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     }
 
-    CaptureOverlayOutput* output = app != nullptr && app->overlaySession_ != nullptr
-                                       ? app->overlaySession_->Find(window) : nullptr;
+    CaptureOverlayOutput* output =
+        app != nullptr && app->overlaySession_ != nullptr ? app->overlaySession_->Find(window) : nullptr;
 
     // CreateWindow/ShowWindow 会同步派发消息；将失效延迟到调用返回，避免删除调用栈正在使用的记录。
     if (app != nullptr && app->overlayPreparing_)
@@ -809,7 +1031,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
                 app->CloseOverlay();
                 if (!app->completionBusy_)
                 {
-                    app->ShowCaptureError(GetUiText("capture.error.unknown"));
+                    app->ShowCaptureError("capture.error.unknown");
                 }
             }
         }
@@ -906,13 +1128,13 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             GetClientRect(window, &client);
             std::wstring rendererError;
             if (!output->renderer->Resize(static_cast<unsigned int>(client.right - client.left),
-                                               static_cast<unsigned int>(client.bottom - client.top), rendererError))
+                                          static_cast<unsigned int>(client.bottom - client.top), rendererError))
             {
                 OPEN_ST_LOG_ERROR("Failed to resize the capture overlay renderer.");
                 app->CloseOverlay();
                 if (!app->completionBusy_)
                 {
-                    app->ShowCaptureError(GetUiText("capture.error.unknown"));
+                    app->ShowCaptureError("capture.error.unknown");
                 }
             }
         }
@@ -1053,7 +1275,9 @@ try
     {
         return;
     }
-    CompletionBusyGuard busyGuard(this->completionBusy_);
+    CompletionBusyGuard busyGuard(this->completionBusy_, [this]() { this->UpdateCaptureGate(); });
+    WindowDisableGuard settingsGuard(this->settingsWindow_ != nullptr ? this->settingsWindow_->NativeHandle()
+                                                                      : nullptr);
     CompletionResult result = save ? CompletionResult::SaveFailed : CompletionResult::CopyFailed;
     std::wstring error;
     try
@@ -1139,7 +1363,7 @@ try
     {
         const std::wstring message = GetUiText("export.directory_failed");
         const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
     }
 }
 catch (const std::exception&)
@@ -1156,38 +1380,160 @@ catch (const std::exception&)
     }
 }
 
+// 清理系统入口后再关闭业务和日志，保留窗口报告日志清理失败。
+void App::ShowCleanup()
+{
+    if (this->dialogActive_ || this->completionBusy_ || this->welcoming_)
+    {
+        return;
+    }
+    CompletionBusyGuard guard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
+    WindowRenderer renderer;
+    struct RefreshGuard
+    {
+        WindowRenderer*& renderer;
+        std::function<void()>& status;
+        // 在局部窗口销毁前撤销所有借用，避免语言通知使用悬空引用。
+        ~RefreshGuard()
+        {
+            this->renderer = nullptr;
+            this->status = {};
+        }
+    } refreshGuard{this->messageRenderer_, this->messageStatusRefresh_};
+    this->messageRenderer_ = &renderer;
+    bool deleteLogs = false;
+    bool stopped = false;
+    bool exitRequested = false;
+    std::string statusKey;
+    this->messageStatusRefresh_ = [&renderer, &statusKey]()
+    { (void)renderer.SetStatus(statusKey.empty() ? L"" : GetUiText(statusKey)); };
+    const nlohmann::json layout = nlohmann::json::parse(R"({
+        "schemaVersion":1,
+        "window":{"titleKey":"cleanup.title","initialSize":[560,320],"minSize":[440,280],"resizable":true},
+        "content":{"type":"column","id":"cleanupBody","padding":20,"gap":12,"children":[
+            {"type":"text","id":"cleanupText","textKey":"cleanup.body"},
+            {"type":"checkbox","id":"deleteLogs","labelKey":"cleanup.logs"}]},
+        "footer":{"leading":[],"trailing":[
+            {"type":"button","id":"cleanupConfirm","textKey":"cleanup.confirm"},
+            {"type":"button","id":"cleanupCancel","textKey":"cleanup.cancel"}]}})");
+    const auto require = [](const RendererResult& result)
+    {
+        if (!result)
+        {
+            throw std::runtime_error("Cleanup window failed");
+        }
+    };
+    try
+    {
+        require(renderer.LoadLayout(layout));
+        require(renderer.SetTextResolver(
+            [&stopped](std::string_view key)
+            { return GetUiText(key == "cleanup.cancel" && stopped ? "cleanup.keep_logs_exit" : key); }));
+        require(renderer.BindBool(
+            "deleteLogs", [&deleteLogs]() { return RendererBoolResult{true, deleteLogs, {}}; },
+            [&deleteLogs](bool value)
+            {
+                deleteLogs = value;
+                return RendererChangeResult{};
+            }));
+        const auto cancel = [&]()
+        {
+            exitRequested = stopped;
+            (void)renderer.RequestClose();
+        };
+        require(renderer.BindAction("cleanupCancel", cancel));
+        require(renderer.SetCloseHandler(cancel));
+        require(renderer.SetDefaultAction("cleanupCancel"));
+        require(renderer.BindAction("cleanupConfirm",
+                                    [&]()
+                                    {
+                                        if (!stopped)
+                                        {
+                                            if (!SetBoolSetting("startup.enabled", false))
+                                            {
+                                                statusKey = "cleanup.save_failed";
+                                                (void)renderer.SetStatus(GetUiText(statusKey));
+                                                return;
+                                            }
+                                            if (!this->ApplyStartup(false))
+                                            {
+                                                statusKey = "cleanup.startup_failed";
+                                                (void)renderer.SetStatus(GetUiText(statusKey));
+                                                return;
+                                            }
+                                            this->shuttingDown_ = true;
+                                            if (this->settingsWindow_ != nullptr)
+                                            {
+                                                this->settingsWindow_->Close();
+                                            }
+                                            this->CloseOverlay();
+                                            UnregisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID);
+                                            if (!deleteLogs)
+                                            {
+                                                ShutdownLogging();
+                                            }
+                                            stopped = true;
+                                            (void)renderer.SetEnabled("deleteLogs", false);
+                                            (void)renderer.RefreshTexts();
+                                        }
+                                        if (deleteLogs && !Logger::ShutdownAndClear())
+                                        {
+                                            statusKey = "cleanup.logs_failed";
+                                            (void)renderer.SetStatus(GetUiText(statusKey));
+                                            return;
+                                        }
+                                        exitRequested = true;
+                                        (void)renderer.RequestClose();
+                                    }));
+        RendererWindowOptions options;
+        options.owner = this->messageWindow_;
+        options.icon = this->largeIcon_;
+        require(renderer.ShowModal(options));
+    }
+    catch (...)
+    {
+        (void)MessageBoxW(this->DialogOwner(), GetUiText("cleanup.failed").c_str(), GetUiText("cleanup.title").c_str(),
+                          MB_OK | MB_ICONERROR);
+        exitRequested = stopped;
+    }
+    if (exitRequested)
+    {
+        this->RemoveTrayIcon();
+        PostQuitMessage(0);
+    }
+}
+
 // 显示包含当前构建版本号的本地化关于对话框。
 void App::ShowAbout()
 {
-    const std::wstring text = GetUiText("about.body", {{L"version", OPEN_ST_WIDEN(OPEN_ST_VERSION)}});
-    const std::wstring title = GetUiText("about.title");
-    this->ShowSimpleMessage(text, title, MB_OK | MB_ICONINFORMATION);
+    this->ShowSimpleMessage([]() { return GetUiText("about.body", {{L"version", OPEN_ST_WIDEN(OPEN_ST_VERSION)}}); },
+                            []() { return GetUiText("about.title"); }, MB_OK | MB_ICONINFORMATION);
 }
 
 // 将底层截图失败详情嵌入本地化消息外壳并显示错误对话框。
-void App::ShowCaptureError(const std::wstring& detail)
+void App::ShowCaptureError(std::string_view detailKey)
 {
-    const std::wstring message = GetUiText("capture.error.message", {{L"detail", detail}});
-    const std::wstring title = GetUiText("app.title");
-    this->ShowSimpleMessage(message, title, MB_OK | MB_ICONERROR);
+    this->ShowSimpleMessage([detailKey]()
+                            { return GetUiText("capture.error.message", {{L"detail", GetUiText(detailKey)}}); },
+                            []() { return GetUiText("app.title"); }, MB_OK | MB_ICONERROR);
 }
 
 // 守卫覆盖 Renderer 与系统兜底两条路径；正常关闭和 WM_QUIT 返回不再次弹窗。
-void App::ShowSimpleMessage(const std::wstring& message, const std::wstring& title, UINT fallbackFlags)
+void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function<std::wstring()> title,
+                            UINT fallbackFlags)
 {
     if (this->dialogActive_)
     {
         return;
     }
-    CompletionBusyGuard dialogGuard(this->dialogActive_);
+    CompletionBusyGuard dialogGuard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
     bool shown = false;
     try
     {
-        shown = TryShowSimpleMessageWindow(this->messageWindow_, this->largeIcon_, title, message,
-            GetUiText("dialog.ok"), [this](MSG& threadMessage)
-            {
-                return this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(threadMessage);
-            });
+        shown = TryShowSimpleMessageWindow(
+            this->messageWindow_, this->largeIcon_, title, message, []() { return GetUiText("dialog.ok"); },
+            this->messageRenderer_, [this](MSG& threadMessage)
+            { return this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(threadMessage); });
     }
     catch (...)
     {
@@ -1195,7 +1541,7 @@ void App::ShowSimpleMessage(const std::wstring& message, const std::wstring& tit
     }
     if (!shown)
     {
-        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), fallbackFlags);
+        (void)MessageBoxW(this->DialogOwner(), message().c_str(), title().c_str(), fallbackFlags);
     }
 }
 } // namespace open_st

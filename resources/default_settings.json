@@ -2,6 +2,8 @@
   "schemaVersion": 1,
   "settings": {
     "capture.selection_border_color": "#000000",
-    "ui.language": "en-US"
+    "ui.language": "en-US",
+    "onboarding.completed": false,
+    "startup.enabled": true
   }
 }

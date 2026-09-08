@@ -165,9 +165,9 @@ class Parser
                 node.children.push_back(
                     this->ParseNode(children[index], path + "/children/" + std::to_string(index), depth + 1));
         }
-        else if (type == "select")
+        else if (type == "select" || type == "checkbox")
         {
-            node.type = NodeType::Select;
+            node.type = type == "select" ? NodeType::Select : NodeType::Checkbox;
             this->Keys(source, {"type", "id", "labelKey", "width"}, path);
             node.textKey = this->String(source, "labelKey", path);
         }

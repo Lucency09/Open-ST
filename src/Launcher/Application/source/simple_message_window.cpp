@@ -6,8 +6,9 @@
 namespace open_st
 {
 // 文本已由 Application 本地化，布局不读取文件，也不引入设置字段或保存行为。
-bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::wstring& title, const std::wstring& message,
-                                const std::wstring& confirmText,
+bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::function<std::wstring()>& title,
+                                const std::function<std::wstring()>& message,
+                                const std::function<std::wstring()>& confirmText, WindowRenderer*& activeRenderer,
                                 const std::function<bool(MSG&)>& processThreadMessage) noexcept
 {
     try
@@ -20,11 +21,22 @@ bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::wstring& titl
             "footer":{"leading":[],"trailing":[{"type":"button","id":"confirm","textKey":"confirm"}]}
         })");
         WindowRenderer renderer;
+        struct ActiveGuard
+        {
+            WindowRenderer*& active;
+            // 模态退出前清空借用指针，避免语言通知访问已析构的窗口。
+            ~ActiveGuard()
+            {
+                this->active = nullptr;
+            }
+        } guard{activeRenderer};
+        activeRenderer = &renderer;
         if (!renderer.LoadLayout(layout) ||
-            !renderer.SetTextResolver([&title, &message, &confirmText](std::string_view key)
-                                      { return key == "title"     ? title
-                                               : key == "message" ? message
-                                                                  : confirmText; }) ||
+            !renderer.SetTextResolver(
+                [&title, &message, &confirmText](std::string_view key)
+                { return key == "title"     ? title()
+                         : key == "message" ? message()
+                                            : confirmText(); }) ||
             !renderer.BindAction("confirm", [&renderer]() { (void)renderer.RequestClose(); }) ||
             !renderer.SetCloseHandler([&renderer]() { (void)renderer.RequestClose(); }) ||
             !renderer.SetDefaultAction("confirm"))

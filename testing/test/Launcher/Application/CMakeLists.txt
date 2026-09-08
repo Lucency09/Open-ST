@@ -3,8 +3,13 @@ add_subdirectory(Localization)
 add_subdirectory(Export)
 add_subdirectory(Graphics)
 add_subdirectory(Settings)
+add_subdirectory(SystemIntegration)
 
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp)
-target_link_libraries(open_st_application_tests PRIVATE OpenST::Application OpenST::Graphics GTest::gtest_main)
+target_sources(open_st_application_tests PRIVATE source/simple_message_window_tests.cpp)
+target_link_libraries(open_st_application_tests PRIVATE OpenST::Application OpenST::Graphics OpenST::WindowRenderer GTest::gtest_main)
+target_link_options(open_st_application_tests PRIVATE
+    "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+)
 target_include_directories(open_st_application_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private")
 gtest_discover_tests(open_st_application_tests TEST_PREFIX "application." PROPERTIES LABELS "application;integration")

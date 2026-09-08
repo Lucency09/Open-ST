@@ -21,6 +21,12 @@ struct SettingsWindowCallbacks final
     std::function<std::string()> currentLanguage;
     // 每次展开下拉框时重新查询资源实际提供的语言代码。
     std::function<std::vector<std::string>()> availableLanguages;
+    // 通知宿主确认、保存及副作用执行期间的忙状态；通知异常不影响窗口恢复。
+    std::function<void(bool)> busyChanged;
+    // 保存后应用当前用户启动入口，返回是否已生效。
+    std::function<bool(bool)> startupApplied;
+    // 动态查询并本地化系统启动入口状态。
+    std::function<std::wstring()> startupStatus;
     // 仅持久化成功后通知上级应用语言；返回是否生效，参数只在回调期间有效。
     std::function<bool(std::string_view)> languageApplied;
 };
@@ -44,6 +50,10 @@ class SettingsWindow final
     [[nodiscard]] bool ProcessDialogMessage(MSG& message) const noexcept;
     // 同步关闭窗口并释放回调，允许重复调用。
     void Close() noexcept;
+    // 重新获取当前语言的布局、状态和字段错误文字。
+    void RefreshTexts() noexcept;
+    // 借用当前窗口句柄，供宿主指定模态 owner；关闭后立即失效，不得销毁。
+    [[nodiscard]] HWND NativeHandle() const noexcept;
     // 返回窗口是否仍然存在。
     [[nodiscard]] bool IsOpen() const noexcept;
 

@@ -7,6 +7,7 @@ target_sources(open_st_settings_window
     PRIVATE
         source/settings.cpp
         source/settings_window.cpp
+        source/welcome_window.cpp
         source/settings_edit.cpp
         private/settings_internal.h
         private/settings_edit.h
@@ -17,6 +18,7 @@ target_sources(open_st_settings_window
         FILES
             include/settings.h
             include/settings_window.h
+            include/welcome_window.h
 )
 
 target_include_directories(open_st_settings_window PRIVATE private)

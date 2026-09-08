@@ -10,6 +10,7 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -263,7 +264,7 @@ class LoggerState final
             }
 
             this->options_ = options;
-            this->logDirectory_ = applicationDirectory / "data" / "logs";
+            this->logDirectory_ = std::filesystem::absolute(applicationDirectory / "data" / "logs").lexically_normal();
             std::error_code error;
             std::filesystem::create_directories(this->logDirectory_, error);
             if (error)
@@ -298,6 +299,88 @@ class LoggerState final
         }
         catch (...)
         {
+        }
+    }
+
+    // 在同一把锁内停写并清理；目录与父目录句柄禁止改名替换，文件按句柄删除。
+    bool ShutdownAndClear() noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            this->ResetLocked(false);
+            if (this->logDirectory_.empty())
+                return true;
+            struct CloseHandleDeleter
+            {
+                // 统一释放成功或失败的 Win32 句柄。
+                void operator()(void* handle) const noexcept
+                {
+                    if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
+                        CloseHandle(handle);
+                }
+            };
+            using OwnedHandle = std::unique_ptr<void, CloseHandleDeleter>;
+            std::vector<OwnedHandle> directories;
+            std::filesystem::path current = this->logDirectory_.root_path();
+            for (const std::filesystem::path& component : this->logDirectory_.relative_path())
+            {
+                current /= component;
+                OwnedHandle handle(CreateFileW(current.c_str(), FILE_READ_ATTRIBUTES,
+                                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+                if (handle.get() == INVALID_HANDLE_VALUE)
+                {
+                    const DWORD error = GetLastError();
+                    if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                    {
+                        this->logDirectory_.clear();
+                        return true;
+                    }
+                    return false;
+                }
+                BY_HANDLE_FILE_INFORMATION information{};
+                if (!GetFileInformationByHandle(handle.get(), &information) ||
+                    (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+                    (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                    return false;
+                directories.push_back(std::move(handle));
+            }
+            std::error_code error;
+            std::filesystem::directory_iterator iterator(this->logDirectory_, error);
+            const std::filesystem::directory_iterator end;
+            bool success = !error;
+            while (!error && iterator != end)
+            {
+                LogFileInfo info;
+                if (ParseLogFile(iterator->path(), info))
+                {
+                    OwnedHandle file(CreateFileW(info.path.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+                                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+                    BY_HANDLE_FILE_INFORMATION information{};
+                    if (file.get() == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(file.get(), &information) ||
+                        (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                        success = false;
+                    else if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                    {
+                        FILE_DISPOSITION_INFO disposition{TRUE};
+                        if (!SetFileInformationByHandle(file.get(), FileDispositionInfo, &disposition,
+                                                        sizeof(disposition)))
+                            success = false;
+                    }
+                }
+                iterator.increment(error);
+            }
+            if (error)
+                success = false;
+            if (success)
+                this->logDirectory_.clear();
+            return success;
+        }
+        catch (...)
+        {
+            return false;
         }
     }
 
@@ -374,7 +457,7 @@ class LoggerState final
     }
 
   private:
-    void ResetLocked() noexcept
+    void ResetLocked(bool clearDirectory = true) noexcept
     {
         if (this->file_.is_open())
         {
@@ -382,7 +465,8 @@ class LoggerState final
             this->file_.close();
         }
         this->file_.clear();
-        this->logDirectory_.clear();
+        if (clearDirectory)
+            this->logDirectory_.clear();
         this->currentPath_.clear();
         this->currentDate_.clear();
         this->lineCount_ = 0;
@@ -669,6 +753,12 @@ bool Logger::Initialize(const std::filesystem::path& applicationDirectory, const
 void Logger::Shutdown() noexcept
 {
     GetLoggerState().Shutdown();
+}
+
+// 清理入口保留结果供退出窗口决定重试或保留日志退出。
+bool Logger::ShutdownAndClear() noexcept
+{
+    return GetLoggerState().ShutdownAndClear();
 }
 
 void Logger::WriteText(log_detail::LogLevel level, const std::string& message, std::string_view sourceFile,

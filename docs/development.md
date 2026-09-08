@@ -35,6 +35,10 @@ src/
         ├── include/
         ├── private/
         ├── source/
+        ├── SystemIntegration/  # OpenST::SystemIntegration：当前用户启动项与单实例通信
+        │   ├── CMakeLists.txt
+        │   ├── include/
+        │   └── source/
         ├── Localization/       # OpenST::Localization
         │   ├── include/
         │   ├── private/
@@ -92,6 +96,7 @@ src/
 ```text
 launcher -> application
 application -> localization
+application -> system_integration
 application -> settings
 application -> graphics
 application -> export
@@ -181,6 +186,7 @@ testing/
 │       ├── Export/
 │       ├── Localization/
 │       ├── Settings/
+│       ├── SystemIntegration/
 │       └── Graphics/
 │           ├── source/
 │           ├── selection/      # Graphics 内部选区测试
@@ -283,6 +289,19 @@ Git 跟踪源码、测试、CMake、清单、脚本、配置、文档和许可�
 
 ### WindowRenderer 人工窗口验收
 
+欢迎窗口也提供独立人工用例。在仓库根目录运行以下命令，使用临时设置和模拟自启回调，不修改真实启动项：
+
+```powershell
+$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
+try {
+    .\scripts\test.ps1 settings WelcomeManualTest.waits_for_user_close
+} finally {
+    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
+}
+```
+
+窗口一直等待确认、退出或关闭，默认测试跳过该用例。
+
 `OpenST::WindowRenderer` 位于 `Common/WindowRenderer`，是独立目标；`OpenST::Common` 本身不链接该目标或 GUI 库。
 需要界面的产品模块显式链接 Renderer。测试镜像为 `testing/test/Common/WindowRenderer`，模块筛选名为 `window_renderer`。
 `RendererManualTest.waits_for_user_close` 默认跳过。在仓库根目录打开 PowerShell，仅在人工验收时运行：
@@ -299,3 +318,42 @@ try {
 窗口弹出后一直等待用户点击“确定”、按 Esc 或点击右上角关闭按钮，没有自动关闭计时器。
 `finally` 在测试结束或报错后清除环境开关，避免之后的普通回归意外等待人工操作。
 普通回归中的 skip 不表示人工验收通过。自动模态测试使用消息驱动关闭，另行报告。
+
+### 欢迎、开机启动与退出清理人工验收
+
+`SystemIntegration` 是 Application 的子模块，公开 `StartupRegistration`、`SingleInstance` 与固定启动参数解析，
+不读取业务 JSON，不调用本地化或弹窗。Application 注入 `startupApplied/startupStatus` 回调给 Settings；
+Renderer 的 `BindBool(id, read, change)` 只负责 checkbox 绑定，布尔草稿、条件提交和副作用重试属于 Settings。
+`WelcomeWindow` 使用内嵌布局，确认后同时提交 `startup.enabled` 与 `onboarding.completed`，保存成功才操作系统。
+第二实例通过 `ReadStartupLanguage()` 只读保存语言，不能初始化或改写用户设置。
+
+自动回归可运行 `./scripts/test.ps1 system_integration`，注册表用例只操作临时 HKCU 测试键。
+`SingleInstanceProcessTest.child_receiver` 仅由父用例启动为子进程，单独执行时默认跳过；不是人工测试失败。
+普通回归不会写真实 Run 项、注销登录或自动确认欢迎窗口。
+
+真实验收由用户主动启动程序并操作，建议使用单独的完整便携运行目录，先备份现有 `data/settings.json`。
+复制目录仍属于同一用户实例，验收前从托盘正常退出已有 Open-ST，避免命令转发到另一目录的实例。
+以下命令只读取当前启动项，验收前后各运行一次并保留结果；不要仅记“开启”，应记录值原先是否存在及完整内容：
+
+```powershell
+Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+    -Name 'Open-ST' -ErrorAction SilentlyContinue | Select-Object -Property 'Open-ST'
+```
+
+1. 首次启动显示欢迎与默认勾选自启。先按取消/X/Esc 验证不写启动项；再次运行仍显示欢迎。
+2. 确认欢迎时可选择关闭自启以避免改变真实登录行为；验证完成标记保存、后续不重复欢迎。
+   要验收实际自启时，由用户明确勾选并确认，检查 Run 内容为带引号的程序绝对路径及 `--startup`。
+3. 设置页勾选/取消只改草稿；取消窗口不写系统。点击应用后检查 JSON 与 Run；关闭选项应立即删除入口。
+   写入失败应保留可见错误和重试入口，不能显示为全部成功或自动关窗。
+4. 运行同一 EXE 的普通启动、`--capture`、`--startup`：分别打开现有设置、请求一次截图、静默退出。
+   欢迎期间普通启动应激活欢迎；忙状态下不积压截图。跨用户及同用户跨会话需分别在真实登录环境验证。
+5. 在设置切换语言后，再验收重复启动失败/未知参数提示、托盘、设置、关于、截图错误、欢迎和清理文字。
+   应用自有提示随所选语言变化；系统文件对话框与 MessageBox 的系统按钮由 Windows 语言控制。
+6. 手动移动完整便携目录后运行新位置，核验只提示旧路径、不自动覆盖；明确点击修复后才更新。
+   系统侧删除入口应提示不一致；任务管理器禁用后入口存在不代表实际允许登录启动。
+7. 托盘普通退出应保留启动项。单独“退出并清理”确认后删除入口；勾选清理日志只删除本程序命名的日志，
+   日志清理失败应保留窗口供重试或保留日志退出，不能删设置、资源或无关文件。
+8. 实际注销/登录由用户自行执行；完成后将设置、自启值和测试目录恢复至验收前状态，并记录恢复结果。
+   若原有值属于其他程序或无法确认归属，保留它，不以测试名义覆盖。
+
+以上为人工操作步骤，本轮自动化不执行真实 Run 写入或登录操作。通用窗口视觉 case 的显式开关仍见上一节。

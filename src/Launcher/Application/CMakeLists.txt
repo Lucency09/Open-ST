@@ -3,6 +3,7 @@ add_subdirectory(Export)
 add_subdirectory(Graphics)
 add_subdirectory(Localization)
 add_subdirectory(Settings)
+add_subdirectory(SystemIntegration)
 
 add_library(open_st_application STATIC)
 add_library(OpenST::Application ALIAS open_st_application)
@@ -38,6 +39,7 @@ target_link_libraries(open_st_application
         OpenST::Settings
         OpenST::Common
         OpenST::WindowRenderer
+        OpenST::SystemIntegration
 
         # 以下均为 Windows SDK 系统库，不属于 vcpkg 第三方依赖。
         ole32

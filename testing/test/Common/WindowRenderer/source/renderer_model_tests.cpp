@@ -30,6 +30,21 @@ TEST(RendererParserTest, copies_document)
     EXPECT_EQ(layout.pages[0].content.children[0].id, "choice");
     EXPECT_EQ(layout.trailing[0].textKey, "confirm");
 }
+// 复选框共享字段标签协议，不接受业务值或文本节点属性。
+TEST(RendererParserTest, checkbox_requires_label_and_rejects_embedded_value)
+{
+    nlohmann::json document = Document();
+    nlohmann::json& node = document["pages"][0]["content"]["children"][0];
+    node["type"] = "checkbox";
+    Layout layout;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_EQ(layout.pages[0].content.children[0].type, open_st::renderer_detail::NodeType::Checkbox);
+    node["value"] = true;
+    EXPECT_EQ(ParseLayout(document, layout).code, "unknown_property");
+    node.erase("value");
+    node.erase("labelKey");
+    EXPECT_EQ(ParseLayout(document, layout).code, "missing_property");
+}
 // 页面与底部按钮共享 ID 空间，重复时附带定位并保留旧输出。
 TEST(RendererParserTest, rejects_duplicate_ids_transactionally)
 {

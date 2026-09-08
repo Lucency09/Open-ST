@@ -5,6 +5,9 @@
 
 namespace open_st
 {
+// 从隔离目录只读启动语言，供早期启动测试使用。
+[[nodiscard]] std::optional<std::string> ReadStartupLanguage(
+    const std::filesystem::path& applicationDirectory) noexcept;
 // 允许测试注入隔离应用目录；产品代码使用无参数 InitializeSettings()，不公开测试路径接口。
 [[nodiscard]] bool InitializeSettings(const std::filesystem::path& applicationDirectory) noexcept;
 // 复制初始化时的用户和默认句柄供私有编辑会话使用，失败不改变输出。

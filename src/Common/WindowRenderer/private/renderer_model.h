@@ -7,6 +7,7 @@ enum class NodeType
     Column,
     Text,
     Select,
+    Checkbox,
     Button
 };
 struct Node

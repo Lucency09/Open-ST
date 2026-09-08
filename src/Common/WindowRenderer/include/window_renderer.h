@@ -32,6 +32,12 @@ struct RendererChangeResult
     bool accepted = true;
     std::wstring error;
 };
+struct RendererBoolResult
+{
+    bool success = true;
+    bool value = false;
+    std::wstring error;
+};
 struct RendererOption
 {
     std::string value;
@@ -67,6 +73,9 @@ class WindowRenderer final
     // 绑定下拉框草稿读取及变更；拒绝变更后恢复已接受值。
     RendererResult BindString(std::string_view id, std::function<RendererStringResult()> read,
                               std::function<RendererChangeResult(std::string_view)> change);
+    // 绑定复选框草稿读取及变更；拒绝或异常后恢复上一次显示值。
+    RendererResult BindBool(std::string_view id, std::function<RendererBoolResult()> read,
+                            std::function<RendererChangeResult(bool)> change);
     // 绑定下拉框动态选项，稳定值必须唯一。
     RendererResult BindOptions(std::string_view id, std::function<RendererOptionsResult()> query);
     // 绑定按钮动作，禁止重复注册。

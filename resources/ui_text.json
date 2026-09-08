@@ -2,6 +2,176 @@
   "schemaVersion": 1,
   "languages": ["zh-CN", "en-US", "ja-JP"],
   "texts": {
+    "launch.busy": {
+      "zh-CN": "Open-ST 正在处理其他操作，本次截图请求未执行。请稍后重试。",
+      "en-US": "Open-ST is busy. This capture request was not executed. Please try again.",
+      "ja-JP": "Open-ST は処理中です。今回のキャプチャは実行されませんでした。再試行してください。"
+    },
+    "launch.invalid_arguments": {
+      "zh-CN": "启动参数无效。仅支持 --capture 或 --startup。",
+      "en-US": "Invalid arguments. Use --capture or --startup.",
+      "ja-JP": "起動引数が無効です。--capture または --startup を使用してください。"
+    },
+    "launch.failed": {
+      "zh-CN": "无法建立应用启动服务，请稍后重试。",
+      "en-US": "Could not initialize application startup. Please try again.",
+      "ja-JP": "起動サービスを初期化できませんでした。再試行してください。"
+    },
+    "launch.other_session": {
+      "zh-CN": "Open-ST 已在此用户的另一个登录会话中运行。请在该会话中操作或退出后重试。",
+      "en-US": "Open-ST is running in another sign-in session for this user. Use or close that instance first.",
+      "ja-JP": "このユーザーの別のログインセッションで Open-ST が動作中です。そのセッションで操作するか終了してください。"
+    },
+    "launch.forward_failed": {
+      "zh-CN": "无法联系已运行的 Open-ST。请稍后重试。",
+      "en-US": "Could not contact the running Open-ST instance. Please try again.",
+      "ja-JP": "実行中の Open-ST に接続できませんでした。再試行してください。"
+    },
+    "startup.mismatch": {
+      "zh-CN": "保存的开机启动选择与系统入口不一致。可在设置中修复。",
+      "en-US": "The saved startup preference does not match the system entry. You can repair it in Settings.",
+      "ja-JP": "保存された自動起動設定とシステムの登録が一致しません。設定から修復できます。"
+    },
+    "startup.current": {
+      "zh-CN": "启动入口已登记。Windows 的启动管理仍可能禁用或延迟运行。",
+      "en-US": "Startup entry registered. Windows startup settings may still disable or delay it.",
+      "ja-JP": "自動起動を登録済みです。Windows の設定で無効化または遅延される場合があります。"
+    },
+    "startup.missing": {
+      "zh-CN": "未登记启动入口。",
+      "en-US": "No startup entry registered.",
+      "ja-JP": "自動起動は登録されていません。"
+    },
+    "startup.other_path": {
+      "zh-CN": "启动入口指向旧路径，请点击修复。",
+      "en-US": "The startup entry points to another location. Click Repair.",
+      "ja-JP": "起動先が別の場所になっています。修復をクリックしてください。"
+    },
+    "startup.conflict": {
+      "zh-CN": "启动入口存在冲突，未修改该入口。",
+      "en-US": "The startup entry conflicts with an unrecognized command. It was left unchanged.",
+      "ja-JP": "起動項目に不明なコマンドがあります。変更していません。"
+    },
+    "startup.failed": {
+      "zh-CN": "无法读取或修改启动入口。",
+      "en-US": "Could not read or change the startup entry.",
+      "ja-JP": "起動項目を読み取りまたは変更できませんでした。"
+    },
+    "settings.startup.label": {
+      "zh-CN": "登录后启动 Open-ST",
+      "en-US": "Start Open-ST when I sign in",
+      "ja-JP": "ログイン時に Open-ST を起動"
+    },
+    "settings.startup.status": {
+      "zh-CN": "启动入口状态",
+      "en-US": "Startup entry status",
+      "ja-JP": "起動項目の状態"
+    },
+    "settings.startup.repair": {
+      "zh-CN": "修复启动入口",
+      "en-US": "Repair startup entry",
+      "ja-JP": "起動項目を修復"
+    },
+    "settings.startup.save_first": {
+      "zh-CN": "请先应用开机启动选项，再修复系统入口。",
+      "en-US": "Apply the startup preference before repairing its system entry.",
+      "ja-JP": "自動起動の変更を適用してから修復してください。"
+    },
+    "settings.startup.apply_failed": {
+      "zh-CN": "设置已保存，开机启动未生效。请点击应用或确定重试。",
+      "en-US": "Settings saved, but startup could not be applied. Click Apply or OK to retry.",
+      "ja-JP": "設定は保存されましたが自動起動を適用できませんでした。適用または OK で再試行してください。"
+    },
+    "settings.effects_failed": {
+      "zh-CN": "设置已保存，但语言和开机启动均未生效，请重试。",
+      "en-US": "Settings saved, but language and startup could not be applied. Please retry.",
+      "ja-JP": "設定は保存されましたが言語と自動起動を適用できませんでした。再試行してください。"
+    },
+    "welcome.title": {
+      "zh-CN": "欢迎使用 Open-ST",
+      "en-US": "Welcome to Open-ST",
+      "ja-JP": "Open-ST へようこそ"
+    },
+    "welcome.intro": {
+      "zh-CN": "按 Ctrl+Alt+Q 开始截图。确认后进入托盘运行。",
+      "en-US": "Press Ctrl+Alt+Q to capture. Confirm to continue in the notification area.",
+      "ja-JP": "Ctrl+Alt+Q でキャプチャします。確認後は通知領域で動作します。"
+    },
+    "welcome.privacy": {
+      "zh-CN": "当前截图在本机处理。后续 OCR 在本机执行；文字翻译上传文字，图片翻译上传处理后的图片。这些翻译能力尚未提供。",
+      "en-US": "Captures are processed locally. Planned OCR will run locally; text translation will upload text and image translation will upload processed images. These features are not available yet.",
+      "ja-JP": "現在のキャプチャは端末内で処理します。今後の OCR は端末内で実行し、テキスト翻訳は文字を、画像翻訳は処理後の画像を送信します。これらはまだ利用できません。"
+    },
+    "welcome.confirm": {
+      "zh-CN": "确认 / 重试",
+      "en-US": "Confirm / Retry",
+      "ja-JP": "確認 / 再試行"
+    },
+    "welcome.exit": {
+      "zh-CN": "退出",
+      "en-US": "Exit",
+      "ja-JP": "終了"
+    },
+    "welcome.failed": {
+      "zh-CN": "无法打开欢迎窗口，请检查资源后重试。",
+      "en-US": "Could not open the welcome window. Check the resources and retry.",
+      "ja-JP": "ようこそ画面を開けませんでした。リソースを確認して再試行してください。"
+    },
+    "tray.cleanup": {
+      "zh-CN": "清理系统设置…",
+      "en-US": "Clean up system settings…",
+      "ja-JP": "システム設定をクリーンアップ…"
+    },
+    "cleanup.title": {
+      "zh-CN": "清理系统设置",
+      "en-US": "Clean up system settings",
+      "ja-JP": "システム設定をクリーンアップ"
+    },
+    "cleanup.body": {
+      "zh-CN": "将关闭开机启动、移除启动入口并退出。用户设置和程序资源会保留。",
+      "en-US": "Turn off startup, remove the startup entry, and exit. Settings and program resources will be kept.",
+      "ja-JP": "自動起動を無効にし、起動項目を削除して終了します。設定とプログラムのリソースは保持します。"
+    },
+    "cleanup.logs": {
+      "zh-CN": "同时删除本程序日志",
+      "en-US": "Also delete Open-ST logs",
+      "ja-JP": "Open-ST のログも削除"
+    },
+    "cleanup.confirm": {
+      "zh-CN": "退出",
+      "en-US": "Exit",
+      "ja-JP": "終了"
+    },
+    "cleanup.cancel": {
+      "zh-CN": "取消",
+      "en-US": "Cancel",
+      "ja-JP": "キャンセル"
+    },
+    "cleanup.keep_logs_exit": {
+      "zh-CN": "保留剩余日志并退出",
+      "en-US": "Keep remaining logs and exit",
+      "ja-JP": "残りのログを保持して終了"
+    },
+    "cleanup.save_failed": {
+      "zh-CN": "无法保存关闭自启的设置，尚未执行清理。",
+      "en-US": "Could not save the startup preference. Cleanup has not started.",
+      "ja-JP": "自動起動設定を保存できませんでした。解除は開始していません。"
+    },
+    "cleanup.startup_failed": {
+      "zh-CN": "设置已保存，但启动入口移除失败，请重试。",
+      "en-US": "Settings saved, but the startup entry could not be removed. Please retry.",
+      "ja-JP": "設定は保存されましたが起動項目を削除できませんでした。再試行してください。"
+    },
+    "cleanup.logs_failed": {
+      "zh-CN": "系统入口已清理，但部分日志无法删除。可重试或保留剩余日志并退出。",
+      "en-US": "System integration removed, but some logs could not be deleted. Retry or keep the remaining logs and exit.",
+      "ja-JP": "システム連携は解除しましたが、一部のログを削除できませんでした。再試行するか残りを保持して終了してください。"
+    },
+    "cleanup.failed": {
+      "zh-CN": "无法完成清理，请检查后重试。",
+      "en-US": "Could not complete cleanup. Please check and retry.",
+      "ja-JP": "解除を完了できませんでした。確認して再試行してください。"
+    },
     "dialog.ok": {
       "zh-CN": "确定",
       "en-US": "OK",

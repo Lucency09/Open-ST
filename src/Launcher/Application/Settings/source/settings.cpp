@@ -178,22 +178,20 @@ class SettingsState final
     // 按动态 key 读取字符串，用户文档没有合法值时查询默认文档。
     std::optional<std::string> String(std::string_view key) noexcept
     {
-        return this->ReadValue<std::string>(key, [](const nlohmann::json& value)
-                                            { return value.is_string(); });
+        return this->ReadValue<std::string>(key, [](const nlohmann::json& value) { return value.is_string(); });
     }
 
     // 按动态 key 读取布尔值，用户文档没有合法值时查询默认文档。
     std::optional<bool> Boolean(std::string_view key) noexcept
     {
-        return this->ReadValue<bool>(key, [](const nlohmann::json& value)
-                                     { return value.is_boolean(); });
+        return this->ReadValue<bool>(key, [](const nlohmann::json& value) { return value.is_boolean(); });
     }
 
     // 按动态 key 读取有符号整数，用户文档没有合法值时查询默认文档。
     std::optional<std::int64_t> Integer(std::string_view key) noexcept
     {
-        return this->ReadValue<std::int64_t>(key, [](const nlohmann::json& value)
-                                             { return value.is_number_integer(); });
+        return this->ReadValue<std::int64_t>(key,
+                                             [](const nlohmann::json& value) { return value.is_number_integer(); });
     }
 
     // 更新动态字符串 key；编辑写入会先检查外部变化并保留未知字段。
@@ -279,8 +277,7 @@ class SettingsState final
 
     // 从业务读取内容中提取指定类型的动态 key，并验证设置外层协议。
     template <typename Value, typename Predicate>
-    static std::optional<Value> SettingsValue(const nlohmann::json& document,
-                                             std::string_view key, Predicate predicate)
+    static std::optional<Value> SettingsValue(const nlohmann::json& document, std::string_view key, Predicate predicate)
     {
         if (!IsSettingsDocument(document))
         {
@@ -439,5 +436,44 @@ bool SetBoolSetting(std::string_view key, bool value) noexcept
 bool SetIntegerSetting(std::string_view key, std::int64_t value) noexcept
 {
     return GetSettingsState().SetInteger(key, value);
+}
+// 启动前只读用户语言，用户值无效时回退资源默认值。
+std::optional<std::string> ReadStartupLanguage(const std::filesystem::path& applicationDirectory) noexcept
+{
+    try
+    {
+        if (applicationDirectory.empty())
+            return std::nullopt;
+        for (const std::filesystem::path& path : {applicationDirectory / L"data" / L"settings.json",
+                                                  applicationDirectory / L"resources" / L"default_settings.json"})
+        {
+            JsonFileHandle file = JsonFileManager::Instance().GetFile(
+                path.filename() == L"settings.json" ? USER_SETTINGS_CARD_NAME : DEFAULT_SETTINGS_CARD_NAME, path);
+            nlohmann::json document;
+            if (!file.Read(document) || !IsSettingsDocument(document))
+                continue;
+            const nlohmann::json& settings = document.at("settings");
+            const auto value = settings.find("ui.language");
+            if (value != settings.end() && value->is_string() && !value->get_ref<const std::string&>().empty())
+                return value->get<std::string>();
+        }
+    }
+    catch (...)
+    {
+    }
+    return std::nullopt;
+}
+
+// 正式入口使用当前 EXE 所在目录，不依赖工作目录。
+std::optional<std::string> ReadStartupLanguage() noexcept
+{
+    try
+    {
+        return ReadStartupLanguage(ExecutableDirectory());
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
 }
 } // namespace open_st

@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <welcome_window.h>
 #include <windows.h>
 
 namespace
@@ -38,6 +39,14 @@ BOOL CALLBACK FindControl(HWND control, LPARAM parameter)
     return TRUE;
 }
 
+// 只搜索当前测试线程的欢迎窗口，避免并行测试干扰其他进程。
+HWND FindWelcomeWindow()
+{
+    ControlSearch search{L"OpenST.WindowRenderer", L"welcome.title", nullptr};
+    EnumThreadWindows(GetCurrentThreadId(), FindControl, reinterpret_cast<LPARAM>(&search));
+    return search.found;
+}
+
 class SettingsWindowTest : public testing::Test
 {
   protected:
@@ -55,8 +64,12 @@ class SettingsWindowTest : public testing::Test
         std::filesystem::create_directories(this->root_ / "data");
         std::filesystem::copy_file(OPEN_ST_SETTINGS_LAYOUT_PATH, this->root_ / "resources/setting_windows.json",
                                    std::filesystem::copy_options::overwrite_existing);
-        this->Write("resources/default_settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
-        this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
+        this->Write(
+            "resources/default_settings.json",
+            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
+        this->Write(
+            "data/settings.json",
+            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
         ASSERT_TRUE(open_st::InitializeSettings(this->root_));
         open_st::SettingsWindowTestAccess::SetConfirmation(this->window_,
                                                            [this]()
@@ -95,6 +108,8 @@ class SettingsWindowTest : public testing::Test
     {
         open_st::SettingsWindowCallbacks callbacks;
         callbacks.text = [this](std::string_view key) { return this->Text(key); };
+        callbacks.startupApplied = [](bool) { return true; };
+        callbacks.startupStatus = []() { return L"startup status"; };
         callbacks.currentLanguage = [this]() { return this->appliedLanguage_; };
         callbacks.availableLanguages = [this]()
         {
@@ -196,6 +211,14 @@ class SettingsWindowTest : public testing::Test
         (void)SendMessageW(GetParent(combo), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(combo), CBN_DROPDOWN),
                            reinterpret_cast<LPARAM>(combo));
         this->Pump();
+    }
+
+    // 在独立 CTest 进程中显式建立线程消息队列后投递自动交互。
+    bool QueueWelcomeMessage(UINT message)
+    {
+        MSG existing{};
+        (void)PeekMessageW(&existing, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+        return PostThreadMessageW(GetCurrentThreadId(), message, 0, 0) != FALSE;
     }
 
     std::filesystem::path root_;
@@ -422,6 +445,217 @@ TEST_F(SettingsWindowTest, close_inside_application_callback_is_deferred)
     this->Click("settings.apply");
     EXPECT_EQ(this->appliedCount_, 1);
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
+    EXPECT_FALSE(this->window_.IsOpen());
+}
+// 自启失败留下重试目标，语言成功后不重复调用，重试拒绝覆盖外部改变。
+TEST_F(SettingsWindowTest, startup_failure_retries_without_reapplying_language)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    int startupCalls = 0;
+    callbacks.startupApplied = [&startupCalls](bool enabled)
+    {
+        EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), enabled);
+        ++startupCalls;
+        return startupCalls > 1;
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->Select(L"zh-CN");
+    this->Click("settings.startup.label");
+    this->Click("settings.apply");
+    EXPECT_EQ(startupCalls, 1);
+    EXPECT_EQ(this->appliedCount_, 1);
+    EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), false);
+    this->Click("settings.apply");
+    EXPECT_EQ(startupCalls, 2);
+    EXPECT_EQ(this->appliedCount_, 1);
+    this->Click("settings.ok");
+    EXPECT_FALSE(this->window_.IsOpen());
+}
+
+// 显式修复不需要制造草稿变化，也不保存其他待编辑字段。
+TEST_F(SettingsWindowTest, repair_applies_saved_startup_without_committing_language_draft)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    int startupCalls = 0;
+    callbacks.startupApplied = [&startupCalls](bool enabled)
+    {
+        EXPECT_TRUE(enabled);
+        ++startupCalls;
+        return true;
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->Select(L"zh-CN");
+    this->Click("settings.startup.repair");
+    EXPECT_EQ(startupCalls, 1);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(this->appliedCount_, 0);
+}
+
+// 欢迎关闭完全不保存，自动用例通过线程消息驱动真实模态窗口。
+TEST_F(SettingsWindowTest, welcome_cancel_leaves_saved_intent_unchanged)
+{
+    open_st::WelcomeWindow welcome;
+    int startupCalls = 0;
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    callbacks.startupApplied = [&startupCalls](bool)
+    {
+        ++startupCalls;
+        return true;
+    };
+    ASSERT_TRUE(this->QueueWelcomeMessage(WM_APP + 91));
+    const bool completed = welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                                             [](MSG& message)
+                                             {
+                                                 if (message.message != WM_APP + 91)
+                                                     return false;
+                                                 const HWND window = FindWelcomeWindow();
+                                                 EXPECT_NE(window, nullptr);
+                                                 if (window)
+                                                     SendMessageW(window, WM_CLOSE, 0, 0);
+                                                 else
+                                                     PostQuitMessage(99);
+                                                 return true;
+                                             });
+    EXPECT_FALSE(completed);
+    EXPECT_FALSE(welcome.Failed());
+    EXPECT_EQ(startupCalls, 0);
+    EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), false);
+}
+
+// 欢迎先保存确认标记和意图，系统失败后再次确认只重试系统。
+TEST_F(SettingsWindowTest, welcome_saves_before_system_effect_and_retries)
+{
+    open_st::WelcomeWindow welcome;
+    int startupCalls = 0;
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    callbacks.startupApplied = [&startupCalls](bool enabled)
+    {
+        EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), true);
+        EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), enabled);
+        return ++startupCalls == 2;
+    };
+    ASSERT_TRUE(this->QueueWelcomeMessage(WM_APP + 92));
+    int clicks = 0;
+    const bool completed =
+        welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                          [&clicks](MSG& message)
+                          {
+                              if (message.message != WM_APP + 92)
+                                  return false;
+                              const HWND window = FindWelcomeWindow();
+                              ControlSearch search{L"Button", L"welcome.confirm", nullptr};
+                              EnumChildWindows(window, FindControl, reinterpret_cast<LPARAM>(&search));
+                              EXPECT_NE(search.found, nullptr);
+                              if (!search.found)
+                              {
+                                  PostQuitMessage(99);
+                                  return true;
+                              }
+                              SendMessageW(search.found, BM_CLICK, 0, 0);
+                              if (++clicks == 1)
+                                  PostThreadMessageW(GetCurrentThreadId(), WM_APP + 92, 0, 0);
+                              return true;
+                          });
+    EXPECT_TRUE(completed);
+    EXPECT_EQ(startupCalls, 2);
+}
+// 外部改写已保存意图后，旧窗口的待生效目标不能覆盖新值。
+TEST_F(SettingsWindowTest, startup_retry_rejects_external_saved_choice)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    int calls = 0;
+    callbacks.startupApplied = [&calls](bool)
+    {
+        ++calls;
+        return false;
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->Click("settings.startup.label");
+    this->Click("settings.apply");
+    ASSERT_EQ(calls, 1);
+    ASSERT_TRUE(open_st::SetBoolSetting("startup.enabled", true));
+    this->Click("settings.apply");
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
+}
+
+// 已显示状态保存为本地化键，外部切换语言后不保留旧译文。
+TEST_F(SettingsWindowTest, refresh_texts_relocalizes_existing_status)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    callbacks.text = [this](std::string_view key)
+    {
+        if (key == "settings.saved")
+        {
+            const std::string text = std::string(key) + ":" + this->appliedLanguage_;
+            return std::wstring(text.begin(), text.end());
+        }
+        return this->Text(key);
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->Select(L"zh-CN");
+    this->Click("settings.apply");
+    ASSERT_NE(this->Control(L"Static", L"settings.saved:zh-CN"), nullptr);
+    this->appliedLanguage_ = "ja-JP";
+    this->window_.RefreshTexts();
+    EXPECT_NE(this->Control(L"Static", L"settings.saved:ja-JP"), nullptr);
+    EXPECT_EQ(this->Control(L"Static", L"settings.saved:zh-CN"), nullptr);
+}
+// 无效创建参数属于故障，不能当作正常取消静默忽略。
+TEST_F(SettingsWindowTest, welcome_reports_creation_failure)
+{
+    open_st::WelcomeWindow welcome;
+    EXPECT_FALSE(welcome.ShowModal(nullptr, this->Callbacks()));
+    EXPECT_TRUE(welcome.Failed());
+    EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), false);
+}
+// 系统操作失败后的退出保留已确认标记，下次启动不会再次首次欢迎。
+TEST_F(SettingsWindowTest, welcome_system_failure_exit_preserves_completion)
+{
+    open_st::WelcomeWindow welcome;
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    callbacks.startupApplied = [](bool) { return false; };
+    ASSERT_TRUE(this->QueueWelcomeMessage(WM_APP + 93));
+    EXPECT_FALSE(welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                                   [](MSG& message)
+                                   {
+                                       if (message.message != WM_APP + 93)
+                                           return false;
+                                       const HWND window = FindWelcomeWindow();
+                                       ControlSearch search{L"Button", L"welcome.confirm", nullptr};
+                                       EnumChildWindows(window, FindControl, reinterpret_cast<LPARAM>(&search));
+                                       EXPECT_NE(search.found, nullptr);
+                                       if (!search.found)
+                                       {
+                                           PostQuitMessage(99);
+                                           return true;
+                                       }
+                                       SendMessageW(search.found, BM_CLICK, 0, 0);
+                                       SendMessageW(window, WM_CLOSE, 0, 0);
+                                       return true;
+                                   }));
+    EXPECT_FALSE(welcome.Failed());
+    EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), true);
+    EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
+}
+// 忙状态通知即使抛出异常仍成对恢复，副作用失败后窗口可继续交互。
+TEST_F(SettingsWindowTest, busy_notifications_are_paired_after_failure)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    std::vector<bool> states;
+    callbacks.busyChanged = [&states](bool busy)
+    {
+        states.push_back(busy);
+        throw std::runtime_error("notification failure");
+    };
+    callbacks.startupApplied = [](bool) -> bool { throw std::runtime_error("system failure"); };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->Click("settings.startup.label");
+    this->Click("settings.apply");
+    EXPECT_EQ(states, (std::vector<bool>{true, false}));
+    EXPECT_TRUE(this->window_.IsOpen());
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->Click("settings.cancel");
     EXPECT_FALSE(this->window_.IsOpen());
 }
 } // namespace

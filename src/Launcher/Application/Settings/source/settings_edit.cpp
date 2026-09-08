@@ -1,6 +1,7 @@
 #include "settings_edit.h"
 #include "settings_internal.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace
@@ -32,7 +33,7 @@ bool SameRaw(const std::optional<nlohmann::json>& left, const std::optional<nloh
 namespace open_st
 {
 // 基线准备全部成功后才交换会话，避免读取失败留下部分注册字段。
-bool SettingsEditSession::Open(const std::vector<std::string>& keys) noexcept
+bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys) noexcept
 {
     try
     {
@@ -48,8 +49,11 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys) noexcept
             return false;
         }
         const bool defaultsValid = candidate.defaultFile_.Read(defaults) && IsEditableDocument(defaults);
-        for (const std::string& key : keys)
+        std::vector<std::string> allKeys = keys;
+        allKeys.insert(allKeys.end(), boolKeys.begin(), boolKeys.end());
+        for (const std::string& key : allKeys)
         {
+            const bool boolean = std::find(boolKeys.begin(), boolKeys.end(), key) != boolKeys.end();
             if (key.empty() || candidate.fields_.contains(key))
             {
                 return false;
@@ -57,15 +61,15 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys) noexcept
             Field field;
             field.raw = RawField(user, key);
             std::optional<nlohmann::json> effective = field.raw;
-            if (!effective.has_value() || !effective->is_string())
+            if (!effective.has_value() || (boolean ? !effective->is_boolean() : !effective->is_string()))
             {
                 effective = defaultsValid ? RawField(defaults, key) : std::nullopt;
             }
-            if (!effective.has_value() || !effective->is_string())
+            if (!effective.has_value() || (boolean ? !effective->is_boolean() : !effective->is_string()))
             {
                 return false;
             }
-            field.baseline = effective->get<std::string>();
+            field.baseline = *effective;
             field.draft = field.baseline;
             candidate.fields_.emplace(key, std::move(field));
         }
@@ -85,7 +89,9 @@ std::optional<std::string> SettingsEditSession::ReadString(std::string_view key)
     try
     {
         const auto field = this->fields_.find(key);
-        return field == this->fields_.end() ? std::nullopt : std::optional<std::string>(field->second.draft);
+        return field == this->fields_.end() || !field->second.draft.is_string()
+                   ? std::nullopt
+                   : std::optional<std::string>(field->second.draft.get<std::string>());
     }
     catch (...)
     {
@@ -99,11 +105,11 @@ bool SettingsEditSession::ChangeString(std::string_view key, std::string_view va
     try
     {
         const auto field = this->fields_.find(key);
-        if (!this->ready_ || field == this->fields_.end())
+        if (!this->ready_ || field == this->fields_.end() || !field->second.draft.is_string())
         {
             return false;
         }
-        std::string candidate(value);
+        nlohmann::json candidate = std::string(value);
         field->second.draft.swap(candidate);
         return true;
     }
@@ -128,11 +134,11 @@ bool SettingsEditSession::RestoreDefaults(const std::vector<std::string>& keys) 
         {
             const auto field = candidate.find(key);
             const std::optional<nlohmann::json> value = RawField(defaults, key);
-            if (field == candidate.end() || !value.has_value() || !value->is_string())
+            if (field == candidate.end() || !value.has_value() || value->type() != field->second.baseline.type())
             {
                 return false;
             }
-            field->second.draft = value->get<std::string>();
+            field->second.draft = *value;
         }
         this->fields_.swap(candidate);
         return true;
@@ -157,7 +163,7 @@ bool SettingsEditSession::IsDirty() const noexcept
 }
 
 // 预先准备成功后的基线，文件提交成功后只交换内存，不再进行可能失败的分配。
-SettingsCommitResult SettingsEditSession::Commit() noexcept
+SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>& requiredKeys) noexcept
 {
     try
     {
@@ -165,14 +171,26 @@ SettingsCommitResult SettingsEditSession::Commit() noexcept
         {
             return SettingsCommitResult::ReadFailed;
         }
-        if (!this->IsDirty())
+        for (const std::string& key : requiredKeys)
+        {
+            if (!this->fields_.contains(key))
+                return SettingsCommitResult::InvalidField;
+        }
+        const auto needsWrite = [&requiredKeys](const std::string& key, const Field& field)
+        {
+            return field.draft != field.baseline ||
+                   (std::find(requiredKeys.begin(), requiredKeys.end(), key) != requiredKeys.end() &&
+                    (!field.raw.has_value() || *field.raw != field.draft || field.raw->type() != field.draft.type()));
+        };
+        if (!std::any_of(this->fields_.begin(), this->fields_.end(),
+                         [&needsWrite](const auto& entry) { return needsWrite(entry.first, entry.second); }))
         {
             return SettingsCommitResult::Unchanged;
         }
         auto committed = this->fields_;
         for (auto& [key, field] : committed)
         {
-            if (field.draft != field.baseline)
+            if (needsWrite(key, field))
             {
                 field.raw = field.draft;
                 field.baseline = field.draft;
@@ -180,7 +198,7 @@ SettingsCommitResult SettingsEditSession::Commit() noexcept
         }
         SettingsCommitResult failure = SettingsCommitResult::WriteFailed;
         const bool saved = this->userFile_.Write(
-            [this, &failure](std::optional<nlohmann::json>& document)
+            [this, &failure, &needsWrite](std::optional<nlohmann::json>& document)
             {
                 if (!document.has_value() || !IsEditableDocument(*document))
                 {
@@ -189,7 +207,7 @@ SettingsCommitResult SettingsEditSession::Commit() noexcept
                 }
                 for (const auto& [key, field] : this->fields_)
                 {
-                    if (field.draft == field.baseline)
+                    if (!needsWrite(key, field))
                     {
                         continue;
                     }
@@ -203,7 +221,7 @@ SettingsCommitResult SettingsEditSession::Commit() noexcept
                 }
                 for (const auto& [key, field] : this->fields_)
                 {
-                    if (field.draft != field.baseline)
+                    if (needsWrite(key, field))
                     {
                         (*document)["settings"][key] = field.draft;
                     }
@@ -246,5 +264,50 @@ SettingsCommitResult SettingsEditSession::VerifySavedString(std::string_view key
     {
         return SettingsCommitResult::ReadFailed;
     }
+}
+// 布尔读取保持类型严格，缺失不自动当作 false。
+std::optional<bool> SettingsEditSession::ReadBool(std::string_view key) const noexcept
+{
+    const auto field = this->fields_.find(key);
+    return field == this->fields_.end() || !field->second.draft.is_boolean()
+               ? std::nullopt
+               : std::optional<bool>(field->second.draft.get<bool>());
+}
+
+// 布尔字段只接受布尔修改。
+bool SettingsEditSession::ChangeBool(std::string_view key, bool value) noexcept
+{
+    const auto field = this->fields_.find(key);
+    if (!this->ready_ || field == this->fields_.end() || !field->second.draft.is_boolean())
+        return false;
+    field->second.draft = value;
+    return true;
+}
+
+// 重试前读取原始文件，默认值不能冒充已保存意图。
+SettingsCommitResult SettingsEditSession::VerifySavedBool(std::string_view key, bool value) const noexcept
+{
+    try
+    {
+        if (!this->ready_ || !this->fields_.contains(key))
+            return SettingsCommitResult::InvalidField;
+        nlohmann::json document;
+        if (!this->userFile_.Read(document) || !IsEditableDocument(document))
+            return SettingsCommitResult::ReadFailed;
+        const std::optional<nlohmann::json> persisted = RawField(document, key);
+        return persisted.has_value() && persisted->is_boolean() && persisted->get<bool>() == value
+                   ? SettingsCommitResult::Unchanged
+                   : SettingsCommitResult::Conflict;
+    }
+    catch (...)
+    {
+        return SettingsCommitResult::ReadFailed;
+    }
+}
+// 检查字段有效草稿是否偏离打开时的有效值。
+bool SettingsEditSession::IsDirty(std::string_view key) const noexcept
+{
+    const auto field = this->fields_.find(key);
+    return field != this->fields_.end() && field->second.draft != field->second.baseline;
 }
 } // namespace open_st

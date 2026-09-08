@@ -31,6 +31,9 @@ struct WindowRenderer::Impl
         std::vector<RendererOption> options;
         std::function<RendererStringResult()> read;
         std::function<RendererChangeResult(std::string_view)> change;
+        std::function<RendererBoolResult()> readBool;
+        std::function<RendererChangeResult(bool)> changeBool;
+        bool checked{};
         std::function<RendererOptionsResult()> query;
         std::function<void()> action;
     };
@@ -158,6 +161,8 @@ struct WindowRenderer::Impl
         {
             if (control.node->type == NodeType::Select && (!control.read || !control.change || !control.query))
                 return {"field_binding_missing", {}, id};
+            if (control.node->type == NodeType::Checkbox && (!control.readBool || !control.changeBool))
+                return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Button && !control.action)
                 return {"action_missing", {}, id};
         }
@@ -260,6 +265,9 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     if (node.width == 0)
         actualWidth = std::min(width, std::max(this->Scale(80), this->TextWidth(control.text) + this->Scale(24)));
     int height = this->TextHeight(control.text, actualWidth);
+    if (node.type == NodeType::Checkbox)
+        height = std::max(this->Scale(24),
+                          this->TextHeight(control.text, std::max(1, actualWidth - this->Scale(24))) + this->Scale(4));
     if (node.type == NodeType::Button)
         height = std::max(this->Scale(28), height + this->Scale(10));
     if (place)
@@ -428,6 +436,16 @@ bool WindowRenderer::Impl::CreateControls()
             if (!control.label || !control.errorWindow)
                 return false;
         }
+        else if (node.type == NodeType::Checkbox)
+        {
+            control.window = CreateWindowExW(0, L"BUTTON", control.text.c_str(),
+                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX | BS_MULTILINE, 0, 0,
+                                             1, 1, parent, id, instance, nullptr);
+            control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
+                                                  parent, nullptr, instance, nullptr);
+            if (!control.errorWindow)
+                return false;
+        }
         else
         {
             const bool button = node.type == NodeType::Button;
@@ -451,7 +469,7 @@ bool WindowRenderer::Impl::CreateControls()
     this->RefreshFont();
     for (auto& [id, control] : this->controls)
     {
-        if (control.node->type == NodeType::Select)
+        if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox)
         {
             const RendererResult result = this->RefreshControl(control);
             if (!result)
@@ -467,6 +485,24 @@ bool WindowRenderer::Impl::CreateControls()
 // 重新填充下拉框时不改变草稿，无匹配值保持无选择并展示宿主错误。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
+    if (control.node->type == NodeType::Checkbox)
+    {
+        try
+        {
+            const RendererBoolResult value = control.readBool();
+            if (value.success)
+                control.checked = value.value;
+            SendMessageW(control.window, BM_SETCHECK, control.checked ? BST_CHECKED : BST_UNCHECKED, 0);
+            control.error = value.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            return {};
+        }
+        catch (...)
+        {
+            this->Report({"callback_failed", {}, control.node->id});
+            return {"callback_failed", {}, control.node->id};
+        }
+    }
     RendererOptionsResult options;
     RendererStringResult value;
     try
@@ -531,6 +567,30 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
         if (control.node->type == NodeType::Button && HIWORD(wParam) == BN_CLICKED)
         {
             this->Invoke(id);
+            return;
+        }
+        if (control.node->type == NodeType::Checkbox && HIWORD(wParam) == BN_CLICKED)
+        {
+            const bool previous = control.checked;
+            const bool value = SendMessageW(control.window, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            RendererChangeResult result;
+            bool callbackFailed = false;
+            try
+            {
+                result = control.changeBool(value);
+            }
+            catch (...)
+            {
+                result.accepted = false;
+                callbackFailed = true;
+            }
+            control.checked = result.accepted ? value : previous;
+            SendMessageW(control.window, BM_SETCHECK, control.checked ? BST_CHECKED : BST_UNCHECKED, 0);
+            control.error = result.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            if (callbackFailed)
+                this->Report({"callback_failed", {}, id});
+            this->Arrange();
             return;
         }
         if (control.node->type != NodeType::Select)
@@ -814,6 +874,23 @@ RendererResult WindowRenderer::BindString(std::string_view id, std::function<Ren
     return {};
 }
 
+// 布尔值绑定仅属于复选框，不需要选项查询回调。
+RendererResult WindowRenderer::BindBool(std::string_view id, std::function<RendererBoolResult()> read,
+                                        std::function<RendererChangeResult(bool)> change)
+{
+    Impl::Control* control{};
+    const RendererResult found = this->impl_->Find(id, NodeType::Checkbox, control);
+    if (!found)
+        return found;
+    if (!read || !change)
+        return {"empty_callback", {}, std::string(id)};
+    if (control->readBool || control->changeBool)
+        return {"duplicate_binding", {}, std::string(id)};
+    control->readBool = std::move(read);
+    control->changeBool = std::move(change);
+    return {};
+}
+
 // 动态选项来源与字段回调分别校验和注册。
 RendererResult WindowRenderer::BindOptions(std::string_view id, std::function<RendererOptionsResult()> query)
 {
@@ -1062,7 +1139,7 @@ RendererResult WindowRenderer::RefreshValues()
     {
         for (auto& [id, control] : this->impl_->controls)
         {
-            if (control.node->type != NodeType::Select)
+            if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox)
                 continue;
             const RendererResult result = this->impl_->RefreshControl(control);
             if (!result)
@@ -1174,7 +1251,7 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
     const auto found = this->impl_->controls.find(id);
     if (found == this->impl_->controls.end())
         return {"unknown_id", {}, std::string(id)};
-    if (found->second.node->type != NodeType::Select)
+    if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox)
         return {"wrong_control_type", {}, std::string(id)};
     found->second.error = std::move(text);
     if (found->second.errorWindow != nullptr)

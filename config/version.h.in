@@ -1,7 +1,7 @@
 #pragma once
 
-// CMake configure_file 在构建目录生成最终头文件；源码不直接维护重复版本号。
-#define OPEN_ST_VERSION "@PROJECT_VERSION@"
+// CMake 生成带 v 前缀的界面版本；数字版本仍由 PROJECT_VERSION 统一维护。
+#define OPEN_ST_VERSION "v@PROJECT_VERSION@"
 
 // 项目主页尚未确定时允许为空，界面应显示“尚未配置”而不是静默访问占位网址。
 #define OPEN_ST_PROJECT_HOME ""

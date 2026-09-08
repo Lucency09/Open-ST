@@ -4,10 +4,10 @@
 #include <algorithm>
 #include <log.h>
 #include <optional>
-#include <window_renderer.h>
 #include <settings_window.h>
 #include <stdexcept>
 #include <utility>
+#include <window_renderer.h>
 
 namespace open_st
 {
@@ -24,7 +24,7 @@ class SettingsWindow::Impl final
             return true;
         }
         if (instance == nullptr || !callbacks.text || !callbacks.currentLanguage || !callbacks.availableLanguages ||
-            !callbacks.languageApplied)
+            !callbacks.languageApplied || !callbacks.startupApplied)
         {
             return false;
         }
@@ -37,7 +37,9 @@ class SettingsWindow::Impl final
         }
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
-        this->ready_ = this->editSession_.Open({"ui.language"});
+        this->ready_ = this->editSession_.Open({"ui.language"}, this->callbacks_.startupApplied
+                                                                    ? std::vector<std::string>{"startup.enabled"}
+                                                                    : std::vector<std::string>{});
         this->Require(this->renderer_->SetErrorHandler(
             [this](const RendererResult& result)
             {
@@ -46,9 +48,15 @@ class SettingsWindow::Impl final
                 const std::wstring message = this->Text(
                     result.code == "value_unavailable" ? "settings.language.unavailable" : "settings.operation_failed");
                 if (result.id == "languageSelector")
+                {
+                    this->languageErrorKey_ = result.code == "value_unavailable" ? "settings.language.unavailable"
+                                                                                 : "settings.operation_failed";
                     this->Require(this->renderer_->SetFieldError(result.id, message));
+                }
                 else
-                    this->Require(this->renderer_->SetStatus(message));
+                    this->SetStatus(result.code == "value_unavailable" ? "settings.language.unavailable"
+                                    : this->pendingStartup_            ? "settings.startup.apply_failed"
+                                                                       : "settings.operation_failed");
             }));
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
         this->Require(this->renderer_->BindString(
@@ -60,11 +68,56 @@ class SettingsWindow::Impl final
                 {
                     return RendererChangeResult{false, this->Text("settings.operation_failed")};
                 }
+                this->languageErrorKey_.clear();
                 this->SetStatus({});
                 this->UpdateButtons();
                 return RendererChangeResult{};
             }));
+        if (this->callbacks_.startupApplied)
+        {
+            this->Require(this->renderer_->BindBool(
+                "startupEnabled", [this]()
+                { return RendererBoolResult{true, this->editSession_.ReadBool("startup.enabled").value_or(true), {}}; },
+                [this](bool value)
+                {
+                    if (!this->ready_ || this->busy_ || !this->editSession_.ChangeBool("startup.enabled", value))
+                        return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                    this->SetStatus({});
+                    this->UpdateButtons();
+                    return RendererChangeResult{};
+                }));
+        }
         this->Require(this->renderer_->BindOptions("languageSelector", [this]() { return this->QueryLanguages(); }));
+        this->Require(this->renderer_->BindAction(
+            "startupRepairButton",
+            [this]()
+            {
+                if (this->busy_ || !this->ready_)
+                    return;
+                this->RunBusy(
+                    [this]()
+                    {
+                        const std::optional<bool> target = this->editSession_.ReadBool("startup.enabled");
+                        if (!target || this->editSession_.IsDirty("startup.enabled"))
+                        {
+                            this->SetStatus("settings.startup.save_first");
+                            return;
+                        }
+                        const SettingsCommitResult verified =
+                            this->editSession_.VerifySavedBool("startup.enabled", *target);
+                        if (verified != SettingsCommitResult::Unchanged)
+                        {
+                            this->ReportCommitFailure(verified);
+                            return;
+                        }
+                        this->pendingStartup_ = target;
+                        const bool applied = this->callbacks_.startupApplied(*target);
+                        if (applied)
+                            this->pendingStartup_.reset();
+                        this->RefreshTexts();
+                        this->SetStatus(applied ? "settings.saved" : "settings.startup.apply_failed");
+                    });
+            }));
         this->Require(this->renderer_->BindAction("applyButton", [this]() { this->Apply(false); }));
         this->Require(this->renderer_->BindAction("acceptButton", [this]() { this->Apply(true); }));
         this->Require(this->renderer_->BindAction("cancelButton", [this]() { this->Cancel(); }));
@@ -98,6 +151,9 @@ class SettingsWindow::Impl final
         this->editSession_ = {};
         this->callbacks_ = {};
         this->pendingLanguage_.reset();
+        this->pendingStartup_.reset();
+        this->statusKey_.clear();
+        this->languageErrorKey_.clear();
         this->ready_ = false;
         this->busy_ = false;
     }
@@ -134,6 +190,24 @@ class SettingsWindow::Impl final
         this->confirmation_ = std::move(confirmation);
     }
 
+    // 本地化切换后重新解析业务状态键，不缓存旧译文。
+    void RefreshTexts() noexcept
+    {
+        try
+        {
+            if (!this->IsOpen())
+                return;
+            this->Require(this->renderer_->RefreshTexts());
+            this->Require(this->renderer_->SetStatus(this->statusKey_.empty() ? L"" : this->Text(this->statusKey_)));
+            this->Require(this->renderer_->SetFieldError(
+                "languageSelector", this->languageErrorKey_.empty() ? L"" : this->Text(this->languageErrorKey_)));
+        }
+        catch (...)
+        {
+            OPEN_ST_LOG_ERROR("Settings text refresh failed.");
+        }
+    }
+
   private:
     // 记录结构化定位，不记录字段值。
     void Require(const RendererResult& result) const
@@ -148,12 +222,15 @@ class SettingsWindow::Impl final
     // 所有文字通过上级本地化回调取得。
     std::wstring Text(std::string_view key) const
     {
+        if (key == "settings.startup.status" && this->callbacks_.startupStatus)
+            return this->callbacks_.startupStatus();
         return this->callbacks_.text(key);
     }
 
     // 状态由宿主提供译文，Renderer 不理解业务。
     void SetStatus(std::string_view key)
     {
+        this->statusKey_ = key;
         this->Require(this->renderer_->SetStatus(key.empty() ? L"" : this->Text(key)));
     }
 
@@ -161,8 +238,12 @@ class SettingsWindow::Impl final
     void UpdateButtons()
     {
         this->Require(this->renderer_->SetEnabled("languageSelector", this->ready_));
-        this->Require(this->renderer_->SetEnabled(
-            "applyButton", this->ready_ && (this->editSession_.IsDirty() || this->pendingLanguage_.has_value())));
+        if (this->callbacks_.startupApplied)
+            this->Require(this->renderer_->SetEnabled("startupEnabled", this->ready_));
+        this->Require(this->renderer_->SetEnabled("applyButton", this->ready_ && (this->editSession_.IsDirty() ||
+                                                                                  this->pendingLanguage_.has_value() ||
+                                                                                  this->pendingStartup_.has_value())));
+        this->Require(this->renderer_->SetEnabled("startupRepairButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("restoreDefaultsButton", this->ready_));
     }
@@ -197,6 +278,7 @@ class SettingsWindow::Impl final
         const bool available = options.success && std::any_of(options.options.begin(), options.options.end(),
                                                               [language](const RendererOption& option)
                                                               { return option.value == language; });
+        this->languageErrorKey_ = available ? "" : "settings.language.unavailable";
         this->Require(this->renderer_->SetFieldError("languageSelector",
                                                      available ? L"" : this->Text("settings.language.unavailable")));
         if (!available)
@@ -220,7 +302,7 @@ class SettingsWindow::Impl final
         {
             return;
         }
-        if (!this->editSession_.IsDirty() && !this->pendingLanguage_.has_value())
+        if (!this->editSession_.IsDirty() && !this->pendingLanguage_.has_value() && !this->pendingStartup_.has_value())
         {
             if (closeWhenDone)
             {
@@ -236,40 +318,80 @@ class SettingsWindow::Impl final
                 {
                     return;
                 }
+                const bool languageChanged = this->editSession_.IsDirty("ui.language");
+                const bool startupChanged = this->editSession_.IsDirty("startup.enabled");
+                const std::optional<bool> startup = this->editSession_.ReadBool("startup.enabled");
                 if (this->editSession_.IsDirty())
                 {
-                    // 先分配待生效目标，写入成功后只交换对象。
-                    std::optional<std::string> pending = *language;
+                    std::optional<std::string> pendingLanguage = languageChanged ? language : this->pendingLanguage_;
+                    std::optional<bool> pendingStartup = startupChanged ? startup : this->pendingStartup_;
                     const SettingsCommitResult committed = this->editSession_.Commit();
                     if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
                     {
                         this->ReportCommitFailure(committed);
                         return;
                     }
-                    this->pendingLanguage_.swap(pending);
+                    this->pendingLanguage_.swap(pendingLanguage);
+                    this->pendingStartup_.swap(pendingStartup);
                 }
-                const SettingsCommitResult verified = this->editSession_.VerifySavedString("ui.language", *language);
-                if (verified != SettingsCommitResult::Unchanged)
+                bool languageApplied = true;
+                bool startupApplied = true;
+                SettingsCommitResult verificationFailure = SettingsCommitResult::Unchanged;
+                if (this->pendingLanguage_)
                 {
-                    this->ReportCommitFailure(verified);
-                    return;
+                    const SettingsCommitResult verified =
+                        this->editSession_.VerifySavedString("ui.language", *this->pendingLanguage_);
+                    if (verified != SettingsCommitResult::Unchanged)
+                    {
+                        verificationFailure = verified;
+                        languageApplied = false;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            languageApplied = this->callbacks_.languageApplied(*this->pendingLanguage_);
+                        }
+                        catch (...)
+                        {
+                            languageApplied = false;
+                        }
+                    }
+                    if (languageApplied)
+                        this->pendingLanguage_.reset();
                 }
-                bool applied = false;
-                try
+                if (this->pendingStartup_)
                 {
-                    applied = this->callbacks_.languageApplied(*language);
-                }
-                catch (...)
-                {
-                    OPEN_ST_LOG_ERROR("Saved settings language callback failed.");
-                }
-                if (applied)
-                {
-                    this->pendingLanguage_.reset();
+                    const SettingsCommitResult verified =
+                        this->editSession_.VerifySavedBool("startup.enabled", *this->pendingStartup_);
+                    if (verified != SettingsCommitResult::Unchanged)
+                    {
+                        verificationFailure = verified;
+                        startupApplied = false;
+                    }
+                    else
+                    {
+                        try
+                        {
+                            startupApplied = this->callbacks_.startupApplied(*this->pendingStartup_);
+                        }
+                        catch (...)
+                        {
+                            startupApplied = false;
+                        }
+                    }
+                    if (startupApplied)
+                        this->pendingStartup_.reset();
                 }
                 this->Require(this->renderer_->RefreshTexts());
-                this->SetStatus(applied ? "settings.saved" : "settings.language.apply_failed");
-                this->closeAfterBusy_ = this->closeAfterBusy_ || (applied && closeWhenDone);
+                if (verificationFailure != SettingsCommitResult::Unchanged)
+                    this->ReportCommitFailure(verificationFailure);
+                else
+                    this->SetStatus(!languageApplied && !startupApplied ? "settings.effects_failed"
+                                    : !languageApplied                  ? "settings.language.apply_failed"
+                                    : !startupApplied                   ? "settings.startup.apply_failed"
+                                                                        : "settings.saved");
+                this->closeAfterBusy_ = this->closeAfterBusy_ || (languageApplied && startupApplied && closeWhenDone);
             });
     }
 
@@ -302,7 +424,7 @@ class SettingsWindow::Impl final
                     return;
                 }
                 SettingsEditSession candidate = this->editSession_;
-                if (!candidate.RestoreDefaults({"ui.language"}))
+                if (!candidate.RestoreDefaults({"ui.language", "startup.enabled"}))
                 {
                     this->SetStatus("settings.defaults_failed");
                     return;
@@ -336,7 +458,7 @@ class SettingsWindow::Impl final
                 {
                     return;
                 }
-                this->ready_ = this->editSession_.Open({"ui.language"});
+                this->ready_ = this->editSession_.Open({"ui.language"}, {"startup.enabled"});
                 if (!this->ready_)
                 {
                     this->SetStatus("settings.edit_load_failed");
@@ -347,10 +469,30 @@ class SettingsWindow::Impl final
                 {
                     this->pendingLanguage_.reset();
                 }
+                if (this->pendingStartup_ && this->editSession_.ReadBool("startup.enabled") != this->pendingStartup_)
+                    this->pendingStartup_.reset();
                 this->Require(this->renderer_->RefreshValues());
+                this->Require(this->renderer_->RefreshTexts());
+                this->languageErrorKey_.clear();
                 this->Require(this->renderer_->SetFieldError("languageSelector", {}));
-                this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed" : "");
+                this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
+                                : this->pendingStartup_            ? "settings.startup.apply_failed"
+                                                                   : "");
             });
+    }
+
+    // 通知只提供状态，不允许宿主异常打断交互恢复。
+    void NotifyBusy(bool busy) noexcept
+    {
+        try
+        {
+            if (this->callbacks_.busyChanged)
+                this->callbacks_.busyChanged(busy);
+        }
+        catch (...)
+        {
+            OPEN_ST_LOG_ERROR("Settings busy notification failed.");
+        }
     }
 
     // 忙状态覆盖确认及应用回调，异常恢复交互，关闭延迟到当前分派结束。
@@ -358,6 +500,7 @@ class SettingsWindow::Impl final
     {
         this->busy_ = true;
         this->closeAfterBusy_ = false;
+        this->NotifyBusy(true);
         try
         {
             this->Require(this->renderer_->SetBusy(true));
@@ -370,6 +513,7 @@ class SettingsWindow::Impl final
             try
             {
                 this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
+                                : this->pendingStartup_            ? "settings.startup.apply_failed"
                                                                    : "settings.operation_failed");
             }
             catch (...)
@@ -378,6 +522,7 @@ class SettingsWindow::Impl final
             }
         }
         this->busy_ = false;
+        this->NotifyBusy(false);
         this->Require(this->renderer_->SetBusy(false));
         this->UpdateButtons();
         if (this->closeAfterBusy_)
@@ -399,6 +544,9 @@ class SettingsWindow::Impl final
     SettingsWindowCallbacks callbacks_;
     std::unique_ptr<WindowRenderer> renderer_;
     std::optional<std::string> pendingLanguage_;
+    std::optional<bool> pendingStartup_;
+    std::string statusKey_;
+    std::string languageErrorKey_;
     std::function<bool()> confirmation_;
     bool ready_{};
     bool busy_{};
@@ -460,5 +608,15 @@ HWND SettingsWindowTestAccess::NativeHandle(const SettingsWindow& window) noexce
 void SettingsWindowTestAccess::SetConfirmation(SettingsWindow& window, std::function<bool()> confirmation)
 {
     window.impl_->SetConfirmation(std::move(confirmation));
+}
+// 由上级在语言资源变化后刷新已打开的设置窗口。
+void SettingsWindow::RefreshTexts() noexcept
+{
+    this->impl_->RefreshTexts();
+}
+// 宿主借用句柄使系统模态窗口正确禁用其设置 owner。
+HWND SettingsWindow::NativeHandle() const noexcept
+{
+    return this->impl_->NativeHandle();
 }
 } // namespace open_st
