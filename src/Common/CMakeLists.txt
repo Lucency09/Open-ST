@@ -1,4 +1,6 @@
 # common 提供不依赖产品模块的公共能力，包括同步日志和按需加载的 JSON 文件缓存。
+add_subdirectory(WindowRenderer)
+
 add_library(open_st_common STATIC)
 add_library(OpenST::Common ALIAS open_st_common)
 

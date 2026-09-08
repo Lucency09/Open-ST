@@ -21,8 +21,8 @@ struct SettingsWindowCallbacks final
     std::function<std::string()> currentLanguage;
     // 每次展开下拉框时重新查询资源实际提供的语言代码。
     std::function<std::vector<std::string>()> availableLanguages;
-    // 仅持久化成功后通知上级应用语言；参数只在回调期间有效。
-    std::function<void(std::string_view)> languageApplied;
+    // 仅持久化成功后通知上级应用语言；返回是否生效，参数只在回调期间有效。
+    std::function<bool(std::string_view)> languageApplied;
 };
 
 // 管理进程内唯一的非模态设置窗口；关闭窗口不会结束应用消息循环。
@@ -48,6 +48,7 @@ class SettingsWindow final
     [[nodiscard]] bool IsOpen() const noexcept;
 
   private:
+    friend struct SettingsWindowTestAccess;
     class Impl;
 
     std::unique_ptr<Impl> impl_;

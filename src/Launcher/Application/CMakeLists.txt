@@ -12,6 +12,8 @@ target_sources(open_st_application
         source/app.cpp
         source/capture_completion.cpp
         source/save_image_dialog.cpp
+        source/simple_message_window.cpp
+        private/simple_message_window.h
         private/capture_completion.h
         private/save_image_dialog.h
         source/capture_overlay_session.cpp
@@ -35,6 +37,7 @@ target_link_libraries(open_st_application
         OpenST::Localization
         OpenST::Settings
         OpenST::Common
+        OpenST::WindowRenderer
 
         # 以下均为 Windows SDK 系统库，不属于 vcpkg 第三方依赖。
         ole32

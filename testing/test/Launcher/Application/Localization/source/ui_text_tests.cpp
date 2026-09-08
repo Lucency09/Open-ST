@@ -1,7 +1,7 @@
 #include <ui_text.h>
 
-#include "ui_text_internal.h"
 #include "json_file_test_access.h"
+#include "ui_text_internal.h"
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -43,9 +44,9 @@ class UiTextTest : public testing::Test
     }
 
     // 将动态文本对象包装为合法本地化资源。
-    void WriteTexts(const nlohmann::json& texts)
+    void WriteTexts(const nlohmann::json& texts, const nlohmann::json& languages = nlohmann::json::array({"en-US"}))
     {
-        const nlohmann::json document{{"schemaVersion", 1}, {"texts", texts}};
+        const nlohmann::json document{{"schemaVersion", 1}, {"languages", languages}, {"texts", texts}};
         UiTextTest::WriteRaw(this->root_ / "resources" / "ui_text.json", document.dump(2));
     }
 
@@ -60,6 +61,29 @@ class UiTextTest : public testing::Test
 
     std::filesystem::path root_;
 };
+
+// 枚举声明列表的协议错误，供首次读取与热更新共同验证。
+std::vector<nlohmann::json> InvalidLanguageDocuments()
+{
+    const nlohmann::json base{{"schemaVersion", 1}, {"texts", {{"sample", {{"en-US", "Rejected"}}}}}};
+    std::vector<nlohmann::json> documents{base};
+    const std::vector<nlohmann::json> invalidLists{nlohmann::json::array(),
+                                                   nullptr,
+                                                   "en-US",
+                                                   nlohmann::json::object(),
+                                                   nlohmann::json::array({"en-US", "en-US"}),
+                                                   nlohmann::json::array({"en-US", 7}),
+                                                   nlohmann::json::array({"en-US", ""}),
+                                                   nlohmann::json::array({"en-US", "fr FR"}),
+                                                   nlohmann::json::array({"fr-FR"})};
+    for (const nlohmann::json& languages : invalidLists)
+    {
+        nlohmann::json document = base;
+        document["languages"] = languages;
+        documents.push_back(std::move(document));
+    }
+    return documents;
+}
 
 // 验证初始化只建立懒加载句柄，动态文本 key 在第一次查询时才从 JSON 读取。
 TEST_F(UiTextTest, loads_dynamic_key_on_first_lookup)
@@ -90,10 +114,10 @@ TEST_F(UiTextTest, defaults_to_english_independently_of_settings_file)
     EXPECT_EQ(open_st::GetUiText("sample"), L"English");
 }
 
-// 验证 SetUiLanguage 接受从资源动态发现的新增语言代码。
-TEST_F(UiTextTest, switches_to_dynamically_discovered_language)
+// 验证 SetUiLanguage 接受资源明确声明的新增语言代码。
+TEST_F(UiTextTest, switches_to_declared_language)
 {
-    this->WriteTexts({{"sample", {{"en-US", "English"}, {"fr-FR", "Français"}}}});
+    this->WriteTexts({{"sample", {{"en-US", "English"}, {"fr-FR", "Français"}}}}, {"en-US", "fr-FR"});
     ASSERT_TRUE(open_st::InitializeUiText(this->root_));
 
     ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
@@ -101,23 +125,85 @@ TEST_F(UiTextTest, switches_to_dynamically_discovered_language)
     EXPECT_EQ(open_st::GetUiText("sample"), L"Français");
 }
 
-// 验证语言列表取所有文本属性名的并集、去重并稳定排序，不依赖固定三语清单。
-TEST_F(UiTextTest, lists_languages_dynamically)
+// 验证下拉选项只取声明数组并保留顺序，文本内未声明的语言不能被选择。
+TEST_F(UiTextTest, lists_only_declared_languages_in_array_order)
 {
     this->WriteTexts({{"first", {{"zh-CN", "一"}, {"fr-FR", "Un"}}},
-                      {"second", {{"en-US", "Two"}, {"ja-JP", "二"}, {"fr-FR", "Deux"}}}});
+                      {"second", {{"en-US", "Two"}, {"ja-JP", "二"}, {"fr-FR", "Deux"}}}},
+                     {"zh-CN", "en-US", "fr-FR"});
     ASSERT_TRUE(open_st::InitializeUiText(this->root_));
 
     const std::vector<std::string> languages = open_st::GetAvailableUiLanguages();
-    const std::vector<std::string> expected{"en-US", "fr-FR", "ja-JP", "zh-CN"};
+    const std::vector<std::string> expected{"zh-CN", "en-US", "fr-FR"};
     EXPECT_EQ(languages, expected);
+    EXPECT_FALSE(open_st::SetUiLanguage("ja-JP"));
+}
+
+// 验证仅声明语言而尚未添加任何译文时仍可选择，并使用英文文本。
+TEST_F(UiTextTest, declared_language_without_translation_uses_english)
+{
+    this->WriteTexts({{"sample", {{"en-US", "English fallback"}}}}, {"en-US", "fr-FR"});
+    ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+    ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
+    EXPECT_EQ(open_st::CurrentUiLanguageCode(), "fr-FR");
+    EXPECT_EQ(open_st::GetUiText("sample"), L"English fallback");
+}
+
+// 验证外部只扩展声明数组即可在下一次查询中提供新语言。
+TEST_F(UiTextTest, language_list_reloads_added_declaration)
+{
+    const nlohmann::json texts{{"sample", {{"en-US", "English"}, {"fr-FR", "Français"}}}};
+    this->WriteTexts(texts);
+    ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+    EXPECT_EQ(open_st::GetAvailableUiLanguages(), std::vector<std::string>({"en-US"}));
+    EXPECT_FALSE(open_st::SetUiLanguage("fr-FR"));
+
+    this->WriteTexts(texts, {"fr-FR", "en-US"});
+    EXPECT_EQ(open_st::GetAvailableUiLanguages(), std::vector<std::string>({"fr-FR", "en-US"}));
+    ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
+    EXPECT_EQ(open_st::GetUiText("sample"), L"Français");
+}
+
+// 验证首次读取缺失或非法声明时不可用，且不从文本属性恢复语言列表。
+TEST_F(UiTextTest, invalid_language_declaration_without_snapshot_is_unavailable)
+{
+    for (const nlohmann::json& document : InvalidLanguageDocuments())
+    {
+        SCOPED_TRACE(document.dump());
+        open_st::ShutdownUiText();
+        UiTextTest::WriteRaw(this->root_ / "resources" / "ui_text.json", document.dump(2));
+        ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+        EXPECT_FALSE(open_st::IsUiTextAvailable());
+        EXPECT_TRUE(open_st::GetAvailableUiLanguages().empty());
+        EXPECT_EQ(open_st::GetUiText("sample"), L"?");
+        EXPECT_FALSE(open_st::SetUiLanguage("fr-FR"));
+    }
+}
+
+// 验证非法声明热更新保留最后有效语言列表、当前语言及文本快照。
+TEST_F(UiTextTest, invalid_language_declaration_keeps_last_valid_snapshot)
+{
+    ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+    for (const nlohmann::json& document : InvalidLanguageDocuments())
+    {
+        SCOPED_TRACE(document.dump());
+        this->WriteTexts({{"sample", {{"en-US", "Accepted"}, {"fr-FR", "Français"}}}}, {"fr-FR", "en-US"});
+        ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
+        ASSERT_EQ(open_st::GetUiText("sample"), L"Français");
+
+        UiTextTest::WriteRaw(this->root_ / "resources" / "ui_text.json", document.dump(2));
+        EXPECT_EQ(open_st::GetAvailableUiLanguages(), std::vector<std::string>({"fr-FR", "en-US"}));
+        EXPECT_EQ(open_st::CurrentUiLanguageCode(), "fr-FR");
+        EXPECT_EQ(open_st::GetUiText("sample"), L"Français");
+    }
 }
 
 // 验证新增语言允许翻译不完整，当前 key 缺少时会回退该 key 的英文文本。
 TEST_F(UiTextTest, missing_translation_falls_back_to_english)
 {
     this->WriteTexts({{"translated", {{"en-US", "English"}, {"fr-FR", "Français"}}},
-                      {"incomplete", {{"en-US", "English fallback"}}}});
+                      {"incomplete", {{"en-US", "English fallback"}}}},
+                     {"en-US", "fr-FR"});
     ASSERT_TRUE(open_st::InitializeUiText(this->root_));
     ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
 
@@ -127,8 +213,9 @@ TEST_F(UiTextTest, missing_translation_falls_back_to_english)
 // 验证当前语言和英文都缺少时返回固定问号，避免界面静默显示空字符串。
 TEST_F(UiTextTest, missing_selected_and_english_values_returns_question_mark)
 {
-    this->WriteTexts({{"language.seed", {{"en-US", "English"}, {"fr-FR", "Français"}}},
-                      {"missing", {{"ja-JP", "日本語"}}}});
+    this->WriteTexts(
+        {{"language.seed", {{"en-US", "English"}, {"fr-FR", "Français"}}}, {"missing", {{"ja-JP", "日本語"}}}},
+        {"en-US", "fr-FR"});
     ASSERT_TRUE(open_st::InitializeUiText(this->root_));
     ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
 
@@ -175,20 +262,22 @@ TEST_F(UiTextTest, invalid_schema_keeps_last_valid_text)
     ASSERT_EQ(open_st::GetUiText("safe.sample"), L"Last valid value");
 
     UiTextTest::WriteRaw(this->root_ / "resources" / "ui_text.json",
-                         R"({"schemaVersion":2,"texts":{"safe.sample":{"en-US":"Wrong"}}})");
+                         R"({"schemaVersion":2,"languages":["en-US"],"texts":{"safe.sample":{"en-US":"Wrong"}}})");
     EXPECT_EQ(open_st::GetUiText("safe.sample"), L"Last valid value");
 }
 
 // 验证当前选择的动态语言被资源删除后，下一次资源读取立即把运行时语言退回英文。
 TEST_F(UiTextTest, removed_current_language_falls_back_runtime_to_english)
 {
-    this->WriteTexts({{"sample", {{"en-US", "English"}, {"fr-FR", "Français"}}}});
+    this->WriteTexts({{"sample", {{"en-US", "English"}, {"fr-FR", "Français"}}}}, {"en-US", "fr-FR"});
     ASSERT_TRUE(open_st::InitializeUiText(this->root_));
     ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
 
-    this->WriteTexts({{"sample", {{"en-US", "Updated English"}}}});
+    this->WriteTexts({{"sample", {{"en-US", "Updated English"}, {"fr-FR", "Français"}}}});
     EXPECT_EQ(open_st::GetUiText("sample"), L"Updated English");
     EXPECT_EQ(open_st::CurrentUiLanguageCode(), "en-US");
+    EXPECT_EQ(open_st::GetAvailableUiLanguages(), std::vector<std::string>({"en-US"}));
+    EXPECT_FALSE(open_st::SetUiLanguage("fr-FR"));
 }
 
 // 验证连续读取损坏文件保留已生效文本，文件修复后仍能接受新业务内容。

@@ -11,7 +11,7 @@
 
 ## 2. 源码模块布局
 
-`src/` 通过目录嵌套直接表达产品模块的依赖方向。上级目录中的模块可以依赖其子孙目录中的模块；子模块不得反向依赖祖先模块，也不得依赖不在自身子树中的兄弟模块。`common` 是唯一的跨层依赖例外：产品模块可以依赖它，但它不得依赖任何产品模块。
+`src/` 通过目录嵌套直接表达产品模块的依赖方向。上级目录中的模块可以依赖其子孙目录中的模块；子模块不得反向依赖祖先模块，也不得依赖不在自身子树中的兄弟模块。`common` 是唯一的跨层依赖例外：产品模块可以依赖 Common 及其独立通用子目标，但它们不得依赖任何产品模块。
 
 ```text
 src/
@@ -20,7 +20,12 @@ src/
 │   ├── CMakeLists.txt
 │   ├── include/
 │   ├── private/
-│   └── source/
+│   ├── source/
+│   └── WindowRenderer/         # 独立 OpenST::WindowRenderer，Common 库不链接 GUI
+│       ├── CMakeLists.txt
+│       ├── include/
+│       ├── private/
+│       └── source/
 └── Launcher/                   # Open-ST.exe
     ├── CMakeLists.txt
     ├── source/
@@ -96,6 +101,8 @@ graphics -> capture
 graphics -> hdr
 graphics -> common
 settings -> common
+settings -> window_renderer
+application -> window_renderer
 localization -> common
 ```
 
@@ -168,6 +175,7 @@ localization -> common
 testing/
 ├── test/
 │   ├── Common/
+│   │   └── WindowRenderer/     # 通用布局、绑定及模态窗口测试
 │   └── Launcher/Application/
 │       ├── source/             # 应用编排与会话测试
 │       ├── Export/
@@ -190,7 +198,7 @@ testing/
 - 每一级测试目录维护自己的 `CMakeLists.txt`，并像源码目录一样逐级 `add_subdirectory()`；`testing/test/CMakeLists.txt` 只加载 `Common` 与 `Launcher`。
 - 采用 GoogleTest + GoogleMock + CTest，并使用 `gtest_discover_tests()` 注册 case。
 - 标准 gTest 目标链接 `GTest::gtest_main`，测试源码不得自定义 `main()` 或 `wmain()`。
-- 确有必要的人工诊断/集成探针可以是独立可执行程序并拥有入口函数，但不能伪装成 gTest case，也不能混入普通测试目标。
+- 确有必要的人工诊断/集成探针可以是独立可执行程序并拥有入口函数，但不能伪装成普通自动通过的 gTest case。经用户批准的人工窗口 gTest 必须通过显式环境开关启用，默认 GTEST_SKIP，并明确等待真人关闭，不能用定时器替代人工验收。
 - 每个测试 case 上方必须写中文说明，明确“测试什么功能”和关键边界，不能只复述 case 名。
 - Mock 只进入测试链接关系，产品代码不得依赖 GoogleMock。
 - 付费 API、网络供应商和系统边界用 mock/fake 验证；自动测试不得调用真实付费服务。
@@ -249,3 +257,45 @@ Git 跟踪源码、测试、CMake、清单、脚本、配置、文档和许可�
 5. 向用户说明完成内容、验证结果、已知限制，并等待阶段审核。
 
 性能验收目标包括：快捷键到冻结遮罩典型不超过 150 ms、交互 60 FPS、托盘空闲 CPU 约为零，以及 OCR 加载前空闲内存目标不超过 80 MiB。包体积 50 MiB 是优化目标，不是删功能或降低质量的理由。
+
+### 自行添加界面语言
+
+编辑运行目录中的 `resources/ui_text.json`（开发时编辑仓库同名资源并重新构建）：
+
+```json
+{
+  "schemaVersion": 1,
+  "languages": ["zh-CN", "en-US", "ja-JP", "fr-FR"],
+  "texts": {
+    "dialog.ok": {"zh-CN": "确定", "en-US": "OK", "ja-JP": "OK", "fr-FR": "OK"}
+  }
+}
+```
+
+这是结构示例，修改实际文件时保留其他文本键。先把新语言代码加入 `languages`，再在 `texts` 的各文本键下补充对应翻译。
+下拉框只使用 `languages`，并按数组顺序显示语言代码；仅添加译文不会自动加入候选列表。
+数组必须非空、成员为非空且仅包含 ASCII 字母、数字或连字符的字符串、无重复，并保留英文回退语言 `en-US`。
+缺少当前语言译文时使用该文本键的英文；英文也缺少则显示 `?`。新语言可以逐步补全译文。
+
+保存文件后，下次展开语言下拉框会重新查询列表，无需重新编译运行中的程序。
+从列表移除当前语言后，下次资源读取会将运行时语言退回 `en-US`，不会自动改写用户设置。
+旧版资源必须补上 `languages`；字段缺失或无效时保留最后有效资源，没有有效资源时报告不可用。
+
+### WindowRenderer 人工窗口验收
+
+`OpenST::WindowRenderer` 位于 `Common/WindowRenderer`，是独立目标；`OpenST::Common` 本身不链接该目标或 GUI 库。
+需要界面的产品模块显式链接 Renderer。测试镜像为 `testing/test/Common/WindowRenderer`，模块筛选名为 `window_renderer`。
+`RendererManualTest.waits_for_user_close` 默认跳过。在仓库根目录打开 PowerShell，仅在人工验收时运行：
+
+```powershell
+$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
+try {
+    .\scripts\test.ps1 window_renderer RendererManualTest.waits_for_user_close
+} finally {
+    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
+}
+```
+
+窗口弹出后一直等待用户点击“确定”、按 Esc 或点击右上角关闭按钮，没有自动关闭计时器。
+`finally` 在测试结束或报错后清除环境开关，避免之后的普通回归意外等待人工操作。
+普通回归中的 skip 不表示人工验收通过。自动模态测试使用消息驱动关闭，另行报告。

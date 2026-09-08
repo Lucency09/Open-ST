@@ -3,10 +3,12 @@
 文档状态：选型已确认，实现细节将随开发补充  
 目标平台：Windows 10 22H2 / Windows 11，x64
 
-本文同时记录已选定的目标架构和当前实现；技术选型不等于对应功能已完成。`0.1.0` 当前覆盖托盘、
+本文同时记录已选定的目标架构和当前实现；技术选型不等于对应功能已完成。已发布的 `0.1.0` 覆盖托盘、
 语言设置、桌面冻结与自由选区、HDR 到 SDR 转换、复制与 PNG/JPEG 保存、A2 应用图标。
 工具栏、窗口/UIA 自动识别、标注、贴图、OCR、翻译、欢迎页与开机自启尚未实现；相关组件职责、
 数据流及降级条目为后续约束，具体状态见 [实现进度](implementation_progress.md)。
+
+当前开发版本为 `0.2.0`，优先完善开机启动与现有功能设置；阶段顺序以实现进度与决策D-052为准。
 
 ## 1. 最终技术组合
 
@@ -296,13 +298,48 @@ Logger 位于 `common` 公共模块，只依赖 C++20 标准库和 Windows SDK�
 
 ### 2.18 设置存储与设置窗口
 
-`Launcher/Application/Settings` 同时拥有设置业务与设置窗口，不再将业务存储放入 Common。`include/settings.h`、`source/settings.cpp`、`private/settings_internal.h` 分别提供动态设置接口、实现和测试目录注入；`OpenST::Settings` 与保留的 `OpenST::SettingsWindow` 指向同一静态库，不新增子模块。
+`Launcher/Application/Settings` 拥有设置业务和窗口编排，`OpenST::Settings` 与兼容别名
+`OpenST::SettingsWindow` 指向同一静态目标。通用渲染器迁移至 `Common/WindowRenderer`，提供独立目标 `OpenST::WindowRenderer`。
+Renderer 只依赖 Windows、标准库和 nlohmann/json，不依赖 Settings、Common 或 Localization。
+`OpenST::Common` 不链接 Renderer 或 GUI；Settings 与 Application 按需显式链接 Renderer。
+Launcher 与窗口测试程序在 EXE manifest 中声明 Common Controls v6，启用系统视觉样式。
+控件外观由系统主题决定，不等同于自绘统一圆角。
 
-Settings 通过 `settings.user` 和 `settings.default` 两个动态卡名复用通用 JSON 句柄。初始化读取默认资源，再用编辑 Write 仅在 `data/settings.json` 缺失时填入 `resources/default_settings.json`；已有文档仅校验业务结构而不修改内容，写入返回值用于持久化告警。损坏或暂时不可读的用户文件不会被默认值覆盖；原文件权限和同目录临时探针检查已归入 Common。`GetStringSetting`、`GetBoolSetting`、`GetIntegerSetting` 及对应 setter 接受动态 key；用户值不可用时由 Settings 显式读取默认文档，编辑写入保留未知字段。文件路径、JSON 结构和键名不变，无需用户数据迁移。
+Settings 通过 Common 的 `settings.user`、`settings.default` 句柄读取用户和默认设置，公开动态
+Get/Set 接口与原文件结构保持兼容。新增私有 SettingsEditSession 保存字段原始存在性/类型/值、有效显示基线
+及草稿；修改控件不立即写盘，提交在一次 Common Write 编辑回调中检查已修改字段冲突，并保留无关最新字段。
+原始缺失字段显示默认值不会自动补写；恢复默认只改当前页已绑定字段的草稿。
 
-设置窗口为非模态、单实例 Win32 窗口。Application 注入窄回调，转发文本、语言列表查询与保存完成通知，Settings 不直接依赖同级 Localization。语言下拉框在窗口打开和每次展开时动态重建，直接显示资源中的语言代码；取消、Escape 和关闭按钮不写配置，确定按钮先持久化、成功后通知 Application 切换运行时语言并刷新界面，失败显示粗略本地化告警。Windows 11 通过 `DWMWA_WINDOW_CORNER_PREFERENCE/DWMWCP_ROUND` 请求系统圆角，旧系统自然退回标准方角。控件以 96 DPI 为基准，首次创建按主显示器 DPI 缩放；`WM_DPICHANGED` 采用建议矩形，按目标 DPI 重排控件、重建系统字体。
+Settings 打开新窗口时通过 Common 的 `settings.layout` 读取 `resources/setting_windows.json`，
+将文档传给 Renderer 解析，再按控件 ID 注册 BindString、BindOptions、BindAction。布局不包含业务设置键，
+新增交互控件必须补 C++ 绑定；移动控件或调整排列只需改 JSON。每次关窗重开重新加载，重复打开已有窗口保留草稿。
+Renderer 复制内部布局树，在创建 HWND 前检查版本、结构、全局 ID、节点规模和绑定完整性。
+事件失败通过 SetErrorHandler 返回定位信息，Settings 提供本地化提示。
 
-A2 应用图标由 Launcher 的 RC 从 `resources/icons/open-st.ico` 嵌入 EXE，运行期不读取外部图标路径。App 独立加载并拥有大小 HICON，托盘与 Settings 借用；Settings 通过注入句柄设置窗口图标，在窗口关闭和托盘移除后由 App 销毁。资源加载失败时记录警告，托盘借用系统默认图标。当前尚无跨 DPI 动态图标重载机制。
+首期原生控件支持页面标签、纵向容器、文本、下拉框和按钮，页面滚动而底部操作区固定，按钮空间不足时换行。
+实际产品只有常规语言页，以及确定、取消、应用、恢复本页默认和重新加载。
+确认/提交期间禁止重复操作，普通关闭延迟到回调分派结束；Tab 导航到页面外字段时滚动至可见区域。
+跨 DPI 重建系统字体并重排，语言刷新保留草稿和控件。
+
+Application 注入文本、动态语言列表、当前语言和可报告结果的语言应用回调。Settings 保存成功后才通知
+Application 调用 SetUiLanguage、刷新托盘，再刷新设置窗口文字。保存失败不切换语言；保存成功但生效失败
+保留待应用目标，重试前核对持久化值，重试不重复写盘。失效选项保留原草稿并标记不可用，不替换成第一项。
+读取失败提供重新加载入口；外部冲突不覆盖，确认后可丢弃草稿重读。
+
+A2 图标仍由 Launcher RC 嵌入 EXE，Application 拥有大小 HICON，窗口借用；Renderer 请求 Windows 11
+系统圆角，Windows 10 使用标准窗口。尚未加入跨 DPI 图标资源重载、任意自绘主题或独立安装包。
+真实跨屏观感、高对比度及辅助技术仍需人工验收，自动控件和 DPI 消息测试不能代替这些检查。
+
+### 通用提示窗口复用
+
+Application 的错误提示和关于窗口通过同一 Renderer 的顶层 `content` 布局创建，文本仍由 Application
+调用 GetUiText 后提供。`content` 与 `pages` 必须恰好声明一个；前者不创建页签，Settings 的原 pages 协议保持兼容。
+Application 管理弹窗期间的重入防护，Renderer 不含设置键、错误正文或其他业务映射。
+
+`ShowModal` 同步等待关闭，临时禁用原本启用且有效的 owner，并在正常关闭、创建失败或回调异常后恢复；
+原本禁用的 owner 不被误启用。线程消息 hook 接续宿主导航及无 HWND 消息；收到 WM_QUIT 时销毁窗口并原码重投，
+外层循环继续处理退出。GetMessage 失败返回结构化错误；正常关闭返回成功，不触发备用弹窗。
+错误/关于窗口创建失败保留宿主最小 MessageBox 兜底；其他系统对话框本轮不迁移。
 
 ### 2.19 本地化文本模块
 
@@ -310,7 +347,7 @@ A2 应用图标由 Launcher 的 RC 从 `resources/icons/open-st.ico` 嵌入 EXE�
 
 业务层唯一的取文入口是 `GetUiText("text.key", ...)`；不能直接依赖 Localization 的同级模块，经 Application 注入的窄回调转发到该入口。调用处直接提交 JSON key，不维护 C++ 枚举或硬编码 key 映射；带参数文本使用受控的命名占位符替换。底层诊断内容不得绕过该入口直接显示给用户。
 
-每次 `GetUiText` 和语言列表查询通过句柄按需读取资源，无目录监听线程。模块锁串行完成读取、业务结构校验与接受内容，避免旧结果覆盖新结果，不依赖 Common 的版本号或缓存指针。语言代码从文本属性取并集、去重和稳定排序；缺当前译文回退 `en-US`，仍缺返回 `?`。读取失败或业务结构无效时继续使用已生效业务文本，Common 本次读取仍报告失败；连续结构故障日志去重，不保存第二份拒绝文档。当前语言从新资源中消失时退回 `en-US`，不擅自改写设置文件。关闭清空业务文本；重新初始化时底层旧缓存不能冒充成功读取。
+每次 `GetUiText` 和语言列表查询通过句柄按需读取资源，无目录监听线程。模块锁串行完成读取、业务结构校验与接受内容，避免旧结果覆盖新结果，不依赖 Common 的版本号或缓存指针。语言代码只从顶层 `languages` 字符串数组读取，并保留声明顺序；数组必填、非空、代码合法、无重复且包含 `en-US`。语言切换与热更新后的有效性判断使用同一数组，不扫描译文；缺当前译文回退 `en-US`，仍缺返回 `?`。读取失败或业务结构无效时继续使用已生效业务文本，Common 本次读取仍报告失败；连续结构故障日志去重，不保存第二份拒绝文档。当前语言从新资源中消失时退回 `en-US`，不擅自改写设置文件。关闭清空业务文本；重新初始化时底层旧缓存不能冒充成功读取。
 
 Settings 和 Localization 分别记录去重的运行期读取告警，经 `ConsumeSettingsReadWarning` 与 `ConsumeUiTextReadWarning` 一次性消费；持续故障不会反复提示，读取恢复后可再次报告，关闭清空。Application 在消息处理结束后合并显示 `common_resources.read_failed`，截图会话期间保留待提示状态，关闭会话后再显示；不在 getter 中弹窗，也不新增后台监听或公共事件框架。
 

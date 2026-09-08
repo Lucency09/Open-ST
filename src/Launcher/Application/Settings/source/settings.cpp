@@ -98,6 +98,7 @@ class SettingsState final
             const std::scoped_lock<std::mutex> lock(this->mutex_);
             this->defaultFile_ = std::move(defaultFile);
             this->userFile_ = std::move(userFile);
+            this->resourcesDirectory_ = applicationDirectory / L"resources";
             this->persistenceAvailable_ = persistenceAvailable;
             this->initialized_ = true;
             return true;
@@ -115,11 +116,49 @@ class SettingsState final
         const std::scoped_lock<std::mutex> lock(this->mutex_);
         this->userFile_ = {};
         this->defaultFile_ = {};
+        this->layoutFile_ = {};
+        this->resourcesDirectory_.clear();
         this->initialized_ = false;
         this->persistenceAvailable_ = false;
         this->userReadFailed_ = false;
         this->defaultReadFailed_ = false;
         this->readWarningPending_ = false;
+    }
+
+    // 取得业务初始化的文件入口，不向公开 Settings API 暴露 JSON 快照。
+    bool EditFiles(open_st::JsonFileHandle& userFile, open_st::JsonFileHandle& defaultFile) noexcept
+    {
+        const std::scoped_lock<std::mutex> lock(this->mutex_);
+        if (!this->initialized_)
+        {
+            return false;
+        }
+        userFile = this->userFile_;
+        defaultFile = this->defaultFile_;
+        return true;
+    }
+
+    // 窗口首次打开时注册布局句柄，之后每次打开仍由 Common 检查磁盘变化。
+    bool ReadLayout(nlohmann::json& document) noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            if (!this->initialized_)
+            {
+                return false;
+            }
+            if (!this->layoutFile_.IsValid())
+            {
+                this->layoutFile_ = open_st::JsonFileManager::Instance().GetFile(
+                    "settings.layout", this->resourcesDirectory_ / L"setting_windows.json");
+            }
+            return this->layoutFile_.Read(document);
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
     // 提供给 UI 一次性的读取故障提示，不暴露底层错误原因或缓存状态。
@@ -297,6 +336,8 @@ class SettingsState final
     std::mutex mutex_;
     open_st::JsonFileHandle userFile_;
     open_st::JsonFileHandle defaultFile_;
+    open_st::JsonFileHandle layoutFile_;
+    std::filesystem::path resourcesDirectory_;
     bool initialized_{};
     bool persistenceAvailable_{};
     bool userReadFailed_{};
@@ -314,6 +355,18 @@ SettingsState& GetSettingsState()
 
 namespace open_st
 {
+// 为私有编辑会话复制已初始化的文件入口。
+bool GetSettingsEditFiles(JsonFileHandle& userFile, JsonFileHandle& defaultFile) noexcept
+{
+    return GetSettingsState().EditFiles(userFile, defaultFile);
+}
+
+// 由 Settings 提供布局内容，Renderer 不接触路径和文件管理器。
+bool ReadSettingsLayout(nlohmann::json& document) noexcept
+{
+    return GetSettingsState().ReadLayout(document);
+}
+
 // 以可执行文件目录为基准初始化正式运行时设置。
 bool InitializeSettings() noexcept
 {

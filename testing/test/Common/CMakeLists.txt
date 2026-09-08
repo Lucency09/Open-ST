@@ -1,3 +1,5 @@
+add_subdirectory(WindowRenderer)
+
 add_executable(open_st_common_tests)
 
 target_sources(open_st_common_tests

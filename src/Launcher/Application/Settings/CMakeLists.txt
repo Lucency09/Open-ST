@@ -7,7 +7,10 @@ target_sources(open_st_settings_window
     PRIVATE
         source/settings.cpp
         source/settings_window.cpp
+        source/settings_edit.cpp
         private/settings_internal.h
+        private/settings_edit.h
+        private/settings_window_test_access.h
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS include
@@ -23,5 +26,5 @@ target_link_libraries(open_st_settings_window
         open_st_project_options
     PRIVATE
         OpenST::Common
-        dwmapi
+        OpenST::WindowRenderer
 )

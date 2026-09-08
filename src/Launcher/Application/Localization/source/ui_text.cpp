@@ -75,14 +75,33 @@ bool IsUiTextDocument(const nlohmann::json& document) noexcept
         }
         const nlohmann::json::const_iterator schemaIterator = document.find("schemaVersion");
         const nlohmann::json::const_iterator textsIterator = document.find("texts");
+        const nlohmann::json::const_iterator languagesIterator = document.find("languages");
         if (schemaIterator == document.end() || !schemaIterator->is_number_integer() ||
             schemaIterator->get<int>() != RESOURCE_SCHEMA_VERSION || textsIterator == document.end() ||
-            !textsIterator->is_object() || textsIterator->empty())
+            !textsIterator->is_object() || textsIterator->empty() || languagesIterator == document.end() ||
+            !languagesIterator->is_array() || languagesIterator->empty())
         {
             return false;
         }
-        for (nlohmann::json::const_iterator textIterator = textsIterator->begin();
-             textIterator != textsIterator->end(); ++textIterator)
+        std::set<std::string> languageSet;
+        for (const nlohmann::json& language : *languagesIterator)
+        {
+            if (!language.is_string())
+            {
+                return false;
+            }
+            const std::string code = language.get<std::string>();
+            if (!IsLanguageCode(code) || !languageSet.insert(code).second)
+            {
+                return false;
+            }
+        }
+        if (!languageSet.contains(std::string(DEFAULT_LANGUAGE_CODE)))
+        {
+            return false;
+        }
+        for (nlohmann::json::const_iterator textIterator = textsIterator->begin(); textIterator != textsIterator->end();
+             ++textIterator)
         {
             if (textIterator.key().empty() || !textIterator->is_object())
             {
@@ -102,16 +121,11 @@ bool ContainsLanguage(const nlohmann::json& document, std::string_view languageC
 {
     try
     {
-        const nlohmann::json& texts = document.at("texts");
-        for (nlohmann::json::const_iterator textIterator = texts.begin(); textIterator != texts.end(); ++textIterator)
+        for (const nlohmann::json& language : document.at("languages"))
         {
-            if (textIterator->is_object())
+            if (language.get_ref<const std::string&>() == languageCode)
             {
-                const nlohmann::json::const_iterator languageIterator = textIterator->find(languageCode);
-                if (languageIterator != textIterator->end() && languageIterator->is_string())
-                {
-                    return true;
-                }
+                return true;
             }
         }
     }
@@ -224,40 +238,21 @@ class UiTextState final
         return this->Document() != nullptr;
     }
 
-    // 扫描所有文本对象的属性名，以稳定排序后的动态语言代码列表返回给设置窗口。
+    // 按 languages 数组声明顺序返回选项，不从译文推断可用语言。
     std::vector<std::string> Languages() noexcept
     {
         try
         {
             const std::shared_ptr<const nlohmann::json> document = this->Document();
-            std::set<std::string> languageSet;
-            languageSet.emplace(DEFAULT_LANGUAGE_CODE);
             if (document != nullptr)
             {
-                const nlohmann::json& texts = document->at("texts");
-                for (nlohmann::json::const_iterator textIterator = texts.begin(); textIterator != texts.end();
-                     ++textIterator)
-                {
-                    if (!textIterator->is_object())
-                    {
-                        continue;
-                    }
-                    for (nlohmann::json::const_iterator languageIterator = textIterator->begin();
-                         languageIterator != textIterator->end(); ++languageIterator)
-                    {
-                        if (IsLanguageCode(languageIterator.key()) && languageIterator->is_string())
-                        {
-                            languageSet.emplace(languageIterator.key());
-                        }
-                    }
-                }
+                return document->at("languages").get<std::vector<std::string>>();
             }
-            return std::vector<std::string>(languageSet.begin(), languageSet.end());
         }
         catch (...)
         {
-            return {std::string(DEFAULT_LANGUAGE_CODE)};
         }
+        return {};
     }
 
     // 每次查询先让 Common 句柄检查磁盘版本，再按当前语言读取并执行英文回退。
@@ -301,8 +296,7 @@ class UiTextState final
 
         if (usedEnglishFallback)
         {
-            OPEN_ST_LOG_WARNING("A localized value is missing; using en-US. key=", key,
-                                " language=", languageCode);
+            OPEN_ST_LOG_WARNING("A localized value is missing; using en-US. key=", key, " language=", languageCode);
         }
         const std::wstring converted = Utf8ToWide(selectedText);
         if (converted.empty())
@@ -420,7 +414,7 @@ bool ConsumeUiTextReadWarning() noexcept
     return GetUiTextState().ConsumeReadWarning();
 }
 
-// 切换语言；有效语言代码来自当前 ui_text.json 的动态属性集合。
+// 切换语言；有效语言代码来自当前 ui_text.json 的 languages 数组。
 bool SetUiLanguage(std::string_view languageCode) noexcept
 {
     return GetUiTextState().SetLanguage(languageCode);
@@ -432,7 +426,7 @@ std::string CurrentUiLanguageCode() noexcept
     return GetUiTextState().LanguageCode();
 }
 
-// 返回当前资源中动态发现的语言代码，供设置窗口生成下拉选项。
+// 按当前资源 languages 数组的顺序返回语言代码，供设置窗口生成下拉选项。
 std::vector<std::string> GetAvailableUiLanguages() noexcept
 {
     return GetUiTextState().Languages();

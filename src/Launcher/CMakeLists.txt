@@ -23,7 +23,15 @@ add_custom_command(TARGET open_st POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${PROJECT_SOURCE_DIR}/resources/default_settings.json"
         "$<TARGET_FILE_DIR:open_st>/resources/default_settings.json"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${PROJECT_SOURCE_DIR}/resources/setting_windows.json"
+        "$<TARGET_FILE_DIR:open_st>/resources/setting_windows.json"
     VERBATIM
 )
 
 set_target_properties(open_st PROPERTIES OUTPUT_NAME "Open-ST")
+
+# 在 EXE 激活上下文中启用系统视觉样式；仅链接 comctl32 不会启用 v6 主题。
+target_link_options(open_st PRIVATE
+    "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+)

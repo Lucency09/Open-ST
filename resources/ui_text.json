@@ -1,6 +1,12 @@
 {
   "schemaVersion": 1,
+  "languages": ["zh-CN", "en-US", "ja-JP"],
   "texts": {
+    "dialog.ok": {
+      "zh-CN": "确定",
+      "en-US": "OK",
+      "ja-JP": "OK"
+    },
     "app.title": {
       "zh-CN": "Open-ST",
       "en-US": "Open-ST",
@@ -85,6 +91,81 @@
       "zh-CN": "取消",
       "en-US": "Cancel",
       "ja-JP": "キャンセル"
+    },
+    "settings.general": {
+      "zh-CN": "常规",
+      "en-US": "General",
+      "ja-JP": "全般"
+    },
+    "settings.language.help": {
+      "zh-CN": "点击“应用”或“确定”后保存并切换界面语言。",
+      "en-US": "Select Apply or OK to save and change the interface language.",
+      "ja-JP": "「適用」または「OK」で保存し、表示言語を変更します。"
+    },
+    "settings.apply": {
+      "zh-CN": "应用",
+      "en-US": "Apply",
+      "ja-JP": "適用"
+    },
+    "settings.restore_page_defaults": {
+      "zh-CN": "恢复本页默认",
+      "en-US": "Reset page",
+      "ja-JP": "ページを初期値に"
+    },
+    "settings.reload": {
+      "zh-CN": "重新加载",
+      "en-US": "Reload",
+      "ja-JP": "再読み込み"
+    },
+    "settings.restore_confirm": {
+      "zh-CN": "将本页设置恢复为默认草稿？点击应用或确定后才会保存。",
+      "en-US": "Reset this page's draft to defaults? Changes are saved only after Apply or OK.",
+      "ja-JP": "このページの編集内容を初期値に戻しますか？「適用」または「OK」で保存されます。"
+    },
+    "settings.reload_confirm": {
+      "zh-CN": "丢弃尚未保存的修改，并重新读取设置？已经保存的内容不会撤销。",
+      "en-US": "Discard unsaved edits and reload settings? Previously saved changes will remain.",
+      "ja-JP": "未保存の変更を破棄して再読み込みしますか？保存済みの変更は元に戻りません。"
+    },
+    "settings.edit_load_failed": {
+      "zh-CN": "无法读取设置，请修复文件后点击“重新加载”。当前不能保存。",
+      "en-US": "Settings could not be read. Fix the file and select Reload. Saving is unavailable.",
+      "ja-JP": "設定を読み込めません。ファイルを修復して再読み込みしてください。現在は保存できません。"
+    },
+    "settings.defaults_failed": {
+      "zh-CN": "无法读取有效的默认设置，已保留当前修改。",
+      "en-US": "Valid defaults could not be read. Your edits have been preserved.",
+      "ja-JP": "有効な初期設定を読み込めません。編集中の内容は保持されました。"
+    },
+    "settings.conflict": {
+      "zh-CN": "此设置已被其他操作修改，未覆盖新值。请重新加载后再修改。",
+      "en-US": "This setting was changed elsewhere and has not been overwritten. Reload before editing again.",
+      "ja-JP": "設定が別の操作で変更されたため、上書きしていません。再読み込みしてから編集してください。"
+    },
+    "settings.language.unavailable": {
+      "zh-CN": "所选语言已不可用，请重新选择。",
+      "en-US": "The selected language is unavailable. Please select another language.",
+      "ja-JP": "選択した言語は利用できません。別の言語を選んでください。"
+    },
+    "settings.language.query_failed": {
+      "zh-CN": "无法取得可用语言，请检查语言资源后重试。",
+      "en-US": "Available languages could not be loaded. Check the language resources and try again.",
+      "ja-JP": "利用可能な言語を取得できません。言語リソースを確認して再試行してください。"
+    },
+    "settings.language.apply_failed": {
+      "zh-CN": "设置已保存，但语言未能生效。点击“应用”可重试。",
+      "en-US": "Settings were saved, but the language could not be applied. Select Apply to retry.",
+      "ja-JP": "設定は保存されましたが、言語を適用できませんでした。「適用」で再試行できます。"
+    },
+    "settings.saved": {
+      "zh-CN": "设置已保存并生效。",
+      "en-US": "Settings have been saved and applied.",
+      "ja-JP": "設定を保存して適用しました。"
+    },
+    "settings.operation_failed": {
+      "zh-CN": "设置操作未能完成，请重试。",
+      "en-US": "The settings operation could not be completed. Please try again.",
+      "ja-JP": "設定操作を完了できませんでした。再試行してください。"
     },
     "settings.save_failed": {
       "zh-CN": "无法保存设置。请检查 settings.json 是否有效以及应用目录是否可写。",

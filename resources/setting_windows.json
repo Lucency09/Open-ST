@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "titleKey": "settings.title",
+    "initialSize": [600, 360],
+    "minSize": [480, 280],
+    "resizable": true
+  },
+  "pages": [
+    {
+      "id": "general",
+      "titleKey": "settings.general",
+      "content": {
+        "type": "column",
+        "id": "generalContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "select",
+            "id": "languageSelector",
+            "labelKey": "settings.language.label",
+            "width": "fill"
+          },
+          {
+            "type": "text",
+            "id": "languageHelp",
+            "textKey": "settings.language.help"
+          }
+        ]
+      }
+    }
+  ],
+  "footer": {
+    "leading": [
+      { "type": "button", "id": "restoreDefaultsButton", "textKey": "settings.restore_page_defaults" },
+      { "type": "button", "id": "reloadButton", "textKey": "settings.reload" }
+    ],
+    "trailing": [
+      { "type": "button", "id": "acceptButton", "textKey": "settings.ok" },
+      { "type": "button", "id": "cancelButton", "textKey": "settings.cancel" },
+      { "type": "button", "id": "applyButton", "textKey": "settings.apply" }
+    ]
+  }
+}

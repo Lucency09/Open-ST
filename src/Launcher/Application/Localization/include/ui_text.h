@@ -22,14 +22,13 @@ void ShutdownUiText() noexcept;
 // 消费一次读取或业务结构故障告警；连续故障只报告一次，恢复后重新允许报告。
 [[nodiscard]] bool ConsumeUiTextReadWarning() noexcept;
 
-// 接受当前 JSON 动态提供的语言代码；无效值会切回默认 en-US 并返回 false。
+// 接受当前 JSON languages 数组声明的语言代码；无效值会切回默认 en-US 并返回 false。
 [[nodiscard]] bool SetUiLanguage(std::string_view languageCode) noexcept;
 // 返回当前运行时语言代码的副本。
 [[nodiscard]] std::string CurrentUiLanguageCode() noexcept;
-// 从当前已接受文本动态汇总可用语言代码。
+// 按已接受资源的 languages 数组顺序返回语言代码；无有效资源时返回空列表。
 [[nodiscard]] std::vector<std::string> GetAvailableUiLanguages() noexcept;
 
 // key 直接对应 JSON 中的文本键；查询前会检查资源文件版本，arguments 只执行受控占位符替换。
-[[nodiscard]] std::wstring GetUiText(std::string_view key,
-                                     std::initializer_list<UiTextArgument> arguments = {});
+[[nodiscard]] std::wstring GetUiText(std::string_view key, std::initializer_list<UiTextArgument> arguments = {});
 } // namespace open_st

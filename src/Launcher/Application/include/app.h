@@ -63,14 +63,17 @@ class App final
     // 释放当前截图会话资源并销毁覆盖窗口。
     void CloseOverlay() noexcept;
     // 显示本地化的程序版本与说明信息。
-    void ShowAbout() const;
+    void ShowAbout();
     // 使用本地化外壳显示一次截图失败详情。
-    void ShowCaptureError(const std::wstring& detail) const;
+    void ShowCaptureError(const std::wstring& detail);
+    // 以模态 Renderer 显示简单消息，异常或创建失败退回系统提示，守卫阻止托盘和热键重入。
+    void ShowSimpleMessage(const std::wstring& message, const std::wstring& title, UINT fallbackFlags);
 
     // 协调统一完成流程与错误提示；save 为 true 时选择文件目标。
     void CompleteSelection(bool save);
 
     bool completionBusy_{}; // 包括错误弹窗在内的忙状态。
+    bool dialogActive_{}; // 简单模态弹窗及其系统兜底期间禁止重新打开业务入口。
     bool comInitialized_{}; // 仅成功初始化时配对 CoUninitialize。
     std::unique_ptr<SelectionOutputRenderer> outputRenderer_;
     std::unique_ptr<CaptureCompletion> completion_;

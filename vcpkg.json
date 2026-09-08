@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "open-st",
-  "version-semver": "0.1.0",
+  "version-semver": "0.2.0",
   "description": "Windows 平台的便携截图、OCR 与翻译工具",
   "builtin-baseline": "4334d8b4c8916018600212ab4dd4bbdc343065d1",
   "dependencies": [

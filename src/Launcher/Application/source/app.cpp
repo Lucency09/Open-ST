@@ -1,5 +1,6 @@
 #include "capture_completion.h"
 #include "save_image_dialog.h"
+#include "simple_message_window.h"
 #include <app.h>
 #include <clipboard_writer.h>
 #include <desktop_capturer.h>
@@ -335,7 +336,7 @@ int App::Run(int)
 // 消费模块去重告警后再取得提示文本；截图期间推迟提示，避免抢夺捕获和选区交互。
 void App::ReportDataReadWarnings()
 {
-    if (this->overlaySession_ != nullptr || this->overlayPreparing_)
+    if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_)
     {
         return;
     }
@@ -406,7 +407,8 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 真正的窗口消息处理逻辑在实例方法中实现，静态窗口过程负责绑定或找回 App 实例，并将消息转发给它。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    if (this->completionBusy_ && (message == WM_HOTKEY || message == WM_COMMAND || message == TRAY_MESSAGE))
+    if ((this->completionBusy_ || this->dialogActive_) &&
+        (message == WM_HOTKEY || message == WM_COMMAND || message == TRAY_MESSAGE))
     {
         return 0;
     }
@@ -575,6 +577,10 @@ void App::ShowTrayMenu()
 // 懒创建或激活设置窗口，并在语言保存成功后刷新应用现有界面。
 void App::ShowSettings()
 {
+    if (this->dialogActive_)
+    {
+        return;
+    }
     if (this->settingsWindow_ == nullptr)
     {
         this->settingsWindow_ = std::make_unique<SettingsWindow>();
@@ -593,13 +599,14 @@ void App::ShowSettings()
     // 每次查询读取本地化模块动态提供的语言集合。
     callbacks.availableLanguages = []()
     {
-        return GetAvailableUiLanguages();
+        return IsUiTextAvailable() ? GetAvailableUiLanguages() : std::vector<std::string>{};
     };
     // 设置持久化成功后才切换运行语言，并刷新现有应用界面。
     callbacks.languageApplied = [this](std::string_view language)
     {
-        (void)SetUiLanguage(language);
+        const bool applied = SetUiLanguage(language);
         this->RefreshLocalizedUi();
+        return applied;
     };
     callbacks.largeIcon = this->largeIcon_;
     callbacks.smallIcon = this->smallIcon_;
@@ -615,7 +622,7 @@ void App::ShowSettings()
 void App::StartCapture()
 try
 {
-    if (this->completionBusy_)
+    if (this->completionBusy_ || this->dialogActive_)
     {
         return;
     }
@@ -1040,7 +1047,7 @@ void App::SaveSelection()
 void App::CompleteSelection(bool save)
 try
 {
-    if (this->completionBusy_ || this->overlayPreparing_ || this->completion_ == nullptr ||
+    if (this->completionBusy_ || this->dialogActive_ || this->overlayPreparing_ || this->completion_ == nullptr ||
         this->overlaySession_ == nullptr || this->frozenDesktopFrame_ == nullptr || this->selectionModel_ == nullptr ||
         this->selectionModel_->Phase() != SelectionPhase::Selected || !this->selectionModel_->HasSelection())
     {
@@ -1150,18 +1157,45 @@ catch (const std::exception&)
 }
 
 // 显示包含当前构建版本号的本地化关于对话框。
-void App::ShowAbout() const
+void App::ShowAbout()
 {
     const std::wstring text = GetUiText("about.body", {{L"version", OPEN_ST_WIDEN(OPEN_ST_VERSION)}});
     const std::wstring title = GetUiText("about.title");
-    (void)MessageBoxW(this->messageWindow_, text.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
+    this->ShowSimpleMessage(text, title, MB_OK | MB_ICONINFORMATION);
 }
 
 // 将底层截图失败详情嵌入本地化消息外壳并显示错误对话框。
-void App::ShowCaptureError(const std::wstring& detail) const
+void App::ShowCaptureError(const std::wstring& detail)
 {
     const std::wstring message = GetUiText("capture.error.message", {{L"detail", detail}});
     const std::wstring title = GetUiText("app.title");
-    (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), MB_OK | MB_ICONERROR);
+    this->ShowSimpleMessage(message, title, MB_OK | MB_ICONERROR);
+}
+
+// 守卫覆盖 Renderer 与系统兜底两条路径；正常关闭和 WM_QUIT 返回不再次弹窗。
+void App::ShowSimpleMessage(const std::wstring& message, const std::wstring& title, UINT fallbackFlags)
+{
+    if (this->dialogActive_)
+    {
+        return;
+    }
+    CompletionBusyGuard dialogGuard(this->dialogActive_);
+    bool shown = false;
+    try
+    {
+        shown = TryShowSimpleMessageWindow(this->messageWindow_, this->largeIcon_, title, message,
+            GetUiText("dialog.ok"), [this](MSG& threadMessage)
+            {
+                return this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(threadMessage);
+            });
+    }
+    catch (...)
+    {
+        OPEN_ST_LOG_ERROR("Failed to prepare the application message window.");
+    }
+    if (!shown)
+    {
+        (void)MessageBoxW(this->messageWindow_, message.c_str(), title.c_str(), fallbackFlags);
+    }
 }
 } // namespace open_st
