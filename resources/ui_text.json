@@ -2,6 +2,31 @@
   "schemaVersion": 1,
   "languages": ["zh-CN", "en-US", "ja-JP"],
   "texts": {
+    "capture.toolbar.title": {
+      "zh-CN": "截图工具栏",
+      "en-US": "Capture toolbar",
+      "ja-JP": "キャプチャツールバー"
+    },
+    "capture.toolbar.cancel": {
+      "zh-CN": "取消截图",
+      "en-US": "Cancel capture",
+      "ja-JP": "キャプチャをキャンセル"
+    },
+    "capture.toolbar.save": {
+      "zh-CN": "保存（Ctrl+S）",
+      "en-US": "Save (Ctrl+S)",
+      "ja-JP": "保存（Ctrl+S）"
+    },
+    "capture.toolbar.copy": {
+      "zh-CN": "复制（Ctrl+C / Enter）",
+      "en-US": "Copy (Ctrl+C / Enter)",
+      "ja-JP": "コピー（Ctrl+C / Enter）"
+    },
+    "capture.toolbar.failed": {
+      "zh-CN": "截图工具栏暂时不可用。仍可使用 Ctrl+C 或 Enter 复制、Ctrl+S 保存，使用 Esc 逐层取消截图。",
+      "en-US": "The capture toolbar is unavailable. You can still copy with Ctrl+C or Enter, save with Ctrl+S, and cancel capture in stages with Esc.",
+      "ja-JP": "キャプチャツールバーを使用できません。Ctrl+C または Enter でコピー、Ctrl+S で保存、Esc で段階的にキャンセルできます。"
+    },
     "launch.busy": {
       "zh-CN": "Open-ST 正在处理其他操作，本次截图请求未执行。请稍后重试。",
       "en-US": "Open-ST is busy. This capture request was not executed. Please try again.",
@@ -58,9 +83,9 @@
       "ja-JP": "起動項目を読み取りまたは変更できませんでした。"
     },
     "settings.startup.label": {
-      "zh-CN": "登录后启动 Open-ST",
-      "en-US": "Start Open-ST when I sign in",
-      "ja-JP": "ログイン時に Open-ST を起動"
+      "zh-CN": "开机后启动 Open-ST",
+      "en-US": "Start Open-ST when the computer starts",
+      "ja-JP": "パソコン起動時に Open-ST を起動"
     },
     "settings.startup.status": {
       "zh-CN": "启动入口状态",
@@ -103,9 +128,9 @@
       "ja-JP": "現在のキャプチャは端末内で処理します。今後の OCR は端末内で実行し、テキスト翻訳は文字を、画像翻訳は処理後の画像を送信します。これらはまだ利用できません。"
     },
     "welcome.confirm": {
-      "zh-CN": "确认 / 重试",
-      "en-US": "Confirm / Retry",
-      "ja-JP": "確認 / 再試行"
+      "zh-CN": "确认",
+      "en-US": "Confirm",
+      "ja-JP": "確認"
     },
     "welcome.exit": {
       "zh-CN": "退出",

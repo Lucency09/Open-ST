@@ -16,6 +16,9 @@ class SelectionModel;
 class SettingsWindow;
 class SelectionOutputRenderer;
 class CaptureCompletion;
+class CaptureToolbar;
+class CaptureCommandGate;
+enum class CaptureToolbarCommand : std::uint32_t;
 class SingleInstance;
 class StartupRegistration;
 class WelcomeWindow;
@@ -45,6 +48,7 @@ class App final
     int Run(int showCommand);
 
   private:
+    friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
     // 从隐藏消息窗口的用户数据中找回 App，并把系统消息转发给实例处理器。
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     // 处理截图覆盖窗口的绘制、鼠标、键盘、捕获与销毁消息。
@@ -79,6 +83,18 @@ class App final
     void UpdateCaptureGate() noexcept;
     // 捕获冻结桌面帧并建立一次覆盖窗口、渲染器和选区模型会话。
     void StartCapture();
+    // 在完整覆盖会话上建立无激活工具栏；失败保留键盘操作。
+    void CreateCaptureToolbar() noexcept;
+    // 同步可见性和位置；操作结束时更新选屏锚点，普通刷新保留原屏幕。
+    void RefreshCaptureToolbar(bool updateMonitor = false) noexcept;
+    // 让旧选区请求失效并同步工具栏。
+    void InvalidateToolbarCommands(bool updateMonitor = false) noexcept;
+    // 按钮与快捷键共用投递入口，立即锁定待处理请求。
+    bool PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept;
+    // 消息队列消费命令，校验代次后调用统一业务入口。
+    void DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t token);
+    // 判断当前稳定选区是否允许提交命令。
+    bool CanSubmitToolbarCommand() const noexcept;
     // 按“当前拖动、已有选区、覆盖窗口”三级语义处理 Esc 或右键取消。
     void CancelSelectionOrClose() noexcept;
     // 释放当前截图会话资源并销毁覆盖窗口。
@@ -108,6 +124,9 @@ class App final
     bool comInitialized_{}; // 仅成功初始化时配对 CoUninitialize。
     std::unique_ptr<SelectionOutputRenderer> outputRenderer_;
     std::unique_ptr<CaptureCompletion> completion_;
+    std::unique_ptr<CaptureToolbar> captureToolbar_;
+    std::unique_ptr<CaptureCommandGate> toolbarGate_;
+    HMONITOR toolbarMonitor_{}; // 只在选区操作结束时重新选择目标屏幕。
 
     HICON largeIcon_{};         // 自有非共享图标，窗口关闭后由 App 析构释放。
     HICON smallIcon_{};         // 托盘与设置窗口借用，移除后再释放。

@@ -1,4 +1,5 @@
 # application 封装应用生命周期、托盘、快捷键和窗口消息协调逻辑。
+add_subdirectory(CaptureToolbar)
 add_subdirectory(Export)
 add_subdirectory(Graphics)
 add_subdirectory(Localization)
@@ -12,6 +13,9 @@ target_sources(open_st_application
     PRIVATE
         source/app.cpp
         source/capture_completion.cpp
+        source/capture_toolbar_monitor.cpp
+        private/capture_toolbar_monitor.h
+        private/capture_command_gate.h
         source/save_image_dialog.cpp
         source/simple_message_window.cpp
         private/simple_message_window.h
@@ -33,6 +37,7 @@ target_link_libraries(open_st_application
     PRIVATE
         # 功能模块只作为 application 的实现细节，不传播给 launcher。
         OpenST::Export
+        OpenST::CaptureToolbar
         OpenST::Capture
         OpenST::Graphics
         OpenST::Localization

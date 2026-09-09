@@ -43,6 +43,10 @@ src/
         │   ├── include/
         │   ├── private/
         │   └── source/
+        ├── CaptureToolbar/     # OpenST::CaptureToolbar：独立截图工具栏与布局
+        │   ├── include/
+        │   ├── private/
+        │   └── source/
         ├── Settings/           # OpenST::Settings，SettingsWindow 为同一目标的兼容别名
         │   ├── CMakeLists.txt
         │   ├── include/
@@ -97,6 +101,7 @@ src/
 launcher -> application
 application -> localization
 application -> system_integration
+application -> capture_toolbar
 application -> settings
 application -> graphics
 application -> export
@@ -113,7 +118,9 @@ localization -> common
 
 `Application` 协调设置窗口、本地化、图形、桌面捕获和日志；每次截图读取一份边框颜色设置并传入各屏渲染器，`Graphics` 只负责解析与渲染，不依赖同级 `Settings`。设置窗口通过 Application 注入的窄回调查询语言与文本、通知保存完成，由 Application 切换运行时语言，不依赖同级 `Localization`。`Launcher` 只保留 Windows 程序入口并生成 `Open-ST.exe`。`Common` 只提供通用能力，不得反向依赖产品模块。
 
-`App::CopySelection` 与 `App::SaveSelection` 是统一完成入口，目前分别由 Ctrl+C/Enter 和 Ctrl+S 触发。Application 的私有 `CaptureCompletion` 编排同步转换和输出，忙状态覆盖保存对话框与错误提示；取消或失败保留有效会话，显示布局失效则在模态调用返回后回收。本阶段不实现双击完成、工具栏或独立快捷键模块。
+`App::CopySelection` 与 `App::SaveSelection` 是统一完成入口，由快捷键或工具栏命令调用。Application 的私有 `CaptureCompletion` 编排同步转换和输出，忙状态覆盖保存对话框与错误提示；取消或失败保留有效会话，显示布局失效则在模态调用返回后回收。工具栏与快捷键共享待处理状态、截图/选区代次及忙状态检查；本阶段不实现双击完成或独立快捷键配置模块。
+
+`CaptureToolbar` 只依赖标准库、Windows SDK 及统一编译选项，不能依赖 Application 或其兄弟模块，也不链接 Common/WindowRenderer。App 将选区转换为物理像素 RECT，传入目标屏工作区和 DPI；工具栏只消费自己的按钮描述、状态、文本和命令回调。业务命令由 App 投递回消息窗口；工具栏不读 JSON、不持有冻结帧、不参与导出。普通按钮扩展使用稳定命令 ID，禁止以按钮排列下标作为业务 ID。
 
 ## 3. CMake 辅助文件
 
@@ -187,6 +194,7 @@ testing/
 │       ├── Localization/
 │       ├── Settings/
 │       ├── SystemIntegration/
+│       ├── CaptureToolbar/
 │       └── Graphics/
 │           ├── source/
 │           ├── selection/      # Graphics 内部选区测试
@@ -318,6 +326,26 @@ try {
 窗口弹出后一直等待用户点击“确定”、按 Esc 或点击右上角关闭按钮，没有自动关闭计时器。
 `finally` 在测试结束或报错后清除环境开关，避免之后的普通回归意外等待人工操作。
 普通回归中的 skip 不表示人工验收通过。自动模态测试使用消息驱动关闭，另行报告。
+
+### 截图工具栏人工窗口验收
+
+工具栏模块测试筛选名为 `capture_toolbar`。在仓库根目录运行：
+
+```powershell
+$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
+try {
+    .\scripts\test.ps1 capture_toolbar ToolbarManualTest.waits_for_user_close
+} finally {
+    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
+}
+```
+
+该独立测试只显示测试宿主和工具栏，按钮使用模拟业务，不写系统剪贴板、截图文件或启动项。
+窗口等待人工关闭，没有自动关闭计时器；普通回归默认跳过，不将跳过视为视觉验收通过。
+
+实际截图还需检查：选区创建/移动/缩放后工具栏位置、不同 DPI 和负坐标屏幕、取消与快捷键语义、
+保存取消或失败后恢复、快速交替点击保存和按 Ctrl+S 不重复打开窗口，以及复制/保存结果不含工具栏。
+首版不包含标注、撤销/重做、贴图或“更多”菜单。
 
 ### 欢迎、开机启动与退出清理人工验收
 

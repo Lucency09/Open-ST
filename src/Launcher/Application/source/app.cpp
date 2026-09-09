@@ -1,8 +1,11 @@
+#include "capture_command_gate.h"
 #include "capture_completion.h"
+#include "capture_toolbar_monitor.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
 #include <app.h>
 #include <array>
+#include <capture_toolbar.h>
 #include <clipboard_writer.h>
 #include <desktop_capturer.h>
 #include <desktop_preview.h>
@@ -43,6 +46,7 @@ namespace
 constexpr wchar_t MESSAGE_CLASS[] = L"OpenST.MessageWindow";
 constexpr wchar_t OVERLAY_CLASS[] = L"OpenST.CaptureOverlay";
 constexpr UINT LAUNCH_MESSAGE = WM_APP + 3;
+constexpr UINT TOOLBAR_COMMAND_MESSAGE = WM_APP + 4;
 constexpr UINT PREPARE_OUTPUT_MESSAGE = WM_APP + 2;
 constexpr UINT TRAY_MESSAGE = WM_APP + 1;
 constexpr UINT TRAY_ID = 1;
@@ -525,6 +529,11 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 真正的窗口消息处理逻辑在实例方法中实现，静态窗口过程负责绑定或找回 App 实例，并将消息转发给它。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (message == TOOLBAR_COMMAND_MESSAGE)
+    {
+        this->DispatchToolbarCommand(static_cast<CaptureToolbarCommand>(wParam), static_cast<std::uint64_t>(lParam));
+        return 0;
+    }
     if (message == LAUNCH_MESSAGE)
     {
         if (this->welcoming_)
@@ -678,6 +687,14 @@ void App::RemoveTrayIcon() noexcept
 // 设置窗口确认新的界面语言后，刷新所有窗口标题和托盘提示文本。
 void App::RefreshLocalizedUi()
 {
+    if (this->captureToolbar_ != nullptr)
+    {
+        const ToolbarResult result = this->captureToolbar_->RefreshTexts();
+        if (!result.success)
+        {
+            OPEN_ST_LOG_WARNING("Failed to refresh capture toolbar texts.");
+        }
+    }
     if (this->settingsWindow_ != nullptr)
     {
         this->settingsWindow_->RefreshTexts();
@@ -838,6 +855,217 @@ void App::UpdateCaptureGate() noexcept
         this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_;
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
+    this->InvalidateToolbarCommands();
+}
+
+// 判断当前输入能否进入统一完成命令队列。
+bool App::CanSubmitToolbarCommand() const noexcept
+{
+    return !this->completionBusy_ && !this->dialogActive_ && !this->welcoming_ && !this->shuttingDown_ &&
+           !this->settingsBusy_ && !this->overlayPreparing_ && !this->overlayInvalidated_ &&
+           this->overlaySession_ != nullptr && this->selectionModel_ != nullptr &&
+           this->selectionModel_->Phase() == SelectionPhase::Selected && this->selectionModel_->HasSelection();
+}
+
+// 投递固定数值而非裸指针；预订后按钮和快捷键均不能再次进入。
+bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
+{
+    if (command != CaptureToolbarCommand::Cancel && command != CaptureToolbarCommand::Save &&
+        command != CaptureToolbarCommand::Copy)
+    {
+        return false;
+    }
+    if (this->toolbarGate_ == nullptr ||
+        !this->toolbarGate_->Reserve(token, static_cast<std::uint32_t>(command), this->CanSubmitToolbarCommand()))
+    {
+        return false;
+    }
+    if (!PostMessageW(this->messageWindow_, TOOLBAR_COMMAND_MESSAGE, static_cast<WPARAM>(command),
+                      static_cast<LPARAM>(token)))
+    {
+        const DWORD error = GetLastError();
+        this->InvalidateToolbarCommands();
+        OPEN_ST_LOG_WARNING("Failed to post capture toolbar command. win32_error=", error);
+        return false;
+    }
+    if (this->captureToolbar_ != nullptr)
+    {
+        this->captureToolbar_->SetBusy(true);
+    }
+    return true;
+}
+
+// 在按钮窗口过程返回后执行业务，避免回调栈中同步销毁工具栏。
+void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t token)
+{
+    if (this->toolbarGate_ == nullptr ||
+        !this->toolbarGate_->Consume(token, static_cast<std::uint32_t>(command), this->CanSubmitToolbarCommand()))
+    {
+        this->RefreshCaptureToolbar();
+        return;
+    }
+    switch (command)
+    {
+    case CaptureToolbarCommand::Cancel:
+        this->CloseOverlay();
+        break;
+    case CaptureToolbarCommand::Save:
+        this->SaveSelection();
+        break;
+    case CaptureToolbarCommand::Copy:
+        this->CopySelection();
+        break;
+    }
+    this->RefreshCaptureToolbar();
+}
+
+// 所有取消和模态切换都同步撤销旧请求，工具栏的新 token 随后统一刷新。
+void App::InvalidateToolbarCommands(bool updateMonitor) noexcept
+{
+    if (this->toolbarGate_ != nullptr)
+    {
+        this->toolbarGate_->Invalidate();
+        this->toolbarGate_->SetInputBarrier(GetTickCount());
+    }
+    this->RefreshCaptureToolbar(updateMonitor);
+}
+
+// 按当前稳定选区展示一条工具栏，目标屏幕只在选区操作结束时改变。
+void App::RefreshCaptureToolbar(bool updateMonitor) noexcept
+try
+{
+    if (this->captureToolbar_ == nullptr || this->toolbarGate_ == nullptr)
+    {
+        return;
+    }
+    if (!this->CanSubmitToolbarCommand())
+    {
+        this->captureToolbar_->Hide();
+        return;
+    }
+    const RectI rectangle = this->selectionModel_->Snapshot().rectangle;
+    const RECT selection{rectangle.left, rectangle.top, rectangle.right, rectangle.bottom};
+    if (updateMonitor || this->toolbarMonitor_ == nullptr)
+    {
+        std::vector<HMONITOR> monitors;
+        const BOOL enumerated = EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL
+            {
+                try
+                {
+                    reinterpret_cast<std::vector<HMONITOR>*>(data)->push_back(monitor);
+                    return TRUE;
+                }
+                catch (...)
+                {
+                    return FALSE;
+                }
+            },
+            reinterpret_cast<LPARAM>(&monitors));
+        if (!enumerated)
+        {
+            this->captureToolbar_->Hide();
+            return;
+        }
+        std::vector<RECT> bounds;
+        for (HMONITOR monitor : monitors)
+        {
+            MONITORINFO info{sizeof(info)};
+            if (!GetMonitorInfoW(monitor, &info))
+            {
+                this->captureToolbar_->Hide();
+                return;
+            }
+            bounds.push_back(info.rcMonitor);
+        }
+        POINT endpoint{selection.right - 1, selection.bottom - 1};
+        (void)GetCursorPos(&endpoint);
+        const std::size_t chosen = SelectToolbarMonitor(selection, endpoint, bounds);
+        if (chosen == monitors.size())
+        {
+            this->captureToolbar_->Hide();
+            return;
+        }
+        this->toolbarMonitor_ = monitors[chosen];
+    }
+    MONITORINFO monitorInfo{sizeof(monitorInfo)};
+    if (!GetMonitorInfoW(this->toolbarMonitor_, &monitorInfo))
+    {
+        this->captureToolbar_->Hide();
+        return;
+    }
+    const HWND output = this->overlaySession_->WindowForMonitor(this->toolbarMonitor_);
+    const UINT dpi = output != nullptr ? GetDpiForWindow(output) : 96;
+    const ToolbarResult placed =
+        this->captureToolbar_->UpdatePlacement(selection, monitorInfo.rcWork, dpi == 0 ? 96 : dpi);
+    if (!placed.success)
+    {
+        this->captureToolbar_->Hide();
+        OPEN_ST_LOG_WARNING("Failed to position capture toolbar.");
+        return;
+    }
+    this->captureToolbar_->SetBusy(this->toolbarGate_->Pending());
+    const ToolbarResult shown = this->captureToolbar_->Show(this->toolbarGate_->Token());
+    if (!shown.success)
+    {
+        OPEN_ST_LOG_WARNING("Failed to show capture toolbar.");
+    }
+}
+catch (...)
+{
+    if (this->captureToolbar_ != nullptr)
+    {
+        this->captureToolbar_->Hide();
+    }
+    OPEN_ST_LOG_WARNING("Failed to update capture toolbar.");
+}
+
+// 仅在冻结帧及覆盖窗口准备完毕后创建工具栏；失败不影响原有截图快捷键。
+void App::CreateCaptureToolbar() noexcept
+{
+    try
+    {
+        this->captureToolbar_ = std::make_unique<CaptureToolbar>();
+        std::vector<ToolbarButtonSpec> buttons{
+            {CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "capture.toolbar.cancel", 0},
+            {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
+            {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
+        const ToolbarResult result = this->captureToolbar_->Create(
+            this->instance_, this->overlaySession_->ActivationWindow(), std::move(buttons), [](std::string_view key)
+            { return GetUiText(key); }, [this](CaptureToolbarCommand command, std::uint64_t token)
+            { return this->PostToolbarCommand(command, token); });
+        if (result.success)
+        {
+            return;
+        }
+        OPEN_ST_LOG_WARNING("Failed to create capture toolbar. detail=", WideToUtf8(result.error));
+    }
+    catch (...)
+    {
+        OPEN_ST_LOG_WARNING("Failed to allocate capture toolbar.");
+    }
+    this->captureToolbar_.reset();
+    // 同步提示期间冻结会话输入，返回后先检查显示布局是否仍有效。
+    try
+    {
+        CompletionBusyGuard guard(this->completionBusy_, [this]() { this->UpdateCaptureGate(); });
+        (void)MessageBoxW(this->overlaySession_->ActivationWindow(), GetUiText("capture.toolbar.failed").c_str(),
+                          GetUiText("app.title").c_str(), MB_OK | MB_ICONWARNING);
+        guard.Release();
+        if (this->overlayInvalidated_)
+        {
+            this->CloseOverlay();
+        }
+        else if (this->overlaySession_ != nullptr)
+        {
+            this->overlaySession_->RestoreFocus();
+        }
+    }
+    catch (...)
+    {
+        OPEN_ST_LOG_WARNING("Failed to present capture toolbar warning.");
+    }
 }
 
 // 在显示遮罩前冻结虚拟桌面，并建立覆盖窗口、渲染器和选区模型的一次会话。
@@ -853,6 +1081,7 @@ try
     {
         // 同一时刻只允许一个截图会话；重复快捷键只把现有覆盖窗口带回前台。
         SetForegroundWindow(this->overlaySession_->ActivationWindow());
+        this->RefreshCaptureToolbar();
         return;
     }
 
@@ -891,6 +1120,12 @@ try
     this->selectionModel_ = std::make_unique<SelectionModel>();
     this->selectionModel_->SetBounds(bounds);
     this->overlaySession_ = std::make_unique<CaptureOverlaySession>();
+    if (this->toolbarGate_ == nullptr)
+    {
+        this->toolbarGate_ = std::make_unique<CaptureCommandGate>();
+    }
+    this->toolbarGate_->Invalidate();
+    this->toolbarGate_->SetInputBarrier(GetTickCount());
     this->overlayPreparing_ = true;
     this->overlayInvalidated_ = false;
 
@@ -951,6 +1186,7 @@ try
         return;
     }
     OPEN_ST_LOG_DEBUG("All capture output overlays displayed.");
+    this->CreateCaptureToolbar();
 }
 catch (const std::exception&)
 {
@@ -1043,12 +1279,14 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             PointI point{};
             if (TryGetCursorPoint(point) && app->selectionModel_->Begin(point))
             {
+                app->InvalidateToolbarCommands();
                 SetFocus(window);
                 SetCapture(window);
                 if (GetCapture() != window)
                 {
                     OPEN_ST_LOG_WARNING("Failed to capture the mouse for a selection interaction.");
                     (void)app->selectionModel_->CancelInteraction();
+                    app->InvalidateToolbarCommands();
                     UpdateOverlayCursor(*app->selectionModel_);
                     app->overlaySession_->Invalidate();
                     return 0;
@@ -1089,6 +1327,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             }
             UpdateOverlayCursor(*app->selectionModel_);
             app->overlaySession_->Invalidate();
+            app->InvalidateToolbarCommands(true);
         }
         return 0;
     case WM_CAPTURECHANGED:
@@ -1096,6 +1335,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             app->selectionModel_->Phase() == SelectionPhase::Dragging)
         {
             (void)app->selectionModel_->CancelInteraction();
+            app->InvalidateToolbarCommands();
             UpdateOverlayCursor(*app->selectionModel_);
             app->overlaySession_->Invalidate();
         }
@@ -1105,6 +1345,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             app->selectionModel_->Phase() == SelectionPhase::Dragging)
         {
             (void)app->selectionModel_->CancelInteraction();
+            app->InvalidateToolbarCommands();
             if (GetCapture() == window)
             {
                 ReleaseCapture();
@@ -1156,12 +1397,20 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             if ((wParam == VK_RETURN && !control) || (wParam == 'C' && control))
             {
-                app->CopySelection();
+                if (app->toolbarGate_ != nullptr &&
+                    app->toolbarGate_->AcceptsInput(static_cast<DWORD>(GetMessageTime())))
+                {
+                    (void)app->PostToolbarCommand(CaptureToolbarCommand::Copy, app->toolbarGate_->Token());
+                }
                 return 0;
             }
             if (wParam == 'S' && control)
             {
-                app->SaveSelection();
+                if (app->toolbarGate_ != nullptr &&
+                    app->toolbarGate_->AcceptsInput(static_cast<DWORD>(GetMessageTime())))
+                {
+                    (void)app->PostToolbarCommand(CaptureToolbarCommand::Save, app->toolbarGate_->Token());
+                }
                 return 0;
             }
         }
@@ -1205,6 +1454,7 @@ void App::CancelSelectionOrClose() noexcept
     if (this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Dragging)
     {
         (void)this->selectionModel_->CancelInteraction();
+        this->InvalidateToolbarCommands();
         if (this->overlaySession_ != nullptr)
         {
             this->overlaySession_->ReleaseMouse();
@@ -1219,6 +1469,7 @@ void App::CancelSelectionOrClose() noexcept
     if (this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Selected)
     {
         this->selectionModel_->Reset();
+        this->InvalidateToolbarCommands();
         UpdateOverlayCursor(*this->selectionModel_);
         if (this->overlaySession_ != nullptr)
         {
@@ -1232,11 +1483,26 @@ void App::CancelSelectionOrClose() noexcept
 // 释放鼠标捕获与截图会话对象，并安全销毁当前覆盖窗口。
 void App::CloseOverlay() noexcept
 {
+    if (this->toolbarGate_ != nullptr)
+    {
+        this->toolbarGate_->Invalidate();
+        this->toolbarGate_->SetInputBarrier(GetTickCount());
+    }
+    if (this->captureToolbar_ != nullptr)
+    {
+        this->captureToolbar_->Hide();
+    }
     if (this->completionBusy_)
     {
         this->overlayInvalidated_ = true;
         return;
     }
+    if (this->captureToolbar_ != nullptr)
+    {
+        this->captureToolbar_->Close();
+        this->captureToolbar_.reset();
+    }
+    this->toolbarMonitor_ = nullptr;
     if (this->outputRenderer_ != nullptr)
     {
         this->outputRenderer_->ReleaseImageResources();
@@ -1358,6 +1624,7 @@ try
     else if (this->overlaySession_ != nullptr)
     {
         this->overlaySession_->RestoreFocus();
+        this->RefreshCaptureToolbar();
     }
     if (result == CompletionResult::SavedDirectoryWarning)
     {
@@ -1377,6 +1644,7 @@ catch (const std::exception&)
     else if (this->overlaySession_ != nullptr)
     {
         this->overlaySession_->RestoreFocus();
+        this->RefreshCaptureToolbar();
     }
 }
 
@@ -1542,6 +1810,17 @@ void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function
     if (!shown)
     {
         (void)MessageBoxW(this->DialogOwner(), message().c_str(), title().c_str(), fallbackFlags);
+    }
+    dialogGuard.Release();
+    if (this->overlaySession_ != nullptr)
+    {
+        const HWND foreground = GetForegroundWindow();
+        if (foreground != nullptr &&
+            (foreground == this->messageWindow_ || this->overlaySession_->Find(foreground) != nullptr))
+        {
+            this->overlaySession_->RestoreFocus();
+            this->RefreshCaptureToolbar();
+        }
     }
 }
 } // namespace open_st

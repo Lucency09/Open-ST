@@ -380,6 +380,17 @@ Settings 和 Localization 分别记录去重的运行期读取告警，经 `Cons
 Application 的独立清理窗口先保存关闭自启并删除入口，再关闭业务和日志；普通退出保留入口。
 可选日志删除由 Logger 在停止写入后完成，只识别本程序日志命名，拒绝重解析路径，失败保留目录用于重试。
 
+### 2.21 截图工具栏
+
+`Application/CaptureToolbar` 为独立 `OpenST::CaptureToolbar` 目标，只使用标准库和 Windows SDK 的 user32、gdi32、comctl32。
+专用无激活窗口承载原生自绘按钮、GDI 图标和本地化提示，采用浅灰紧凑横条；不扩展 JSON 表单 Renderer，也不把控件绘入冻结帧。
+App 提供有序按钮描述、状态、物理像素选区、屏幕工作区和 DPI；模块返回固定命令和会话代次，不包含 App 或兄弟模块类型。
+首版仅取消、保存、复制；隐藏按钮不占空间，分隔线随可见分组更新，后续业务通过注册描述和命令处理扩展。
+
+按钮与快捷键共享 App 的待处理/忙状态及代次校验，消息消费前拒绝重复和过期请求。拖动、输出和模态期间隐藏工具栏；
+保存取消或失败时恢复有效选区和焦点。截图结束先解除工具栏回调、关闭工具栏，再释放覆盖窗口和冻结图像。
+工具栏跨屏 DPI 更新与真实显示布局变化分别处理，工具栏不会出现在复制或保存的图像中。
+
 ## 3. 为什么不选替代方案
 
 ### 3.1 Qt
@@ -504,7 +515,7 @@ D3D11 能满足 60 FPS、HDR 图面和低延迟呈现目标，因此首版不使
 
 - 源码目录以 `Launcher/Application/Graphics/Capture` 的嵌套关系表达依赖方向；上级模块只依赖子孙模块，公共能力只通过独立 `common` 例外提供。
 - `FrozenDesktopFrame`、各输出原生 plane 和虚拟桌面物理像素几何属于 `capture` 的公开数据契约，不作为无业务语义的全局工具类型；逐输出 BGRA8/FP16 呈现缓冲属于父级 `graphics` 的派生数据。
-- Graphics 依赖子模块 Capture 与 HDR；Application 依赖子模块 Graphics、Export、Settings、Localization、SystemIntegration。HDR 与 Export 各自公开窄像素视图，不跨兄弟模块借用业务类型；Common 仍是唯一允许的跨层依赖例外。
+- Graphics 依赖子模块 Capture 与 HDR；Application 依赖子模块 Graphics、Export、Settings、Localization、SystemIntegration、CaptureToolbar。HDR 与 Export 各自公开窄像素视图，CaptureToolbar 只接受 SDK 基础几何及回调，不跨兄弟模块借用业务类型；Common 仍是唯一允许的跨层依赖例外。
 - 核心逻辑与 Win32 窗口过程分离，避免所有代码集中在 `WndProc`。
 - 捕获、绘制、OCR、翻译、设置、贴图通过接口边界解耦。
 - Windows 和第三方头文件按外部头处理，不降低项目自身 `/W4` 要求。

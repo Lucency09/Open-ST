@@ -34,6 +34,8 @@ class CaptureOverlaySession final
     [[nodiscard]] CaptureOverlayOutput* Find(HWND window) const noexcept;
     // 返回光标所在输出窗口；查询失败时退回首个窗口。
     [[nodiscard]] HWND ActivationWindow() const noexcept;
+    // 按监视器借用本会话窗口，为工具栏提供目标输出的实际窗口 DPI。
+    [[nodiscard]] HWND WindowForMonitor(HMONITOR monitor) const noexcept;
     // 标记全部显示输出重绘，保证共享选区跨屏同步。
     void Invalidate() const noexcept;
     // 仅释放属于本截图会话的鼠标捕获。

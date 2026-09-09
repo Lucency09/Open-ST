@@ -2,6 +2,19 @@
 
 namespace open_st
 {
+// 所有输出窗口覆盖自身捕获屏幕，无匹配输出时返回空句柄。
+HWND CaptureOverlaySession::WindowForMonitor(HMONITOR monitor) const noexcept
+{
+    for (const std::unique_ptr<CaptureOverlayOutput>& output : this->outputs_)
+    {
+        if (output->window != nullptr && MonitorFromWindow(output->window, MONITOR_DEFAULTTONULL) == monitor)
+        {
+            return output->window;
+        }
+    }
+    return nullptr;
+}
+
 // 即使初始化中途失败，也释放已经登记的隐藏窗口。
 CaptureOverlaySession::~CaptureOverlaySession()
 {

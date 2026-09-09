@@ -17,6 +17,7 @@
 | 托盘提示 | App::RefreshLocalizedUi 重新取文并通知 Shell 更新 |
 | 托盘菜单（含清理入口） | 每次展开重新调用 GetUiText |
 | 隐藏消息窗口、截图窗口标题 | App::RefreshLocalizedUi 刷新现有窗口 |
+| 截图工具栏标题、按钮名称与悬停提示 | App 注入 GetUiText 回调，RefreshLocalizedUi 调用 CaptureToolbar::RefreshTexts；capture.toolbar.* 提供中英日文本 |
 | 设置标题、页签、标签、按钮、自启状态 | SettingsWindow::RefreshTexts 重新查询文本回调；状态和字段错误保留键而非旧译文 |
 | 欢迎窗口及失败状态 | WelcomeWindow::RefreshTexts 通过回调重新取文 |
 | 关于与截图错误窗口 | 使用动态文本函数；App 保存当前窗口的借用指针，语言改变时刷新。截图错误详情也保存文本键 |
