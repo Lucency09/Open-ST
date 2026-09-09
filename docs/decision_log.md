@@ -575,6 +575,14 @@ Common/WindowRenderer 增加 checkbox 与 BindBool，Settings 编辑会话支持
 本项仅确认优先级，不表示具体施工方案已批准；[贴图方案](design/pin-window-v0.2.md) 已经子 Agent 复核，待用户审核。
 贴图原有产品能力仍以第 11 节和 D-014 为准；捕获期间隐藏既有贴图等新增交互取舍须随方案审核。
 
+## D-059：App 跨模块回调集中组装（2026-09-10）
+
+用户批准 [回调整理方案](design/app-callbacks-audit-2026-09-09.md)。在 Application/source 新建
+app_callbacks.cpp，集中 Settings/Welcome、CaptureToolbar、SingleInstance 的类型明确的工厂函数。
+回调类型与持有、清理由消费模块负责；App 保持生命周期、线程边界、命令准入和消息分派职责。
+局部同步回调及作用域守卫保留业务现场，不建立管理器对象、订阅注册表或事件总线，不增加模块或依赖。
+未来贴图的跨模块回调在该文件扩展；后台任务的结果投递及取消随对应功能单独设计。
+
 ## 尚待实现阶段细化
 
 下列内容不会改变上述需求语义，但需要在对应任务开始前形成技术设计或由测试确定参数：

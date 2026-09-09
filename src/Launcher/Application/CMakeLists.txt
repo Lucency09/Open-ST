@@ -14,6 +14,7 @@ add_library(OpenST::Application ALIAS open_st_application)
 target_sources(open_st_application
     PRIVATE
         source/app.cpp
+        source/app_callbacks.cpp
         source/capture_completion.cpp
         source/capture_toolbar_monitor.cpp
         private/capture_toolbar_monitor.h

@@ -1,7 +1,18 @@
 # 截图固定到屏幕方案
 
-状态：待用户审核，尚未获准施工。日期：2026-09-09。
-用户已确认将贴图前移至快捷键管理之前；初稿及本次点击聚焦、固定层级和依赖范围修订均已由子 Agent 只读复核。
+状态：待用户审核，尚未获准施工。修订日期：2026-09-10。
+用户已确认贴图优先，并要求在已批准的回调整理完成后重新设计；本版以现有 app_callbacks.cpp 为接入基础。
+本版已由子 Agent 只读审核，并补入真实窗口前置验收、全局模态暂停和 owner 生命周期约束。
+
+## 用户要求与验收对应
+
+| 用户要求 | 本方案约定 | 验收方式 |
+| --- | --- | --- |
+| 鼠标点击聚焦后才允许滚轮透明度/缩放 | 点击资格与实际焦点同时有效；新建、悬停、恢复显示均不授予资格 | 未点击滚动、A 聚焦而光标移到 B、失焦后滚动均无变化；重新点击后可操作 |
+| 按截屏顺序固定上下层，右键可调整到最上层 | 后截在上；焦点状态与排序独立；手动提层仅移动一个 ID | C/B/A → 点击 A 仍 C/B/A → 提升 A 为 A/C/B → 新截 D 为 D/A/C/B |
+| 详细解释依赖、被依赖、文件范围及调用顺序 | 第 3 节列模块和内部职责，第 4 节列文件，第 5 节列运行路径 | 核对目标链接和头文件方向，确认没有兄弟依赖和未说明的变动 |
+
+注释沿用已完成审计后的开发规范及现有样式：首行直接说明功能，随后说明入参和返回；不另起注释整改任务。
 
 ## 1. 当前基础与范围
 
@@ -36,8 +47,13 @@
 - Windows 激活非活动窗口会将其提层，因此在激活、显示与位置消息边界恢复既定顺序，配合重入保护及
   `SWP_NOACTIVATE`，普通移动缩放使用 `SWP_NOZORDER`。不使用定时器持续抢顶，也不改动其他程序的窗口。
   贴图之间不建立 owner 关系。菜单和模态对话框不纳入贴图列表，打开期间暂停普通层级修复，
-  提层菜单命令在菜单退出后应用，确保菜单和对话框仍可操作。点击下层贴图的瞬时层级变化与闪烁须真实窗口验收。
-  平台依据：[SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)。
+  提层菜单命令在菜单退出后应用，退出模态作用域时统一恢复有效排序，确保菜单和对话框仍可操作。
+  普通点击的激活请求在 WM_WINDOWPOSCHANGING 中约束为列表对应位置，激活/位置变化结束后再核对修复；
+  修复由管理器统一执行，避免每张窗口相互触发提层。点击下层贴图的瞬时层级变化与闪烁须真实窗口验收。
+  这是拟采用的消息处理策略，不能仅凭修改 WINDOWPOS 就宣称能阻止激活引起的全部提层。
+  SWP_NOACTIVATE 在管理器主动调用 SetWindowPos 时设置，不依靠在 WM_WINDOWPOSCHANGING 中临时添加该标志。
+  平台依据：[SetWindowPos](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos)、
+  [WM_WINDOWPOSCHANGING](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-windowposchanging)。
 
 ### 2.3 其余交互
 
@@ -72,6 +88,10 @@
   保持贴图存活，不套用“成功后关闭截图”的完成语义。
 - 模态保存、错误提示与退出期间按稳定 ID 校验命令，并持有图像快照；关闭窗口不会使排队命令访问失效引用。
   提交命令采用异步投递，销毁前解除回调，避免同步窗口消息重入释放。
+- 保存对话框和错误提示使用覆盖整个 Manager 的可嵌套模态作用域：所有贴图暂停激活、拖动、滚轮及新业务命令，
+  最后一层退出后才恢复交互并修复有效排序。菜单外点击先正常退出菜单，再允许后续新交互，不回放期间积压的输入。
+- 稳定 ID 在进程内不复用。模态图像快照仅保护像素，不保护 HWND；对话框所属贴图的关闭、Manager/App 的销毁
+  须延迟到模态调用返回。退出先标记并拒绝新命令，不在仍有业务栈帧时销毁 Manager；退出时不恢复交互或隐藏贴图。
 
 ### 3.1 依赖与被依赖
 
@@ -105,6 +125,20 @@ CaptureToolbar 只上报 Pin 命令，不依赖 PinWindow。Launcher 仍只调�
 相对初稿，本次将“App 直接持有多贴图集合”细化为“App 持有 Manager，Manager 管集合与窗口规则”。
 这使焦点、排序和窗口生命周期留在同一模块，App 仅负责跨模块业务；当前仍是待审设计，尚未施工。
 
+### 3.2 回调接入与内部调用方向
+
+- PinWindow 定义自己的文本查询与命令回调类型。App 在 `app_callbacks.cpp` 新增贴图回调工厂，
+  在 `app_pin.cpp` 初始化 Manager 时注入；不创建独立回调管理器，也不在 PinWindow 中调用 App 静态实例。
+- 文本回调在 UI 线程同步查询 GetUiText；复制/保存命令回调仅投递稳定 PinId 和命令到 App 消息窗口，
+  返回值表示是否成功入队，不代表复制/保存成功。App 消费时重新检查 ID、忙状态与退出状态。
+- 拖动、缩放、透明度、焦点及相对排序由 Manager 与内部窗口直接协作，不绕道 App。
+  窗口入口把输入交给 Manager；Manager 使用交互模型计算并指挥窗口/Renderer 应用结果。
+  Manager 拥有窗口，内部窗口只借用 Manager；销毁先停止消息入口、解除外部回调，再释放窗口和图像。
+- 图片快照采用共享的不可变自有数据。模态操作持有快照并通过 ID 重查窗口，禁止持有跨消息循环的裸窗口对象指针。
+  贴图命令使用独立消息类别与待处理状态；沿用截图的消息投递思想，不混用截图 token 或完成后关截图的语义。
+- 退出先阻止新命令、结束截图且不恢复贴图，再关闭所有贴图；之后才能关闭本地化、设置、消息窗口与 COM。
+  回调组装集中不替代这些销毁约束。
+
 ## 4. 拟变动文件范围
 
 以下均为获批后的计划，不表示文件已经创建。新增头文件只有确需跨模块使用的才放入 include。
@@ -130,6 +164,7 @@ CaptureToolbar 只上报 Pin 命令，不依赖 PinWindow。Launcher 仍只调�
 | src/Launcher/Application/CMakeLists.txt | 加载 PinWindow、PRIVATE 链接新目标，登记 app_pin.cpp |
 | src/Launcher/Application/include/app.h | 前置声明 Manager、增加自有实例及贴图编排函数声明 |
 | src/Launcher/Application/source/app.cpp | Pin 命令准入/分派，工具栏按钮描述，托盘菜单，截图隐藏恢复入口，退出与语言刷新 |
+| src/Launcher/Application/source/app_callbacks.cpp | 增加贴图文本和命令回调工厂，保持集中组装规则 |
 | src/Launcher/Application/source/app_pin.cpp（新增） | 放置 App 的贴图创建、像素适配、复制保存和错误处理，控制 app.cpp 增量 |
 | src/Launcher/Application/CaptureToolbar/include/capture_toolbar.h | 追加 Pin 命令及图标枚举，保留既有 ID 值 |
 | src/Launcher/Application/CaptureToolbar/source/capture_toolbar.cpp | 图钉图标绘制 |
@@ -156,11 +191,12 @@ CaptureCommandGate 已接受通用整数命令，无需为 Pin 改结构；只�
 
 ### 5.1 创建贴图
 
+0. App::MakePinCallbacks（拟新增，app_callbacks.cpp）→ 初始化 PinWindowManager 并注入文本/命令回调。
 1. CaptureToolbar 图钉按钮 → App::PostToolbarCommand(Pin, token) → 消息窗口 → DispatchToolbarCommand。
 2. 现有闸门检查选区稳定、忙状态、代次与重复请求 → App::PinSelection（拟新增）。
 3. SelectionOutputRenderer::Render(冻结桌面, 选区) → SdrSelectionFrame；HDR 需要时在现有链中转换一次。
 4. App 适配宽高/步幅/像素 → PinImage 持有独立图像 → Manager 准备隐藏窗口和渲染资源。
-5. 准备成功才发布新 ID，并在排序列表顶部加入贴图 → 关闭截图覆盖层 → 恢复旧贴图并按列表显示新贴图。
+5. 图像校验、窗口创建、首帧上传绘制与合成提交均成功，才发布新 ID 并加入排序列表顶部 → 关闭截图覆盖层 → 恢复旧贴图并按列表显示新贴图。
    新贴图不自动取得滚轮资格；准备失败回收候选窗口、保留选区供重试。
 
 ### 5.2 聚焦、滚轮与提层
@@ -172,7 +208,7 @@ CaptureCommandGate 已接受通用整数命令，无需为 Pin 改结构；只�
 
 ### 5.3 复制与保存
 
-1. 贴图菜单 → 注入回调投递稳定 ID 与命令到 App 消息窗口 → 检查存活/忙状态并持有图像快照。
+1. 贴图菜单 → app_callbacks.cpp 组装的命令回调投递稳定 ID 与命令到 App 消息窗口 → 检查存活/忙状态并持有图像快照。
 2. 复制：App 适配 SdrImageView → CopyImageToClipboard。
 3. 保存：App 读取上次目录 → ShowSaveImageDialog → 确认后 WriteImageFile → 成功后记录目录。
 4. 释放忙状态和临时快照；成功、取消或失败均保留贴图。文件成功但目录保存失败单独提示。
@@ -188,8 +224,12 @@ CaptureCommandGate 已接受通用整数命令，无需为 Pin 改结构；只�
 
 获得批准后分步实施，每步由子 Agent 监督范围和完成情况：
 
-1. 独立图像/窗口生命周期、置顶显示及多贴图管理，补基础模型和隐藏窗口测试。
-2. 工具栏与 App 接入，验证创建成功/失败、命令防重复及旧贴图隐藏恢复。
+1. 先完成独立图像/窗口生命周期、置顶显示及多贴图管理，补基础模型和窗口测试。
+   **前置硬验收**：用三张部分重叠的真实窗口验证点击/拖动下层 A 后，实际前台和键盘焦点属于 A、
+   相对顺序仍为 C/B/A，且没有可见层级闪烁；滚轮仅作用于满足点击资格的 A。
+   同时验证菜单提层、模态返回及隐藏恢复。通过后才进入完整工具栏/导出接入；若平台策略不成立，
+   暂停并提交替代设计，不靠定时抢顶或弱化固定层级要求继续施工。
+2. 工具栏与 App/app_callbacks.cpp 接入，验证创建成功/失败、命令防重复及旧贴图隐藏恢复。
 3. 拖动缩放、透明度、菜单、穿透恢复、复制保存和退出清理，补交互边界及模态重入测试。
 4. Debug/Release 构建、相应模块与全量回归、文档同步及人工验收。
 

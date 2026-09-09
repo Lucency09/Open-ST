@@ -1,8 +1,8 @@
 # Application 回调审计与整理建议
 
-日期：2026-09-09。状态：只读源码审计及待审设计，不代表获准施工。
+审计日期：2026-09-09。实施日期：2026-09-10。状态：用户已批准，回调集中组装已实现。
 主 Agent 与独立子 Agent 分别核对 App/工具栏/单实例/输出，以及 Settings/Welcome/Renderer 路径，结论一致。
-行号基于本轮工作区；未运行构建或测试，本文测试结论仅指现有测试源码覆盖内容。
+第 1～5 节保留审计时的判断和批准范围，行号为审计时快照；实施结果与实际验证见第 6 节。
 
 ## 1. 结论
 
@@ -99,3 +99,21 @@ App 初始化某模块
 出现动态模块加载/卸载、多订阅者、独立订阅寿命，或多个异步来源需要统一结果投递与取消时，再评估专门组件。
 届时可以仍放在 Application/private 与 source 下，不需要新模块；应按实际需求选择事件分发器或任务结果队列。
 当前回调数量增加主要意味着组装代码变长，还不足以证明需要动态订阅系统。
+
+## 6. 已批准方案的实施结果（2026-09-10）
+
+- 新增 `Application/source/app_callbacks.cpp`，承载 `MakeSettingsCallbacks`、`MakeToolbarTextResolver`、
+  `MakeToolbarCommandHandler` 与 `MakeCaptureGateCallback`；设置回调整体迁移，其他闭包保持原行为。
+- 修改 `Application/include/app.h` 声明三个新增私有工厂，并包含 optional；`source/app.cpp` 在原注入点调用工厂；
+  `Application/CMakeLists.txt` 登记新源文件。实现范围共四个文件（一个新增、三个修改）。
+- 新文件依赖 App 声明、Settings 的回调结构与 Localization 取文接口，编入既有 Application 目标；
+  由 App::Run、App::ShowSettings 和 App::CreateCaptureToolbar 使用，无新增模块、链接库或第三方依赖。
+- 工具栏依旧同步返回命令是否成功排队，随后在 App 消息窗口校验并执行；门禁依旧仅做 acquire 原子读取。
+  Settings 同步查询、应用与 busy 通知逻辑不变；停止监听、关闭窗口和释放宿主的顺序不变。
+- Settings::Close 契约已经由此前完成的注释任务修正，本轮没有重复修改该头文件，也没有开展注释审计。
+- 局部 CompletionActions、Renderer 动作及作用域守卫保留原位；后续跨模块回调按本文件工厂接入，
+  其消费接口、调用线程和清理职责仍由各模块定义。异步任务的取消与结果所有权须随实际功能设计。
+- Debug `/W4 /WX` 产品构建通过；Application、Settings、SystemIntegration、CaptureToolbar 共 106 项回归，
+  103 项通过、3 项按现有规则跳过（两个人工窗口入口和一个子进程辅助入口），0 失败。
+  沙箱中真实捕获因 ACCESS_DENIED 失败，正常本地权限重跑通过；构建后处理也在正常权限下完成。
+- 四个实现文件经子 Agent 只读逻辑复核通过，未发现阻断问题；git diff --check 通过。

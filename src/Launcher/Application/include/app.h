@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <windows.h>
@@ -109,6 +110,18 @@ class App final
     // 入参：无。
     // 返回：包含文本、语言、启动项和忙状态通知的回调集合；其中捕获的 App 须存活到回调解除。
     SettingsWindowCallbacks MakeSettingsCallbacks();
+    // 创建供截图工具栏同步查询本地化文本的回调。
+    // 入参：无。
+    // 返回：文本查询函数；在 UI 线程调用，本地化服务须在调用期间可用。
+    std::function<std::wstring(std::string_view)> MakeToolbarTextResolver();
+    // 创建供截图工具栏投递业务命令的回调。
+    // 入参：无。
+    // 返回：UI 线程命令接收函数；捕获的 App 须存活到工具栏解除回调。
+    std::function<bool(CaptureToolbarCommand, std::uint64_t)> MakeToolbarCommandHandler();
+    // 创建供单实例接收线程检查截图准入状态的回调。
+    // 入参：无。
+    // 返回：仅读取原子门禁的查询函数；App 须先停止并等待监听线程，再释放自身资源。
+    std::function<std::optional<LPARAM>()> MakeCaptureGateCallback();
     // 查询当前用户启动入口并生成可显示的本地化状态。
     // 入参：无。
     // 返回：与当前启动注册状态对应的宽字符串；不代表 Windows 系统启动许可已开启。
