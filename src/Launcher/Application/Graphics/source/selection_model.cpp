@@ -1,3 +1,5 @@
+// 文件职责：实现选区创建、命中、拖动、八向缩放和取消回退，处理边界约束及控制点翻转。
+
 #include <selection_model.h>
 
 #include <algorithm>
@@ -8,28 +10,36 @@ namespace
 {
 constexpr int HANDLE_HIT_HALF_SIZE = 6;
 
-// 比较两个整数矩形的四条边是否完全一致。
+// 检查选区四条边界是否改变，用于决定是否需要刷新。
+// 入参：left、right：待比较的虚拟桌面物理像素半开矩形。
+// 返回：四边均相等时为 true，否则为 false。
 bool RectanglesEqual(const open_st::RectI& left, const open_st::RectI& right) noexcept
 {
     return left.left == right.left && left.top == right.top && left.right == right.right &&
            left.bottom == right.bottom;
 }
 
-// 把任意方向的两个端点转换为非负宽高的半开矩形。
+// 将任意拖动方向的两个端点整理为规范化选区矩形。
+// 入参：first、second：虚拟桌面物理像素坐标的两个端点。
+// 返回：以各轴较小值为左上边界、较大值为右下边界的矩形。
 open_st::RectI Normalize(open_st::PointI first, open_st::PointI second) noexcept
 {
     return {std::min(first.x, second.x), std::min(first.y, second.y), std::max(first.x, second.x),
             std::max(first.y, second.y)};
 }
 
-// 判断控制点是否位于选区四角，用于重叠命中时提高角点优先级。
+// 判断命中的控制点是否为角点，供命中距离相同时确定优先级。
+// 入参：handle：待判断的选区控制点枚举。
+// 返回：四个角点返回 true，边中点及 None 返回 false。
 bool IsCorner(open_st::SelectionHandle handle) noexcept
 {
     return handle == open_st::SelectionHandle::TopLeft || handle == open_st::SelectionHandle::TopRight ||
            handle == open_st::SelectionHandle::BottomRight || handle == open_st::SelectionHandle::BottomLeft;
 }
 
-// 把控制点映射为水平移动方向：左为 -1、无水平分量为 0、右为 1。
+// 提取控制点负责调整的水平方向。
+// 入参：handle：待解析的选区控制点。
+// 返回：左侧返回 -1，右侧返回 1，不负责水平调整时返回 0。
 int HorizontalDirection(open_st::SelectionHandle handle) noexcept
 {
     switch (handle)
@@ -50,7 +60,9 @@ int HorizontalDirection(open_st::SelectionHandle handle) noexcept
     return 0;
 }
 
-// 把控制点映射为垂直移动方向：上为 -1、无垂直分量为 0、下为 1。
+// 提取控制点负责调整的垂直方向。
+// 入参：handle：待解析的选区控制点。
+// 返回：上侧返回 -1，下侧返回 1，不负责垂直调整时返回 0。
 int VerticalDirection(open_st::SelectionHandle handle) noexcept
 {
     switch (handle)
@@ -71,7 +83,9 @@ int VerticalDirection(open_st::SelectionHandle handle) noexcept
     return 0;
 }
 
-// 根据水平和垂直方向重新组合控制点，供跨越固定对边后翻转使用。
+// 根据当前水平与垂直方向重建缩放控制点，支持越过固定边后翻转。
+// 入参：horizontal：水平方向，左为 -1、右为 1、无为 0；vertical：垂直方向，上为 -1、下为 1、无为 0。
+// 返回：与方向组合对应的边或角控制点；两方向均为零时返回 None。
 open_st::SelectionHandle HandleFromDirections(int horizontal, int vertical) noexcept
 {
     if (horizontal < 0 && vertical < 0)
@@ -112,7 +126,9 @@ open_st::SelectionHandle HandleFromDirections(int horizontal, int vertical) noex
 
 namespace open_st
 {
-// 设置虚拟桌面边界；若边界变化发生在拖动中，先取消拖动再收敛已有选区。
+// 更新选区允许使用的桌面范围，并使已有选区适应新范围。
+// 入参：bounds：虚拟桌面物理像素半开边界，可含负坐标。
+// 返回：无返回值；边界被保存，已有选区按新范围收敛，无效边界使选区复位。
 void SelectionModel::SetBounds(RectI bounds) noexcept
 {
     if (this->phase_ == SelectionPhase::Dragging)
@@ -130,7 +146,9 @@ void SelectionModel::SetBounds(RectI bounds) noexcept
     this->FitSelectionToBounds();
 }
 
-// 清空选区和交互上下文，同时保留 bounds_ 供同一截图会话再次创建选区。
+// 清除当前选区及拖动上下文，为同一桌面范围重新选择区域做准备。
+// 入参：无。
+// 返回：无返回值；阶段恢复 Unselected，已配置的桌面边界保留。
 void SelectionModel::Reset() noexcept
 {
     this->rectangle_ = {};
@@ -145,31 +163,41 @@ void SelectionModel::Reset() noexcept
     this->activeHandle_ = SelectionHandle::None;
 }
 
-// 返回当前对外状态阶段。
+// 查询选区是否处于未选择、拖动或稳定选择阶段。
+// 入参：无。
+// 返回：当前 SelectionPhase 状态值。
 SelectionPhase SelectionModel::Phase() const noexcept
 {
     return this->phase_;
 }
 
-// 返回拖动阶段的内部操作类型。
+// 查询正在执行的选区创建、移动或缩放操作。
+// 入参：无。
+// 返回：当前 SelectionOperation；没有进行中的操作时为 None。
 SelectionOperation SelectionModel::Operation() const noexcept
 {
     return this->operation_;
 }
 
-// 通过半开矩形是否非空判断当前是否存在有效选区。
+// 判断当前模型是否存在可用的非空选区。
+// 入参：无。
+// 返回：当前矩形具有正面积时为 true，否则为 false。
 bool SelectionModel::HasSelection() const noexcept
 {
     return !this->rectangle_.IsEmpty();
 }
 
-// 返回缩放中随鼠标移动的控制点，供光标反馈使用。
+// 查询当前缩放所使用的控制点，供光标及交互反馈使用。
+// 入参：无。
+// 返回：缩放操作中的活动控制点；其他操作返回 None。
 SelectionHandle SelectionModel::ActiveHandle() const noexcept
 {
     return this->activeHandle_;
 }
 
-// 复制当前矩形、状态和控制点，形成不借用模型内存的渲染快照。
+// 生成独立选区状态快照，供渲染器读取而不持有模型。
+// 入参：无。
+// 返回：包含阶段、操作、矩形和八个控制点的值副本，后续模型变化不会修改该副本。
 SelectionSnapshot SelectionModel::Snapshot() const noexcept
 {
     SelectionSnapshot snapshot{};
@@ -185,7 +213,9 @@ SelectionSnapshot SelectionModel::Snapshot() const noexcept
     return snapshot;
 }
 
-// 根据当前阶段和命中优先级开始创建、缩放或整体移动操作。
+// 按按下位置开始创建、移动或缩放选区。
+// 入参：point：鼠标按下的虚拟桌面物理像素坐标。
+// 返回：操作被接受并进入拖动状态时为 true；边界无效、已经拖动或点在已有选区外时为 false。
 bool SelectionModel::Begin(PointI point) noexcept
 {
     if (this->bounds_.IsEmpty() || this->phase_ == SelectionPhase::Dragging)
@@ -248,7 +278,9 @@ bool SelectionModel::Begin(PointI point) noexcept
     return true;
 }
 
-// 把最新鼠标点分派给当前拖动操作，并报告矩形是否实际变化。
+// 根据最新鼠标位置推进当前拖动操作并检测选区变化。
+// 入参：point：最新鼠标位置，单位为虚拟桌面物理像素。
+// 返回：选区矩形实际变化时为 true；没有进行中的拖动或矩形未变时为 false。
 bool SelectionModel::Update(PointI point) noexcept
 {
     if (this->phase_ != SelectionPhase::Dragging)
@@ -275,7 +307,9 @@ bool SelectionModel::Update(PointI point) noexcept
     return !RectanglesEqual(previous, this->rectangle_);
 }
 
-// 应用最终鼠标点并提交拖动；不接受零面积结果，按操作类型清空或恢复。
+// 应用最终鼠标位置并结束拖动，对零面积结果执行清空或恢复。
+// 入参：point：鼠标释放的虚拟桌面物理像素坐标。
+// 返回：处理了进行中的拖动时为 true，包括零面积回退；原先没有拖动时为 false。
 bool SelectionModel::End(PointI point) noexcept
 {
     if (this->phase_ != SelectionPhase::Dragging)
@@ -302,7 +336,9 @@ bool SelectionModel::End(PointI point) noexcept
     return true;
 }
 
-// 取消当前拖动：创建时清空，移动或缩放时恢复操作开始前的矩形。
+// 撤销进行中的拖动，恢复用户开始本次操作前的选择状态。
+// 入参：无。
+// 返回：成功取消拖动时为 true；没有进行中的拖动时为 false；创建被清空，移动和缩放恢复原矩形。
 bool SelectionModel::CancelInteraction() noexcept
 {
     if (this->phase_ != SelectionPhase::Dragging)
@@ -321,14 +357,18 @@ bool SelectionModel::CancelInteraction() noexcept
     return true;
 }
 
-// 按左上包含、右下排除的半开规则判断点是否位于选区内部。
+// 按半开边界判断鼠标位置是否位于现有选区内部。
+// 入参：point：待判断的虚拟桌面物理像素坐标。
+// 返回：存在非空选区且点落在左上包含、右下排除的范围内时为 true，否则为 false。
 bool SelectionModel::Contains(PointI point) const noexcept
 {
     return !this->rectangle_.IsEmpty() && point.x >= this->rectangle_.left && point.x < this->rectangle_.right &&
            point.y >= this->rectangle_.top && point.y < this->rectangle_.bottom;
 }
 
-// 在八个 12×12 命中区中选择最近控制点，等距重叠时优先返回角点。
+// 在八个控制点的命中区中选出最接近鼠标的控制点。
+// 入参：point：待命中的虚拟桌面物理像素坐标。
+// 返回：稳定选区中的命中控制点；没有命中或未处于稳定选择状态时返回 None，等距时角点优先。
 SelectionHandle SelectionModel::HitTestHandle(PointI point) const noexcept
 {
     if (this->phase_ != SelectionPhase::Selected || this->rectangle_.IsEmpty())
@@ -358,7 +398,9 @@ SelectionHandle SelectionModel::HitTestHandle(PointI point) const noexcept
     return nearest;
 }
 
-// 根据当前矩形计算四角和四边中点的八个控制点中心。
+// 计算当前选区四角和四边中点，供渲染与命中检测共用。
+// 入参：无。
+// 返回：按固定顺序排列的八个控制点及其虚拟桌面物理像素坐标。
 std::array<SelectionHandlePosition, 8> SelectionModel::Handles() const noexcept
 {
     const int horizontalCenter = this->rectangle_.left + this->rectangle_.Width() / 2;
@@ -373,7 +415,9 @@ std::array<SelectionHandlePosition, 8> SelectionModel::Handles() const noexcept
              {SelectionHandle::Left, {this->rectangle_.left, verticalCenter}}}};
 }
 
-// 将鼠标点钳制到桌面边界坐标，允许 right/bottom 作为 half-open 端点。
+// 把鼠标坐标限制在选区允许使用的桌面边界内。
+// 入参：point：原始虚拟桌面物理像素坐标。
+// 返回：限制后的坐标；允许触及半开矩形的 right、bottom 端点以生成完整边界。
 PointI SelectionModel::ClampPoint(PointI point) const noexcept
 {
     point.x = std::clamp(point.x, this->bounds_.left, this->bounds_.right);
@@ -381,7 +425,9 @@ PointI SelectionModel::ClampPoint(PointI point) const noexcept
     return point;
 }
 
-// 边界变化后尽量平移保留原尺寸；无法容纳时才把对应维度收缩到完整边界。
+// 将已有选区收敛到更新后的桌面范围。
+// 入参：无。
+// 返回：无返回值；优先平移保留原尺寸，只有边界无法容纳时才缩小选区。
 void SelectionModel::FitSelectionToBounds() noexcept
 {
     if (this->rectangle_.IsEmpty())
@@ -415,7 +461,9 @@ void SelectionModel::FitSelectionToBounds() noexcept
     }
 }
 
-// 清理一次拖动的临时字段，并把非空矩形收敛为稳定 Selected 状态。
+// 清理已结束操作的拖动上下文并发布稳定选区状态。
+// 入参：无。
+// 返回：无返回值；阶段切换为 Selected，操作和活动控制点复位，拖动基线被清理。
 void SelectionModel::FinishInteraction() noexcept
 {
     this->operationStartRectangle_ = {};
@@ -426,7 +474,9 @@ void SelectionModel::FinishInteraction() noexcept
     this->resizesVertically_ = false;
 }
 
-// 从固定创建起点生成规范化矩形，并让真实可达的右下边缘覆盖 exclusive 边界。
+// 根据拖动起点和当前坐标更新新建选区，支持到达右下排除边界。
+// 入参：point：已限制到桌面边界的当前鼠标物理像素坐标。
+// 返回：无返回值；rectangle_ 更新为本次创建操作的规范化半开矩形。
 void SelectionModel::UpdateCreating(PointI point) noexcept
 {
     PointI origin = this->dragOrigin_;
@@ -451,7 +501,9 @@ void SelectionModel::UpdateCreating(PointI point) noexcept
     this->rectangle_ = Normalize(origin, point);
 }
 
-// 按鼠标相对起点的位移整体平移原矩形，保持宽高并限制在桌面内。
+// 按相对拖动起点的位移整体移动选区并避免越界。
+// 入参：point：已限制到桌面边界的当前鼠标物理像素坐标。
+// 返回：无返回值；选区位置被更新，宽高保持不变，整体收敛在桌面边界内。
 void SelectionModel::UpdateMoving(PointI point) noexcept
 {
     const std::int64_t width = this->operationStartRectangle_.Width();
@@ -469,7 +521,9 @@ void SelectionModel::UpdateMoving(PointI point) noexcept
     this->rectangle_ = {left, top, static_cast<int>(left + width), static_cast<int>(top + height)};
 }
 
-// 移动控制点负责的边、保持对边固定，并在跨边后更新控制点方向。
+// 围绕固定对边调整选区尺寸，并在越过对边后翻转活动控制点。
+// 入参：point：已限制到桌面边界的当前鼠标物理像素坐标。
+// 返回：无返回值；rectangle_ 与活动缩放控制点更新，未负责调整的轴保持原边界。
 void SelectionModel::UpdateResizing(PointI point) noexcept
 {
     this->rectangle_ = this->operationStartRectangle_;

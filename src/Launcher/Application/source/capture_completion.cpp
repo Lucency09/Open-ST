@@ -1,3 +1,5 @@
+// 组织截图复制与保存的同步步骤，并保证忙状态在取消或异常后恢复。
+
 #include "capture_completion.h"
 
 namespace
@@ -6,19 +8,27 @@ namespace
 class BusyGuard final
 {
   public:
-    // 标记借用状态为忙。
+    // 在同步截图完成流程内设置忙标记以拒绝重入。
+    // 入参：busy：借用的忙标记引用，必须比守卫存活更久。
+    // 返回：构造函数无返回值；busy 被设为 true。
     explicit BusyGuard(bool& busy) noexcept : busy_(busy)
     {
         this->busy_ = true;
     }
-    // 离开同步流程后恢复可用状态。
+    // 在完成流程退出时恢复非忙状态。
+    // 入参：无。
+    // 返回：析构函数无返回值；将借用的 busy 设为 false。
     ~BusyGuard()
     {
         this->busy_ = false;
     }
-    // 禁止复制守卫。
+    // 禁止复制构造，确保忙状态守卫只由原对象管理。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     BusyGuard(const BusyGuard&) = delete;
-    // 禁止复制赋值。
+    // 禁止复制赋值，避免忙状态守卫出现多个所有者。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     BusyGuard& operator=(const BusyGuard&) = delete;
 
   private:
@@ -27,7 +37,9 @@ class BusyGuard final
 } // namespace
 namespace open_st
 {
-// 生成成功才触及剪贴板；忙状态覆盖整个系统调用。
+// 按生成图像、发布剪贴板的顺序完成截图复制。
+// 入参：ready：选区是否已稳定且允许输出；actions：必须提供有效 generate 和 copy 同步回调。
+// 返回：未就绪或忙时 Ignored；生成失败 ConversionFailed；复制成功 Copied，否则 CopyFailed。
 CompletionResult CaptureCompletion::CopySelection(bool ready, const CompletionActions& actions)
 {
     if (!ready || this->busy_)
@@ -41,7 +53,9 @@ CompletionResult CaptureCompletion::CopySelection(bool ready, const CompletionAc
     }
     return actions.copy() ? CompletionResult::Copied : CompletionResult::CopyFailed;
 }
-// 先确认保存路径，取消不会浪费转换资源；保存成功与设置失败独立返回。
+// 按选择路径、生成图像、写文件和记录目录的顺序完成截图保存。
+// 入参：ready：是否允许输出；actions：有效 chooseSave、generate、save、rememberDirectory 同步回调。
+// 返回：返回取消、忽略、转换失败或保存失败状态；成功为 Saved，目录记录失败为 SavedDirectoryWarning。
 CompletionResult CaptureCompletion::SaveSelection(bool ready, const CompletionActions& actions)
 {
     if (!ready || this->busy_)
@@ -76,7 +90,9 @@ CompletionResult CaptureCompletion::SaveSelection(bool ready, const CompletionAc
         return CompletionResult::SavedDirectoryWarning;
     }
 }
-// 供应用消息路由查询状态，不泄漏回调内容。
+// 查询截图完成协调器是否正在执行同步业务步骤。
+// 入参：无。
+// 返回：同步完成流程尚未结束时为 true，否则 false。
 bool CaptureCompletion::IsBusy() const noexcept
 {
     return this->busy_;

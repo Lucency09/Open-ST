@@ -1,3 +1,5 @@
+# 配置 Common/WindowRenderer 的镜像测试目标、链接依赖及用例发现。
+
 add_executable(open_st_window_renderer_tests)
 
 # 控件几何和交互在产品使用的 v6 激活上下文下验证。

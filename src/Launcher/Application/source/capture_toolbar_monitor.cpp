@@ -1,3 +1,5 @@
+// 根据选区相交面积与操作终点选择工具栏显示屏，支持负坐标桌面。
+
 #include "capture_toolbar_monitor.h"
 
 #include <algorithm>
@@ -5,7 +7,9 @@
 
 namespace open_st
 {
-// 所有坐标均为物理像素；使用宽整数计算相交面积以支持跨屏和负坐标。
+// 为当前截图选区选择工具栏应显示的显示器。
+// 入参：selection：选区物理像素矩形；endpoint：操作终点物理像素坐标；monitors：候选显示器矩形列表。
+// 返回：优先返回包含终点且与选区相交的屏幕索引，否则取最大交集；无交集返回 monitors.size()。
 std::size_t SelectToolbarMonitor(RECT selection, POINT endpoint, std::span<const RECT> monitors) noexcept
 {
     std::size_t best = monitors.size();

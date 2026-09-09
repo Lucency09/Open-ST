@@ -1,3 +1,5 @@
+// 验证日志分级、轮换、并发写入及限定范围清理的安全边界。
+
 #include <log.h>
 
 #include "logger.h"
@@ -20,6 +22,9 @@ namespace
 class LoggerTest : public testing::Test
 {
   protected:
+    // 重置日志单例并准备当前用例专属临时根目录，避免继承旧日志状态。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         open_st::Logger::Shutdown();
@@ -31,6 +36,9 @@ class LoggerTest : public testing::Test
         ASSERT_FALSE(error);
     }
 
+    // 停止日志写入并清理当前用例的临时目录。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         open_st::Logger::Shutdown();
@@ -39,6 +47,9 @@ class LoggerTest : public testing::Test
         EXPECT_FALSE(error);
     }
 
+    // 枚举并排序测试日志目录中的普通 .log 文件；目录缺失时返回空列表。
+    // 入参：无显式入参。
+    // 返回：按路径排序的日志文件列表；目录不存在时返回空列表。
     std::vector<std::filesystem::path> LogFiles() const
     {
         std::vector<std::filesystem::path> files;
@@ -58,17 +69,26 @@ class LoggerTest : public testing::Test
         return files;
     }
 
+    // 按二进制读取指定测试文件的全部字节，供内容与清理断言使用。
+    // 入参：path 为测试文件路径。
+    // 返回：文件的原始字节字符串，供磁盘内容断言使用。
     static std::string ReadFile(const std::filesystem::path& path)
     {
         std::ifstream input(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
 
+    // 统计换行符数量，核对每条日志是否独占一个物理行。
+    // 入参：text 为待统计的日志文本。
+    // 返回：text 中换行符的数量。
     static std::size_t CountLines(const std::string& text)
     {
         return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
     }
 
+    // 校验项目日志文件名的毫秒时间戳及可选重名序号格式。
+    // 入参：path 为测试文件路径。
+    // 返回：文件名符合日志时间戳命名格式时为 true，否则为 false。
     static bool HasTimestampedName(const std::filesystem::path& path)
     {
         const std::regex pattern(
@@ -76,6 +96,9 @@ class LoggerTest : public testing::Test
         return std::regex_match(path.filename().string(), pattern);
     }
 
+    // 从已确认格式的日志文件名提取时间戳，比较轮换文件的创建时间。
+    // 入参：path 为测试文件路径。
+    // 返回：文件名中固定位置的毫秒时间戳文本。
     static std::string FilenameTimestamp(const std::filesystem::path& path)
     {
         const std::string name = path.filename().string();
@@ -86,6 +109,8 @@ class LoggerTest : public testing::Test
 };
 
 // 验证默认目录层级、五个级别接口、单行转义，以及 Error 的立即刷新语义。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, writes_levels_to_application_data_directory)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -122,6 +147,8 @@ TEST_F(LoggerTest, writes_levels_to_application_data_directory)
 }
 
 // 验证 Debug 参数在 Release 中不求值；Debug 构建则应正常记录并求值一次。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, debug_macro_obeys_build_configuration)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -134,7 +161,9 @@ TEST_F(LoggerTest, debug_macro_obeys_build_configuration)
 #endif
 }
 
-// 用较小阈值验证按行轮换；每次轮换重新取毫秒时间戳，并只保留最近三个文件。
+// 验证用较小阈值验证按行轮换；每次轮换重新取毫秒时间戳，并只保留最近三个文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, rotates_by_line_count_and_retains_three_files)
 {
     open_st::LogOptions options;
@@ -164,6 +193,8 @@ TEST_F(LoggerTest, rotates_by_line_count_and_retains_three_files)
 }
 
 // 验证重启后继续追加当天未满文件；已满后按创建下一份文件的当刻生成新时间戳。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, resumes_last_file_after_restart)
 {
     open_st::LogOptions options;
@@ -196,6 +227,8 @@ TEST_F(LoggerTest, resumes_last_file_after_restart)
 }
 
 // 验证上次进程留下未换行的尾部记录时，重启追加会先补分隔符，不把两条记录粘连。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, separates_an_incomplete_tail_after_restart)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -218,6 +251,8 @@ TEST_F(LoggerTest, separates_an_incomplete_tail_after_restart)
 }
 
 // 验证单条超长消息会受限，且文件达到字节安全上限后下一条记录进入新文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, enforces_file_size_safety_limit)
 {
     open_st::LogOptions options;
@@ -239,6 +274,8 @@ TEST_F(LoggerTest, enforces_file_size_safety_limit)
 }
 
 // 验证启动初始化会清理旧进程遗留文件，同时不删除不符合项目日志命名规范的文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, cleans_files_left_by_previous_processes)
 {
     const std::filesystem::path directory = this->root_ / "data" / "logs";
@@ -264,6 +301,8 @@ TEST_F(LoggerTest, cleans_files_left_by_previous_processes)
 }
 
 // 验证多线程同步写入不会丢失或拼接记录，每次调用仍对应一条物理日志行。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, serializes_concurrent_writers)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -271,6 +310,9 @@ TEST_F(LoggerTest, serializes_concurrent_writers)
     for (int worker = 0; worker < 4; ++worker)
     {
         workers.emplace_back(
+            // 各工作线程连续写入五十条带线程编号的记录，验证并发序列化。
+            // 入参：无显式入参。
+            // 返回：无返回值。
             [worker]()
             {
                 for (int line = 0; line < 50; ++line)
@@ -291,6 +333,8 @@ TEST_F(LoggerTest, serializes_concurrent_writers)
 }
 
 // 验证目录不可创建时初始化只返回失败，后续各级日志调用仍不会抛异常或阻断调用方。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, directory_failure_is_non_fatal)
 {
     const std::filesystem::path blockingPath = this->root_ / "blocking-file";
@@ -302,7 +346,9 @@ TEST_F(LoggerTest, directory_failure_is_non_fatal)
     EXPECT_FALSE(open_st::Logger::Initialize(blockingPath));
     EXPECT_NO_THROW(OPEN_ST_LOG_ERROR("discarded"));
 }
-// 清理只删除命名规则认可的普通日志，保留设置、无关文件和子目录。
+// 验证清理只删除命名规则认可的普通日志，保留设置、无关文件和子目录。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, shutdown_and_clear_preserves_unrelated_files)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -329,7 +375,9 @@ TEST_F(LoggerTest, shutdown_and_clear_preserves_unrelated_files)
     EXPECT_EQ(this->LogFiles().size(), 2U);
     EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
 }
-// 被其他进程打开且不共享删除的日志导致失败，释放后同一入口可重试。
+// 验证被其他进程打开且不共享删除的日志导致失败，释放后同一入口可重试。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, failed_cleanup_can_retry_without_resuming_logging)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -347,7 +395,9 @@ TEST_F(LoggerTest, failed_cleanup_can_retry_without_resuming_logging)
     EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
     EXPECT_TRUE(this->LogFiles().empty());
 }
-// 已识别名称的文件链接不能借清理删除链接或目标，移除链接后可重试。
+// 验证已识别名称的文件链接不能借清理删除链接或目标，移除链接后可重试。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, cleanup_refuses_symbolic_log_file)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -364,7 +414,9 @@ TEST_F(LoggerTest, cleanup_refuses_symbolic_log_file)
     std::filesystem::remove(link);
     EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
 }
-// 日志目录为链接时清理拒绝进入，即使初始化阶段曾使用该路径。
+// 验证日志目录为链接时清理拒绝进入，即使初始化阶段曾使用该路径。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(LoggerTest, cleanup_refuses_symbolic_log_directory)
 {
     const std::filesystem::path target = this->root_ / "elsewhere";

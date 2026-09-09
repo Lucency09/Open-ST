@@ -1,3 +1,5 @@
+// 创建首次启动欢迎表单，处理确认保存、启动项应用及失败重试。
+
 #include "settings_edit.h"
 #include <log.h>
 #include <stdexcept>
@@ -10,7 +12,9 @@ namespace open_st
 class WelcomeWindow::Impl final
 {
   public:
-    // 用内嵌布局创建欢迎窗口，取消路径不提交任何选择。
+    // 创建首次启动欢迎表单并运行模态循环，处理确认保存、自启应用和失败重试。
+    // 入参：instance 为程序模块句柄；callbacks 为宿主回调集合；hook 为可选线程消息处理器，返回 true 表示已消费。
+    // 返回：欢迎确认已持久化且系统自启应用成功时为 true；用户取消或窗口失败为 false，Failed 可区分窗口故障。
     bool ShowModal(HINSTANCE instance, SettingsWindowCallbacks callbacks, std::function<bool(MSG&)> hook)
     {
         this->failed_ = true;
@@ -46,15 +50,33 @@ class WelcomeWindow::Impl final
                                       {{"type", "button"}, {"id", "exitButton"}, {"textKey", "welcome.exit"}}})}}}};
         this->Require(this->renderer_->LoadLayout(layout));
         this->Require(
+            // 将欢迎布局的文本键交给宿主本地化查询。
+            // 入参：key 为欢迎布局请求的动态本地化文本键。
+            // 返回：宿主当前语言对应的界面宽字符串。
             this->renderer_->SetTextResolver([this](std::string_view key) { return this->callbacks_.text(key); }));
         this->Require(this->renderer_->BindBool(
             "startupEnabled",
+            // 读取欢迎表单的启动项草稿，缺失时默认勾选。
+            // 入参：无显式入参。
+            // 返回：成功的布尔读取结果；值为 startup.enabled 草稿，缺失时默认 true。
             [this]() { return RendererBoolResult{true, this->edit_.ReadBool("startup.enabled").value_or(true), {}}; },
+            // 仅在首次保存前接受启动项草稿变更，避免重试时改变已保存目标。
+            // 入参：value 为用户在欢迎表单勾选的自启启用状态。
+            // 返回：尚未保存且草稿更新成功时接受修改；已进入待重试状态或更新失败时拒绝。
             [this](bool value)
             { return RendererChangeResult{!this->pending_ && this->edit_.ChangeBool("startup.enabled", value), {}}; }));
+        // 确认并保存欢迎选择，保存成功后请求宿主应用启动项。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         this->Require(this->renderer_->BindAction("confirmButton", [this]() { this->Confirm(); }));
         this->Require(
+            // 请求延迟关闭欢迎窗口，不提交本次选择。
+            // 入参：无显式入参。
+            // 返回：无返回值。
             this->renderer_->BindAction("exitButton", [this]() { this->Require(this->renderer_->RequestClose()); }));
+        // 将系统关闭动作转为延迟关闭，避免销毁正在执行的回调。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         this->Require(this->renderer_->SetCloseHandler([this]() { this->Require(this->renderer_->RequestClose()); }));
         this->Require(this->renderer_->SetDefaultAction("confirmButton"));
         RendererWindowOptions options;
@@ -67,12 +89,16 @@ class WelcomeWindow::Impl final
     }
 
     // 返回本次启动是否发生非用户取消的窗口故障。
+    // 入参：无显式入参。
+    // 返回：本次窗口初始化或模态循环失败为 true；正常执行或用户取消为 false。
     bool Failed() const noexcept
     {
         return this->failed_;
     }
 
     // 异常路径同步关闭本次窗口，避免启动失败后留下孤立窗口。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Reset() noexcept
     {
         this->renderer_.reset();
@@ -80,6 +106,8 @@ class WelcomeWindow::Impl final
     }
 
     // 前台激活不创建第二个窗口。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Activate() noexcept
     {
         if (!this->renderer_ || !this->renderer_->NativeHandle())
@@ -89,6 +117,8 @@ class WelcomeWindow::Impl final
     }
 
     // 状态保存为键，重新本地化避免显示旧语言。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void RefreshTexts() noexcept
     {
         try
@@ -106,14 +136,18 @@ class WelcomeWindow::Impl final
     }
 
   private:
-    // 统一检查 renderer 结构化结果。
+    // 检查欢迎表单的布局、绑定及显示操作是否成功。
+    // 入参：result 为欢迎窗口要求成功的渲染器操作结果。
+    // 返回：无返回值；失败时抛出异常，交由欢迎窗口的外层边界处理。
     void Require(const RendererResult& result) const
     {
         if (!result)
             throw std::runtime_error("Welcome renderer operation failed");
     }
 
-    // 保存成功后才操作系统，重试始终复核已保存目标。
+    // 持久化欢迎完成标记和自启意图，再核验磁盘目标并应用系统启动项；失败保留重试状态。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Confirm()
     {
         this->Require(this->renderer_->SetBusy(true));
@@ -161,10 +195,16 @@ class WelcomeWindow::Impl final
 };
 
 // 初始化私有编排对象。
+// 入参：无显式入参。
+// 返回：无返回值。
 WelcomeWindow::WelcomeWindow() : impl_(std::make_unique<Impl>()) {}
 // 析构释放窗口。
+// 入参：无显式入参。
+// 返回：无返回值。
 WelcomeWindow::~WelcomeWindow() = default;
-// 不让窗口或业务回调异常穿过应用启动边界。
+// 创建首次启动欢迎表单并运行模态循环，处理确认保存、自启应用和失败重试。
+// 入参：instance 为程序模块句柄；callbacks 为宿主回调集合；hook 为可选线程消息处理器，返回 true 表示已消费。
+// 返回：欢迎确认已持久化且系统自启应用成功时为 true；用户取消或窗口失败为 false，Failed 可区分窗口故障。
 bool WelcomeWindow::ShowModal(HINSTANCE instance, SettingsWindowCallbacks callbacks,
                               std::function<bool(MSG&)> hook) noexcept
 {
@@ -180,16 +220,22 @@ bool WelcomeWindow::ShowModal(HINSTANCE instance, SettingsWindowCallbacks callba
     }
 }
 // 转发激活请求。
+// 入参：无显式入参。
+// 返回：无返回值。
 void WelcomeWindow::Activate() noexcept
 {
     this->impl_->Activate();
 }
 // 转发语言更新。
+// 入参：无显式入参。
+// 返回：无返回值。
 void WelcomeWindow::RefreshTexts() noexcept
 {
     this->impl_->RefreshTexts();
 }
 // 查询本次模态执行的窗口故障状态。
+// 入参：无显式入参。
+// 返回：本次窗口初始化或模态循环失败为 true；正常执行或用户取消为 false。
 bool WelcomeWindow::Failed() const noexcept
 {
     return this->impl_->Failed();

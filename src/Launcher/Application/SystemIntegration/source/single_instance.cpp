@@ -1,3 +1,5 @@
+// 实现用户身份校验、可取消管道通信及单实例监听线程的资源管理。
+
 #include "single_instance.h"
 
 #include <array>
@@ -13,7 +15,9 @@ namespace
 struct Handle
 {
     HANDLE value{};
-    // 显式释放后置空，使停止和重试不遗留旧的管道实例。
+    // 释放并清空拥有的 Win32 句柄，使停止后可以安全重试。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Reset()
     {
         if (this->value != nullptr && this->value != INVALID_HANDLE_VALUE)
@@ -21,6 +25,8 @@ struct Handle
         this->value = nullptr;
     }
     // 关闭拥有的 Win32 句柄。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~Handle()
     {
         this->Reset();
@@ -30,6 +36,8 @@ struct LocalMemory
 {
     HLOCAL value{};
     // 释放 Windows 分配的 SID 字符串或安全描述符。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~LocalMemory()
     {
         if (this->value != nullptr)
@@ -42,6 +50,8 @@ struct Packet
     DWORD command{};
 };
 // 从指定进程读取 SID 文本，失败时不猜测用户身份。
+// 入参：process 为借用的目标进程句柄，需要允许读取进程令牌。
+// 返回：进程用户 SID 的字符串形式；系统查询或转换失败返回空字符串。
 std::wstring ProcessSid(HANDLE process)
 {
     Handle token;
@@ -61,6 +71,8 @@ std::wstring ProcessSid(HANDLE process)
     return text;
 }
 // 校验命名管道对端进程身份，避免仅信任公开的管道名称。
+// 入参：pipe 为借用管道句柄；serverSide 表示当前端是服务器；sid 为期望的对端用户 SID。
+// 返回：成功读取对端进程且用户 SID 匹配时为 true；查询失败或不匹配为 false。
 bool PeerMatches(HANDLE pipe, bool serverSide, const std::wstring& sid)
 {
     ULONG processId{};
@@ -72,6 +84,8 @@ bool PeerMatches(HANDLE pipe, bool serverSide, const std::wstring& sid)
     return process.value != nullptr && ProcessSid(process.value) == sid;
 }
 // 等待异步 IO，可由退出事件取消；取消后收回完成结果才能释放 OVERLAPPED。
+// 入参：pipe 为管道句柄；operation 为未完成的重叠操作；stop 为可空取消事件；timeout 为等待毫秒数；bytes 输出实际传输字节数。
+// 返回：异步操作完成且结果读取成功时为 true；超时、取消或 IO 失败为 false。
 bool CompleteIo(HANDLE pipe, OVERLAPPED& operation, HANDLE stop, DWORD timeout, DWORD& bytes)
 {
     const HANDLE events[]{operation.hEvent, stop};
@@ -86,6 +100,8 @@ bool CompleteIo(HANDLE pipe, OVERLAPPED& operation, HANDLE stop, DWORD timeout, 
     return GetOverlappedResult(pipe, &operation, &bytes, FALSE) != FALSE;
 }
 // 对固定长度消息执行有截止时间的读取或写入。
+// 入参：pipe 为管道句柄；data 为读入缓冲区或写出数据；size 为字节数；writing 为写入方向标志；stop 为可空取消事件；timeout 为等待毫秒数。
+// 返回：一次读写成功且传输字节数恰好为 size 时为 true，否则为 false。
 bool Transfer(HANDLE pipe, void* data, DWORD size, bool writing, HANDLE stop, DWORD timeout)
 {
     Handle event{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
@@ -114,7 +130,9 @@ struct SingleInstance::Impl
     std::function<std::optional<LPARAM>()> captureGate;
     bool primary{};
     DWORD session{};
-    // 接收线程只校验并投递命令，不访问业务模块或用户界面。
+    // 运行单实例命名管道接收循环，校验用户、会话和命令后异步通知目标窗口。
+    // 入参：target 为借用的接收窗口句柄；message 为投递到窗口的自定义消息编号。
+    // 返回：无返回值。
     void Listen(HWND target, UINT message)
     {
         while (WaitForSingleObject(this->stop.value, 0) == WAIT_TIMEOUT)
@@ -176,7 +194,9 @@ struct SingleInstance::Impl
         }
     }
 };
-// 参数列表不包含程序文件名；解析失败不修改输出。
+// 将程序启动参数解析为普通启动、截图或开机启动命令。
+// 入参：arguments 为不含程序名的命令行参数列表；command 为解析成功后写入的启动命令。
+// 返回：参数为无开关、--capture 或 --startup 时为 true；非法组合返回 false，command 保持原值。
 bool ParseLaunchCommand(const std::vector<std::wstring>& arguments, LaunchCommand& command)
 {
     if (arguments.empty())
@@ -198,17 +218,23 @@ bool ParseLaunchCommand(const std::vector<std::wstring>& arguments, LaunchComman
     }
     return false;
 }
-// 延迟系统访问到 Acquire，方便调用者先处理参数错误。
+// 创建单实例协调对象并保存基础名称，将系统资源申请延后到 Acquire。
+// 入参：name 为实例命名空间的基础名称，取得实例资格时再附加当前用户 SID。
+// 返回：无返回值。
 SingleInstance::SingleInstance(std::wstring name) : impl_(std::make_unique<Impl>())
 {
     this->impl_->name = std::move(name);
 }
-// 保证线程退出早于其依赖的句柄销毁。
+// 停止监听线程并释放单实例协调对象拥有的系统资源。
+// 入参：无显式入参。
+// 返回：无返回值。
 SingleInstance::~SingleInstance()
 {
     this->Stop();
 }
 // 使用当前用户专属 DACL 创建 Global 互斥体，并保留句柄占有实例名称。
+// 入参：无显式入参。
+// 返回：Primary 表示取得主实例资格；Forwarded 表示已有实例但尚未转发；Failed 附带系统错误码。
 InstanceStatus SingleInstance::Acquire()
 {
     if (this->impl_->mutex.value != nullptr)
@@ -231,14 +257,18 @@ InstanceStatus SingleInstance::Acquire()
     this->impl_->primary = error != ERROR_ALREADY_EXISTS;
     return {this->impl_->primary ? InstanceResult::Primary : InstanceResult::Forwarded, 0};
 }
-// 不允许运行期替换回调，避免接收线程与调用者同时访问函数对象。
+// 在开始监听前安装用于决定跨进程截图请求是否准入的回调。
+// 入参：gate 为监听线程调用的截图准入回调；返回空 optional 拒绝请求，返回代次则写入消息 lParam；必须在监听前设置。
+// 返回：无返回值。
 void SingleInstance::SetCaptureGate(std::function<std::optional<LPARAM>()> gate)
 {
     if (this->impl_->worker.joinable())
         throw std::logic_error("Capture gate must be set before listening starts");
     this->impl_->captureGate = std::move(gate);
 }
-// 同步建立首个管道实例，防止命名抢占；线程的所有 IO 都可取消。
+// 为主实例建立首个命名管道并启动可取消的后台监听线程。
+// 入参：target 为借用的接收窗口句柄；message 为投递到窗口的自定义消息编号。
+// 返回：成功创建管道并启动监听线程时为 true；身份、窗口或系统资源条件不满足时为 false。
 bool SingleInstance::StartListening(HWND target, UINT message)
 {
     if (!this->impl_->primary || this->impl_->worker.joinable() || !IsWindow(target))
@@ -257,10 +287,15 @@ bool SingleInstance::StartListening(HWND target, UINT message)
         this->impl_->stop.Reset();
         return false;
     }
+    // 在后台执行管道监听；Stop 等待线程结束后才释放其借用的对象和句柄。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     this->impl_->worker = std::thread([this, target, message]() { this->impl_->Listen(target, message); });
     return true;
 }
-// 等待服务器建管道期间不放行第二主实例；协议消息及回复都有总截止时间。
+// 向已存在的主实例转发启动命令并等待协议确认。
+// 入参：command 为待转发的启动命令；timeoutMs 为等待就绪及消息交换共用的超时毫秒数。
+// 返回：转发成功为 Forwarded；对端位于其他登录会话为 OtherSession；失败为 Failed 并附错误码。
 InstanceStatus SingleInstance::Forward(LaunchCommand command, DWORD timeoutMs)
 {
     if (this->impl_->pipeName.empty() || static_cast<DWORD>(command) > static_cast<DWORD>(LaunchCommand::Startup))
@@ -288,6 +323,8 @@ InstanceStatus SingleInstance::Forward(LaunchCommand command, DWORD timeoutMs)
     Packet packet{1, static_cast<DWORD>(command)};
     DWORD reply{};
     // 每次阶段开始重新计算剩余时间，不能因两次 IO 延长调用者给出的期限。
+    // 入参：无显式入参。
+    // 返回：距捕获的 deadline 尚余的毫秒数；已到期限时为 0。
     const auto remaining = [deadline]() -> DWORD
     {
         const ULONGLONG now = GetTickCount64();
@@ -303,7 +340,9 @@ InstanceStatus SingleInstance::Forward(LaunchCommand command, DWORD timeoutMs)
         return {InstanceResult::OtherSession, reply};
     return {reply == ERROR_SUCCESS ? InstanceResult::Forwarded : InstanceResult::Failed, reply};
 }
-// 信号打断连接或读写等待；不使用阻塞 FlushFileBuffers 等待客户端消费。
+// 停止后台命名管道监听并收回未完成 IO，保留实例互斥体直到对象析构。
+// 入参：无显式入参。
+// 返回：无返回值。
 void SingleInstance::Stop()
 {
     if (this->impl_->stop.value != nullptr)

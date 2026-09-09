@@ -1,3 +1,5 @@
+// 定义只读 SDR 图像视图，明确 BGRX 像素、行跨度及借用生命周期。
+
 #pragma once
 
 #include <cstddef>

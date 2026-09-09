@@ -1,3 +1,5 @@
+// 文件职责：实现映射表面的旋转归一化与逐像素复制，移除驱动行填充并验证输入边界。
+
 #include "captured_plane_writer.h"
 
 #include <cstring>
@@ -8,7 +10,9 @@
 
 namespace
 {
-// 验证源表面尺寸与旋转后的桌面边界尺寸一致。
+// 验证旋转后的捕获表面尺寸能否精确对应桌面输出边界。
+// 入参：surface：未旋转映射表面；bounds：桌面方向物理像素半开边界；rotation：源表面旋转方式。
+// 返回：尺寸均为正且旋转后的宽高与边界匹配时为 true，否则为 false。
 bool DimensionsMatch(const open_st::MappedCaptureSurface& surface, open_st::RectI bounds,
                      open_st::CapturedSurfaceRotation rotation) noexcept
 {
@@ -25,7 +29,9 @@ bool DimensionsMatch(const open_st::MappedCaptureSurface& surface, open_st::Rect
     return surface.width == bounds.Width() && surface.height == bounds.Height();
 }
 
-// 将桌面方向目标像素坐标反算为未旋转源表面坐标。
+// 将桌面方向的目标像素位置反算为驱动表面中的源像素位置。
+// 入参：targetX、targetY：目标图像内像素坐标；sourceWidth、sourceHeight：未旋转源图像宽高；rotation：旋转方式；sourceX、sourceY：输出参数，写入源像素坐标。
+// 返回：旋转受支持且源坐标位于源图像内时为 true；未知旋转或映射越界为 false。
 bool MapTargetToSource(int targetX, int targetY, int sourceWidth, int sourceHeight,
                        open_st::CapturedSurfaceRotation rotation, int& sourceX, int& sourceY) noexcept
 {
@@ -57,7 +63,10 @@ bool MapTargetToSource(int targetX, int targetY, int sourceWidth, int sourceHeig
 
 namespace open_st
 {
-// 复制有效像素并丢弃驱动行填充，输出始终使用桌面方向的紧凑顶向下布局。
+// 去除映射表面的行填充并校正旋转，生成独立持有像素的冻结 plane。
+// 入参：surface：借用的驱动映射表面；desktopBounds：输出物理像素半开边界；rotation：表面旋转方式；pixelColorSpace：原生像素颜色空间；metadata：显示颜色元数据；output
+// ：输出参数，接收冻结 plane；errorMessage：输出参数，接收失败诊断。
+// 返回：完整复制并通过合法性检查时为 true；输入无效、旋转越界或分配失败为 false，output 保持无效且写入诊断。
 bool BuildCapturedOutputPlane(const MappedCaptureSurface& surface, RectI desktopBounds,
                               CapturedSurfaceRotation rotation, CapturedColorSpace pixelColorSpace,
                               OutputColorMetadata metadata, CapturedOutputPlane& output,

@@ -1,3 +1,5 @@
+// 文件职责：声明桌面冻结捕获入口，向上层返回各显示输出的原生像素与颜色元数据。
+
 #pragma once
 
 #include <frozen_desktop_frame.h>
@@ -12,7 +14,9 @@ namespace open_st
 class DesktopCapturer final
 {
   public:
-    // 捕获一次完整冻结桌面；任一已附着输出失败时不发布部分结果。
+    // 冻结当前虚拟桌面的全部真实显示输出，供一次截图会话重复读取。
+    // 入参：frame：输出参数，接收拥有全部原生 plane 的冻结桌面；errorMessage：输出参数，接收捕获失败原因。
+    // 返回：全部输出捕获并验证成功时为 true；任一阶段失败时为 false，frame 被清空且提供诊断。
     [[nodiscard]] bool Capture(FrozenDesktopFrame& frame, std::wstring& errorMessage) const;
 };
 } // namespace open_st

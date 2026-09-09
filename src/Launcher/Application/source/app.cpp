@@ -1,3 +1,5 @@
+// 实现应用启动退出、托盘与消息分派，并协调截图、工具栏、设置及图像输出。
+
 #include "capture_command_gate.h"
 #include "capture_completion.h"
 #include "capture_toolbar_monitor.h"
@@ -40,8 +42,13 @@
 namespace
 {
 // 所有 Win32 类名和消息/命令 ID 都限制在本翻译单元，避免成为跨模块协议。
-// 两层宏用于让 CMake 生成的窄字符串版本号在编译期转换成宽字符串。
+// 把已展开的版本字符串字面量转换为宽字符串字面量。
+// 入参：value 为待添加 L 前缀的字符串字面量预处理记号。
+// 返回：预处理展开结果为带 L 前缀的宽字符串字面量，无运行时调用。
 #define OPEN_ST_WIDEN_IMPL(value) L##value
+// 先展开 CMake 版本宏，再将版本字符串转换为宽字符串。
+// 入参：value 为窄字符串字面量或展开后得到该字面量的宏。
+// 返回：宽字符串字面量预处理记号，无运行时调用。
 #define OPEN_ST_WIDEN(value) OPEN_ST_WIDEN_IMPL(value)
 constexpr wchar_t MESSAGE_CLASS[] = L"OpenST.MessageWindow";
 constexpr wchar_t OVERLAY_CLASS[] = L"OpenST.CaptureOverlay";
@@ -56,7 +63,9 @@ constexpr int CAPTURE_HOTKEY_ID = 1;
 class CompletionBusyGuard final
 {
   public:
-    // 借用应用状态，开始阻止会话消息重入。
+    // 在模态或截图完成流程中设置忙状态并通知准入门禁。
+    // 入参：busy：借用的忙标记；changed：可选状态变更回调，构造和释放时调用，必须不抛异常。
+    // 返回：构造函数无返回值；设置 busy 为 true 并调用非空通知。
     explicit CompletionBusyGuard(bool& busy, std::function<void()> changed = {})
         : busy_(busy), changed_(std::move(changed))
     {
@@ -66,16 +75,24 @@ class CompletionBusyGuard final
             this->changed_();
         }
     }
-    // 提示或资源分配抛异常时也恢复可操作状态。
+    // 在守卫退出时解除忙状态，确保异常路径也恢复准入。
+    // 入参：无。
+    // 返回：析构函数无返回值；委托 Release，只释放一次。
     ~CompletionBusyGuard()
     {
         this->Release();
     }
-    // 禁止复制状态守卫。
+    // 禁止复制构造，确保完成流程的忙标记只由原对象管理。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     CompletionBusyGuard(const CompletionBusyGuard&) = delete;
-    // 禁止复制赋值。
+    // 禁止复制赋值，避免完成流程的忙标记出现多个所有者。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     CompletionBusyGuard& operator=(const CompletionBusyGuard&) = delete;
-    // 正常收尾前先解除忙状态，使 CloseOverlay 可以释放资源。
+    // 提前解除当前守卫的忙状态，以便安全关闭截图会话。
+    // 入参：无。
+    // 返回：无返回值；首次调用将 busy 置 false 并通知 changed，后续调用不操作。
     void Release() noexcept
     {
         if (!this->released_)
@@ -99,7 +116,9 @@ class CompletionBusyGuard final
 class WindowDisableGuard final
 {
   public:
-    // 只禁用调用前已启用的窗口。
+    // 暂时禁用已启用的所属窗口以避免系统模态期间继续交互。
+    // 入参：window：借用的所属窗口句柄，允许 nullptr。
+    // 返回：构造函数无返回值；只记录并禁用原本启用的窗口。
     explicit WindowDisableGuard(HWND window) : window_(window), restore_(window != nullptr && IsWindowEnabled(window))
     {
         if (this->restore_)
@@ -107,7 +126,9 @@ class WindowDisableGuard final
             EnableWindow(this->window_, FALSE);
         }
     }
-    // 异常和取消同样恢复交互。
+    // 恢复由当前守卫暂时禁用的窗口。
+    // 入参：无。
+    // 返回：析构函数无返回值；仅在窗口仍存在且原本启用时恢复。
     ~WindowDisableGuard()
     {
         if (this->restore_ && IsWindow(this->window_))
@@ -121,7 +142,9 @@ class WindowDisableGuard final
     bool restore_;
 };
 
-// 日志文件使用 UTF-8；底层捕获模块使用宽字符串返回 Win32/DXGI 诊断信息。
+// 将宽字符诊断转换为 UTF-8 供日志记录。
+// 入参：value：借用的 UTF-16 诊断文本。
+// 返回：转换后的 UTF-8 字符串；空文本、长度过大或系统转换失败时返回对应英文诊断占位文本。
 std::string WideToUtf8(std::wstring_view value) noexcept
 {
     if (value.empty())
@@ -147,7 +170,9 @@ std::string WideToUtf8(std::wstring_view value) noexcept
     return convertedBytes == requiredBytes ? result : "<failed to convert diagnostic to UTF-8>";
 }
 
-// 读取当前光标的虚拟桌面物理坐标；系统查询失败时不修改调用方流程并返回 false。
+// 查询当前鼠标在虚拟桌面上的位置。
+// 入参：point：输出参数，成功时写入虚拟桌面物理像素坐标。
+// 返回：查询成功 true；失败 false 且不修改 point。
 bool TryGetCursorPoint(open_st::PointI& point) noexcept
 {
     POINT cursor{};
@@ -159,7 +184,9 @@ bool TryGetCursorPoint(open_st::PointI& point) noexcept
     return true;
 }
 
-// 把八个缩放控制点方向映射为对应的 Win32 尺寸调整光标。
+// 为选区缩放控制点选择对应方向的系统光标。
+// 入参：handle：命中的选区控制点方向枚举。
+// 返回：对应方向的共享系统光标；无控制点时用箭头，加载失败可能返回 nullptr，无需调用方销毁。
 HCURSOR CursorForHandle(open_st::SelectionHandle handle) noexcept
 {
     switch (handle)
@@ -182,7 +209,9 @@ HCURSOR CursorForHandle(open_st::SelectionHandle handle) noexcept
     return LoadCursorW(nullptr, IDC_ARROW);
 }
 
-// 根据当前操作及悬停命中结果选择创建、移动、缩放或普通箭头光标。
+// 根据选区操作和鼠标命中位置选择交互光标。
+// 入参：selection：只读选区模型；point：鼠标的虚拟桌面物理像素坐标。
+// 返回：创建、移动、缩放或箭头的共享系统光标句柄，不转移所有权。
 HCURSOR CursorForSelection(const open_st::SelectionModel& selection, open_st::PointI point) noexcept
 {
     switch (selection.Operation())
@@ -209,7 +238,9 @@ HCURSOR CursorForSelection(const open_st::SelectionModel& selection, open_st::Po
     return selection.Contains(point) ? LoadCursorW(nullptr, IDC_SIZEALL) : LoadCursorW(nullptr, IDC_ARROW);
 }
 
-// 读取最新屏幕坐标并立即把覆盖窗口光标更新为选区状态对应形状。
+// 按最新鼠标位置和选区操作状态更新覆盖窗口光标。
+// 入参：selection：用于判断当前操作及命中位置的只读选区模型。
+// 返回：无返回值；鼠标位置查询失败时保留现有光标。
 void UpdateOverlayCursor(const open_st::SelectionModel& selection) noexcept
 {
     open_st::PointI point{};
@@ -222,10 +253,14 @@ void UpdateOverlayCursor(const open_st::SelectionModel& selection) noexcept
 
 namespace open_st
 {
-// 保存进程模块实例，窗口和其他系统资源留到 Run/StartCapture 中按需初始化。
+// 创建应用协调器并保存进程模块实例。
+// 入参：instance：借用的当前程序模块句柄。
+// 返回：构造函数无返回值；窗口、设置及捕获资源留待运行时初始化。
 App::App(HINSTANCE instance) noexcept : instance_(instance) {}
 
-// 按截图会话、设置、本地化、托盘、消息窗口、互斥体和日志的依赖逆序清理。
+// 关闭应用持有的业务窗口和进程级服务并释放系统资源。
+// 入参：无。
+// 返回：析构函数无返回值；停止实例监听，关闭设置和截图会话，移除托盘并释放图标、消息窗口、COM 和日志。
 App::~App()
 {
     if (this->singleInstance_ != nullptr)
@@ -265,7 +300,9 @@ App::~App()
     ShutdownLogging();
 }
 
-// 初始化进程级服务、托盘与全局热键，并阻塞运行 Win32 消息循环直至退出。
+// 初始化应用服务并运行主消息循环直到退出。
+// 入参：showCommand（定义中未命名的 int）：Win32 初始显示方式，当前托盘应用不使用该值。
+// 返回：正常退出返回 WM_QUIT 的退出码；初始化或消息循环失败返回 1；成功转发第二实例请求返回 0。
 int App::Run(int)
 {
     // 先确定实例身份，第二实例只读取语言，不创建设置或日志。
@@ -374,6 +411,9 @@ int App::Run(int)
     std::array<wchar_t, 32768> executable{};
     const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
     this->singleInstance_->SetCaptureGate(
+        // 向实例接收线程提供当前截图请求是否可进入的判断。
+        // 入参：无显式入参；捕获 this，原子读取应用截图门禁。
+        // 返回：暂停时 nullopt；允许时返回当前代次，作为排队请求的校验令牌。
         [this]() -> std::optional<LPARAM>
         {
             const std::uint64_t gate = this->captureGate_.load(std::memory_order_acquire);
@@ -389,6 +429,9 @@ int App::Run(int)
     this->startup_ = std::make_unique<StartupRegistration>(std::wstring(executable.data(), length));
     if (!GetBoolSetting("onboarding.completed").value_or(false))
     {
+        // 在模态业务忙状态变化后同步截图准入门禁。
+        // 入参：无显式入参；捕获存活中的 App 指针。
+        // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
         CompletionBusyGuard welcomeGuard(this->welcoming_, [this]() { this->UpdateCaptureGate(); });
         this->welcomeWindow_ = std::make_unique<WelcomeWindow>();
         const bool accepted = this->welcomeWindow_->ShowModal(this->instance_, this->MakeSettingsCallbacks());
@@ -410,8 +453,14 @@ int App::Run(int)
         const bool wanted = GetBoolSetting("startup.enabled").value_or(false);
         if ((wanted && status.state != StartupState::CurrentPath) || (!wanted && status.state != StartupState::Missing))
         {
+            // 生成启动项配置不一致提示正文。
+            // 入参：无显式入参；捕获 App 以查询当前启动状态。
+            // 返回：当前语言的不一致说明及系统启动项状态宽字符串。
             this->ShowSimpleMessage([this]()
                                     { return GetUiText("startup.mismatch") + L"\n\n" + this->StartupStatusText(); },
+                                    // 提供应用提示窗口的当前语言标题。
+                                    // 入参：无。
+                                    // 返回：app.title 对应的本地化宽字符串。
                                     []() { return GetUiText("app.title"); }, MB_OK | MB_ICONWARNING);
         }
     }
@@ -455,7 +504,9 @@ int App::Run(int)
     return static_cast<int>(message.wParam);
 }
 
-// 消费模块去重告警后再取得提示文本；截图期间推迟提示，避免抢夺捕获和选区交互。
+// 合并并显示设置或文本资源读取失败的待提示告警。
+// 入参：无。
+// 返回：无返回值；截图或模态提示期间延后处理，其余时消费告警并显示一次合并提示。
 void App::ReportDataReadWarnings()
 {
     if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_)
@@ -475,7 +526,9 @@ void App::ReportDataReadWarnings()
     (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
 }
 
-// 注册并创建不可见的 message-only window，供热键、托盘和退出事件统一投递。
+// 注册并创建接收热键、托盘和业务命令的隐藏消息窗口。
+// 入参：无。
+// 返回：消息窗口创建成功时 true；注册或创建失败时 false 并记录日志。
 bool App::CreateMessageWindow()
 {
     // 描述窗口类的结构体，必须在创建窗口通过其注册窗口类。
@@ -506,7 +559,9 @@ bool App::CreateMessageWindow()
     return this->messageWindow_ != nullptr;
 }
 
-// 建立隐藏 HWND 到 App 的绑定，并把后续消息转交给实例 HandleMessage。
+// 建立隐藏消息窗口与 App 的关联并转发窗口消息。
+// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
+// 返回：App 实例处理消息的结果；尚未绑定实例时返回 DefWindowProcW 的结果。
 LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     // 从当前 HWND 的用户数据槽取回此前绑定的 App 指针；首次进入 WM_NCCREATE 时尚未绑定，因此为空。
@@ -526,7 +581,9 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
                           : DefWindowProcW(window, message, wParam, lParam);
 }
 
-// 真正的窗口消息处理逻辑在实例方法中实现，静态窗口过程负责绑定或找回 App 实例，并将消息转发给它。
+// 处理应用消息中枢收到的启动请求、热键、托盘和退出命令。
+// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
+// 返回：已消费业务消息的处理结果；其他消息返回 DefWindowProcW 的结果。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == TOOLBAR_COMMAND_MESSAGE)
@@ -634,7 +691,9 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-// 把应用图标加入系统通知区域；失败只记日志，不阻断常驻消息循环。
+// 为常驻应用添加系统托盘入口并加载图标。
+// 入参：无。
+// 返回：无返回值；成功后记录托盘状态，失败仅记日志，不阻止消息循环。
 void App::AddTrayIcon()
 {
     NOTIFYICONDATAW data{sizeof(data)};
@@ -670,7 +729,9 @@ void App::AddTrayIcon()
     }
 }
 
-// 在托盘图标曾成功添加时发送删除请求，并收敛本地标志。
+// 移除应用已经添加的系统托盘图标。
+// 入参：无。
+// 返回：无返回值；清除本地添加标记，未添加时不操作。
 void App::RemoveTrayIcon() noexcept
 {
     if (!this->trayAdded_)
@@ -684,7 +745,9 @@ void App::RemoveTrayIcon() noexcept
     this->trayAdded_ = false;
 }
 
-// 设置窗口确认新的界面语言后，刷新所有窗口标题和托盘提示文本。
+// 在语言切换后刷新现有窗口和托盘中的本地化文本。
+// 入参：无。
+// 返回：无返回值；更新已存在的界面对象，不创建新的业务窗口。
 void App::RefreshLocalizedUi()
 {
     if (this->captureToolbar_ != nullptr)
@@ -692,7 +755,7 @@ void App::RefreshLocalizedUi()
         const ToolbarResult result = this->captureToolbar_->RefreshTexts();
         if (!result.success)
         {
-            OPEN_ST_LOG_WARNING("Failed to refresh capture toolbar texts.");
+            OPEN_ST_LOG_WARNING("Failed to refresh capture toolbar texts. detail=", WideToUtf8(result.error));
         }
     }
     if (this->settingsWindow_ != nullptr)
@@ -737,7 +800,9 @@ void App::RefreshLocalizedUi()
     }
 }
 
-// 在当前鼠标位置构造并显示本地化托盘菜单，选择结果通过 WM_COMMAND 返回。
+// 在当前光标位置提供截图、设置、关于及退出托盘菜单。
+// 入参：无。
+// 返回：无返回值；用户选中的命令通过窗口消息交回 App 处理。
 void App::ShowTrayMenu()
 {
     POINT cursor{};
@@ -760,7 +825,9 @@ void App::ShowTrayMenu()
     DestroyMenu(menu);
 }
 
-// 懒创建或激活设置窗口，并在语言保存成功后刷新应用现有界面。
+// 打开或激活应用的唯一非模态设置窗口。
+// 入参：无。
+// 返回：无返回值；首次创建时注入业务回调，忙状态下不重复开启。
 void App::ShowSettings()
 {
     if (this->dialogActive_ || this->shuttingDown_)
@@ -779,18 +846,28 @@ void App::ShowSettings()
     }
 }
 
-// 将业务能力注入 Settings，避免设置窗口直接依赖系统集成和本地化模块。
+// 组装供设置和欢迎窗口调用的本地化及系统集成回调。
+// 入参：无。
+// 返回：包含文本、语言、启动项和忙状态通知的回调集合；其中捕获的 App 须存活到回调解除。
 SettingsWindowCallbacks App::MakeSettingsCallbacks()
 {
     SettingsWindowCallbacks callbacks;
-    // 只向设置窗口传入所请求键的文本，不暴露本地化模块类型或状态。
+    // 为子窗口提供指定键的当前语言文本。
+    // 入参：key：布局或工具栏请求的本地化文本键。
+    // 返回：GetUiText 返回的本地化宽字符串。
     callbacks.text = [](std::string_view key) { return GetUiText(key); };
-    // 当前语言仅用于设置缺失时选中运行时语言。
+    // 向设置窗口提供当前生效的语言代码。
+    // 入参：无。
+    // 返回：当前运行时语言代码，用于设置缺失时的默认选择。
     callbacks.currentLanguage = []() { return CurrentUiLanguageCode(); };
-    // 每次查询读取本地化模块动态提供的语言集合。
+    // 向设置窗口提供当前可用的语言列表。
+    // 入参：无。
+    // 返回：文本资源可用时返回语言代码列表；不可用时返回空列表。
     callbacks.availableLanguages = []()
     { return IsUiTextAvailable() ? GetAvailableUiLanguages() : std::vector<std::string>{}; };
-    // 设置持久化成功后才切换运行语言，并刷新现有应用界面。
+    // 在设置保存后切换运行语言并刷新已有界面。
+    // 入参：language：已提交的语言代码。
+    // 返回：SetUiLanguage 的应用结果；切换成功 true，失败 false，并执行界面刷新。
     callbacks.languageApplied = [this](std::string_view language)
     {
         const bool applied = SetUiLanguage(language);
@@ -799,8 +876,17 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     };
     callbacks.largeIcon = this->largeIcon_;
     callbacks.smallIcon = this->smallIcon_;
+    // 把已保存的启动项开关应用到系统。
+    // 入参：enabled：用户已提交的启动项启用状态。
+    // 返回：ApplyStartup 的执行结果，成功 true，失败 false。
     callbacks.startupApplied = [this](bool enabled) { return this->ApplyStartup(enabled); };
+    // 为设置页面查询当前启动项状态文字。
+    // 入参：无显式入参；捕获 App 查询系统集成状态。
+    // 返回：当前语言的启动状态宽字符串。
     callbacks.startupStatus = [this]() { return this->StartupStatusText(); };
+    // 同步设置窗口忙状态以控制截图请求准入。
+    // 入参：busy：设置窗口是否正在执行需阻止截图的操作。
+    // 返回：无返回值；更新 settingsBusy_ 并刷新截图门禁。
     callbacks.busyChanged = [this](bool busy)
     {
         this->settingsBusy_ = busy;
@@ -809,7 +895,9 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     return callbacks;
 }
 
-// 仅报告已登记入口状态，Windows 的启动许可仍由系统管理。
+// 查询当前用户启动入口并生成可显示的本地化状态。
+// 入参：无。
+// 返回：与当前启动注册状态对应的宽字符串；不代表 Windows 系统启动许可已开启。
 std::wstring App::StartupStatusText() const
 {
     const StartupStatus status = this->startup_ != nullptr ? this->startup_->Query() : StartupStatus{};
@@ -821,7 +909,9 @@ std::wstring App::StartupStatusText() const
     return GetUiText(key);
 }
 
-// 仅由欢迎确认、设置应用或明确修复触发系统写入。
+// 按用户已提交的设置启用或移除当前用户启动入口。
+// 入参：enabled：true 请求登记当前程序启动路径，false 请求移除入口。
+// 返回：系统入口达到请求状态时 true；系统集成服务缺失或操作失败时 false。
 bool App::ApplyStartup(bool enabled)
 {
     if (this->startup_ == nullptr)
@@ -838,7 +928,9 @@ bool App::ApplyStartup(bool enabled)
     return applied;
 }
 
-// 原生模态提示使用可见 owner，Windows 会在提示期间禁用该窗口。
+// 选择系统模态提示的所属窗口。
+// 入参：无。
+// 返回：优先返回可见设置窗口的借用句柄，否则返回隐藏消息窗口；不转移所有权。
 HWND App::DialogOwner() const noexcept
 {
     if (this->settingsWindow_ != nullptr && this->settingsWindow_->IsOpen())
@@ -848,7 +940,9 @@ HWND App::DialogOwner() const noexcept
     return this->messageWindow_;
 }
 
-// 所有布尔忙状态仅在 UI 线程改变；一次原子发布同时传递暂停状态和新代次。
+// 根据应用忙状态发布跨线程截图准入状态并更新代次。
+// 入参：无。
+// 返回：无返回值；原子更新暂停标记和代次，使较早排队的截图请求失效。
 void App::UpdateCaptureGate() noexcept
 {
     const bool paused =
@@ -858,7 +952,9 @@ void App::UpdateCaptureGate() noexcept
     this->InvalidateToolbarCommands();
 }
 
-// 判断当前输入能否进入统一完成命令队列。
+// 判断当前截图会话能否接受新的完成命令。
+// 入参：无。
+// 返回：会话有效、选区稳定且不处于准备或模态忙状态时 true，否则 false。
 bool App::CanSubmitToolbarCommand() const noexcept
 {
     return !this->completionBusy_ && !this->dialogActive_ && !this->welcoming_ && !this->shuttingDown_ &&
@@ -867,7 +963,9 @@ bool App::CanSubmitToolbarCommand() const noexcept
            this->selectionModel_->Phase() == SelectionPhase::Selected && this->selectionModel_->HasSelection();
 }
 
-// 投递固定数值而非裸指针；预订后按钮和快捷键均不能再次进入。
+// 为截图完成命令预订处理位置并投递到 App 消息队列。
+// 入参：command：稳定的工具栏命令 ID；token：提交时的选区代次。
+// 返回：预订及消息投递成功时 true；状态无效、已有请求或投递失败时 false，并撤销失败预订。
 bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
 {
     if (command != CaptureToolbarCommand::Cancel && command != CaptureToolbarCommand::Save &&
@@ -895,7 +993,9 @@ bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token)
     return true;
 }
 
-// 在按钮窗口过程返回后执行业务，避免回调栈中同步销毁工具栏。
+// 校验并消费排队的工具栏命令，调用对应截图完成入口。
+// 入参：command：消息携带的命令 ID；token：消息携带的选区代次。
+// 返回：无返回值；过期或不匹配请求被丢弃，有效请求在按钮回调返回后执行业务。
 void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t token)
 {
     if (this->toolbarGate_ == nullptr ||
@@ -919,7 +1019,9 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
     this->RefreshCaptureToolbar();
 }
 
-// 所有取消和模态切换都同步撤销旧请求，工具栏的新 token 随后统一刷新。
+// 撤销旧选区的排队命令并刷新工具栏。
+// 入参：updateMonitor：是否同时重新选择工具栏目标显示器，默认 false。
+// 返回：无返回值；更新命令代次及输入时间边界后同步工具栏。
 void App::InvalidateToolbarCommands(bool updateMonitor) noexcept
 {
     if (this->toolbarGate_ != nullptr)
@@ -930,7 +1032,9 @@ void App::InvalidateToolbarCommands(bool updateMonitor) noexcept
     this->RefreshCaptureToolbar(updateMonitor);
 }
 
-// 按当前稳定选区展示一条工具栏，目标屏幕只在选区操作结束时改变。
+// 按当前选区状态同步工具栏显示位置和可见性。
+// 入参：updateMonitor：true 重新选择目标显示器；false 保留当前目标屏幕。
+// 返回：无返回值；无稳定选区时隐藏工具栏，定位或显示失败记录诊断。
 void App::RefreshCaptureToolbar(bool updateMonitor) noexcept
 try
 {
@@ -950,6 +1054,9 @@ try
         std::vector<HMONITOR> monitors;
         const BOOL enumerated = EnumDisplayMonitors(
             nullptr, nullptr,
+            // 收集当前枚举到的显示器以选择工具栏目标屏幕。
+            // 入参：monitor：当前显示器；未命名 HDC、LPRECT：本回调不使用的设备上下文与矩形；data：借用的显示器向量指针。
+            // 返回：追加成功 TRUE 继续枚举；内存分配等异常时 FALSE 终止枚举。
             [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL
             {
                 try
@@ -1002,14 +1109,14 @@ try
     if (!placed.success)
     {
         this->captureToolbar_->Hide();
-        OPEN_ST_LOG_WARNING("Failed to position capture toolbar.");
+        OPEN_ST_LOG_WARNING("Failed to position capture toolbar. detail=", WideToUtf8(placed.error));
         return;
     }
     this->captureToolbar_->SetBusy(this->toolbarGate_->Pending());
     const ToolbarResult shown = this->captureToolbar_->Show(this->toolbarGate_->Token());
     if (!shown.success)
     {
-        OPEN_ST_LOG_WARNING("Failed to show capture toolbar.");
+        OPEN_ST_LOG_WARNING("Failed to show capture toolbar. detail=", WideToUtf8(shown.error));
     }
 }
 catch (...)
@@ -1021,7 +1128,9 @@ catch (...)
     OPEN_ST_LOG_WARNING("Failed to update capture toolbar.");
 }
 
-// 仅在冻结帧及覆盖窗口准备完毕后创建工具栏；失败不影响原有截图快捷键。
+// 为已建立的截图覆盖会话创建无激活工具栏。
+// 入参：无。
+// 返回：无返回值；失败记录并提示，截图会话仍可通过键盘操作。
 void App::CreateCaptureToolbar() noexcept
 {
     try
@@ -1032,8 +1141,16 @@ void App::CreateCaptureToolbar() noexcept
             {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
             {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
         const ToolbarResult result = this->captureToolbar_->Create(
-            this->instance_, this->overlaySession_->ActivationWindow(), std::move(buttons), [](std::string_view key)
-            { return GetUiText(key); }, [this](CaptureToolbarCommand command, std::uint64_t token)
+            this->instance_, this->overlaySession_->ActivationWindow(), std::move(buttons),
+                // 为子窗口提供指定键的当前语言文本。
+                // 入参：key：布局或工具栏请求的本地化文本键。
+                // 返回：GetUiText 返回的本地化宽字符串。
+                [](std::string_view key)
+            { return GetUiText(key); },
+                // 把工具栏命令转交 App 消息队列执行。
+                // 入参：command：按钮稳定命令 ID；token：当前选区代次；捕获 App。
+                // 返回：预订并投递成功 true；状态不允许或投递失败 false。
+                [this](CaptureToolbarCommand command, std::uint64_t token)
             { return this->PostToolbarCommand(command, token); });
         if (result.success)
         {
@@ -1049,6 +1166,9 @@ void App::CreateCaptureToolbar() noexcept
     // 同步提示期间冻结会话输入，返回后先检查显示布局是否仍有效。
     try
     {
+        // 在模态业务忙状态变化后同步截图准入门禁。
+        // 入参：无显式入参；捕获存活中的 App 指针。
+        // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
         CompletionBusyGuard guard(this->completionBusy_, [this]() { this->UpdateCaptureGate(); });
         (void)MessageBoxW(this->overlaySession_->ActivationWindow(), GetUiText("capture.toolbar.failed").c_str(),
                           GetUiText("app.title").c_str(), MB_OK | MB_ICONWARNING);
@@ -1068,7 +1188,9 @@ void App::CreateCaptureToolbar() noexcept
     }
 }
 
-// 在显示遮罩前冻结虚拟桌面，并建立覆盖窗口、渲染器和选区模型的一次会话。
+// 捕获冻结桌面并建立一次跨显示器截图选区会话。
+// 入参：无。
+// 返回：无返回值；成功显示覆盖窗口并创建工具栏，稳定选区后再显示工具栏；失败清理已创建资源并提示原因。
 void App::StartCapture()
 try
 {
@@ -1196,7 +1318,9 @@ catch (const std::exception&)
     this->ShowCaptureError("capture.error.unknown");
 }
 
-// 驱动覆盖窗口绘制、选区鼠标捕获、光标反馈、分层取消和会话销毁。
+// 处理截图覆盖窗口的绘制、选区输入及会话失效消息。
+// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
+// 返回：已处理消息的 Win32 结果；无应用关联或未处理消息交给默认窗口过程。
 LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     App* app = reinterpret_cast<App*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -1444,7 +1568,9 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-// 依次取消当前拖动、清空已有选区或关闭未选择状态的覆盖窗口。
+// 按层级处理 Esc 或右键取消操作。
+// 入参：无。
+// 返回：无返回值；优先取消拖动，再清空已有选区，最后关闭无选区的覆盖会话。
 void App::CancelSelectionOrClose() noexcept
 {
     if (this->completionBusy_)
@@ -1480,7 +1606,9 @@ void App::CancelSelectionOrClose() noexcept
     this->CloseOverlay();
 }
 
-// 释放鼠标捕获与截图会话对象，并安全销毁当前覆盖窗口。
+// 结束当前截图会话并释放覆盖窗口及相关资源。
+// 入参：无。
+// 返回：无返回值；完成或模态忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
     if (this->toolbarGate_ != nullptr)
@@ -1519,19 +1647,25 @@ void App::CloseOverlay() noexcept
     this->overlayInvalidated_ = false;
 }
 
-// 快捷键和后续菜单共享复制业务入口。
+// 把当前稳定截图选区复制到系统剪贴板。
+// 入参：无。
+// 返回：无返回值；经统一完成流程处理，不允许输出时忽略，失败显示本地化提示。
 void App::CopySelection()
 {
     this->CompleteSelection(false);
 }
 
-// 快捷键和后续菜单共享保存业务入口。
+// 让用户选择文件目标并保存当前稳定截图选区。
+// 入参：无。
+// 返回：无返回值；经统一完成流程处理，取消或失败保留仍有效的截图会话。
 void App::SaveSelection()
 {
     this->CompleteSelection(true);
 }
 
-// 在冻结帧存活期间完成转换和输出；所有模态消息返回后才关闭或恢复会话。
+// 协调选区图像转换、复制或保存及成功后的会话收尾。
+// 入参：save：true 选择路径并保存文件，false 写入剪贴板。
+// 返回：无返回值；成功关闭会话，取消或失败恢复仍有效的选区，布局失效则安全释放。
 void App::CompleteSelection(bool save)
 try
 {
@@ -1541,6 +1675,9 @@ try
     {
         return;
     }
+    // 在模态业务忙状态变化后同步截图准入门禁。
+    // 入参：无显式入参；捕获存活中的 App 指针。
+    // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
     CompletionBusyGuard busyGuard(this->completionBusy_, [this]() { this->UpdateCaptureGate(); });
     WindowDisableGuard settingsGuard(this->settingsWindow_ != nullptr ? this->settingsWindow_->NativeHandle()
                                                                       : nullptr);
@@ -1553,13 +1690,17 @@ try
         SdrSelectionFrame frame;
         SaveImageTarget target;
         CompletionActions actions;
-        // 对话框期间布局失效时不再转换或写入旧坐标对应的图像。
+        // 从冻结桌面生成当前选区的 SDR 输出图像。
+        // 入参：无显式入参；捕获 selection 及 App，借用输出 frame 和诊断 error。
+        // 返回：会话未失效且转换成功时 true；布局失效或转换失败 false。
         actions.generate = [this, selection, &frame, &error]()
         {
             return !this->overlayInvalidated_ &&
                    this->outputRenderer_->Render(*this->frozenDesktopFrame_, selection, frame, error);
         };
-        // Export 只借用 BGRX 视图，不依赖 Graphics 模型，也不复制整张输出。
+        // 把已生成的选区图像适配为 Export 视图并发布到剪贴板。
+        // 入参：无显式入参；捕获 owner，借用 frame 像素和 error 诊断输出。
+        // 返回：剪贴板发布成功 true；失败 false 并写入诊断，不转移 frame 像素所有权。
         actions.copy = [owner, &frame, &error]()
         {
             const SdrImageView image{static_cast<std::uint32_t>(frame.Bounds().Width()),
@@ -1567,7 +1708,9 @@ try
                                      frame.Pixels()};
             return CopyImageToClipboard(owner, image, error);
         };
-        // 上次目录由 Settings 动态键读取；缺失时交给系统选择默认位置。
+        // 读取上次保存目录并显示系统图片保存对话框。
+        // 入参：无显式入参；捕获 owner，借用 target 和 error 作为选择结果和诊断输出。
+        // 返回：ShowSaveImageDialog 的 Accepted、Cancelled 或 Failed 状态。
         actions.chooseSave = [owner, &target, &error]()
         {
             const std::optional<std::string> directory = GetStringSetting("capture.last_save_directory");
@@ -1577,7 +1720,9 @@ try
                                       : std::filesystem::path{};
             return ShowSaveImageDialog(owner, last, target, error);
         };
-        // 目标确认及转换成功后再进入编码和文件写入。
+        // 将生成的 SDR 选区图像写入用户已确认的文件目标。
+        // 入参：无显式入参；借用 frame、target、error，捕获 App 校验会话有效性。
+        // 返回：会话有效且文件写入成功 true；会话失效或写入失败 false。
         actions.save = [this, &frame, &target, &error]()
         {
             const SdrImageView image{static_cast<std::uint32_t>(frame.Bounds().Width()),
@@ -1585,7 +1730,9 @@ try
                                      frame.Pixels()};
             return !this->overlayInvalidated_ && WriteImageFile(image, target.path, target.format, error);
         };
-        // 目录持久化失败不撤销已经成功保存的截图。
+        // 记住成功保存截图的父目录以便下次打开保存对话框。
+        // 入参：无显式入参；借用 target 获取父目录。
+        // 返回：设置写入成功 true；写入失败 false，不撤销已保存的图片。
         actions.rememberDirectory = [&target]()
         {
             const std::u8string directory = target.path.parent_path().u8string();
@@ -1648,20 +1795,27 @@ catch (const std::exception&)
     }
 }
 
-// 清理系统入口后再关闭业务和日志，保留窗口报告日志清理失败。
+// 显示可重试的退出清理窗口并执行用户选择的清理步骤。
+// 入参：无。
+// 返回：无返回值；失败保留状态提示，用户完成清理或确认退出后请求结束应用。
 void App::ShowCleanup()
 {
     if (this->dialogActive_ || this->completionBusy_ || this->welcoming_)
     {
         return;
     }
+    // 在模态业务忙状态变化后同步截图准入门禁。
+    // 入参：无显式入参；捕获存活中的 App 指针。
+    // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
     CompletionBusyGuard guard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
     WindowRenderer renderer;
     struct RefreshGuard
     {
         WindowRenderer*& renderer;
         std::function<void()>& status;
-        // 在局部窗口销毁前撤销所有借用，避免语言通知使用悬空引用。
+        // 在清理窗口退出时撤销 App 对局部窗口及刷新回调的借用。
+        // 入参：无。
+        // 返回：析构函数无返回值；清空 messageRenderer_ 和 messageStatusRefresh_。
         ~RefreshGuard()
         {
             this->renderer = nullptr;
@@ -1673,6 +1827,9 @@ void App::ShowCleanup()
     bool stopped = false;
     bool exitRequested = false;
     std::string statusKey;
+    // 按当前语言刷新清理窗口的操作状态文字。
+    // 入参：无显式入参；借用 renderer 和 statusKey。
+    // 返回：无返回值；状态键为空时清空提示，否则写入本地化状态。
     this->messageStatusRefresh_ = [&renderer, &statusKey]()
     { (void)renderer.SetStatus(statusKey.empty() ? L"" : GetUiText(statusKey)); };
     const nlohmann::json layout = nlohmann::json::parse(R"({
@@ -1684,6 +1841,9 @@ void App::ShowCleanup()
         "footer":{"leading":[],"trailing":[
             {"type":"button","id":"cleanupConfirm","textKey":"cleanup.confirm"},
             {"type":"button","id":"cleanupCancel","textKey":"cleanup.cancel"}]}})");
+    // 检查清理窗口准备步骤是否成功，统一进入异常处理。
+    // 入参：result：布局加载或回调绑定的 RendererResult。
+    // 返回：无返回值；失败时抛出 runtime_error，成功时继续。
     const auto require = [](const RendererResult& result)
     {
         if (!result)
@@ -1695,15 +1855,28 @@ void App::ShowCleanup()
     {
         require(renderer.LoadLayout(layout));
         require(renderer.SetTextResolver(
+            // 解析清理窗口文本并在业务已停止时切换退出按钮文案。
+            // 入参：key：布局文本键；借用 stopped 判断业务是否已经停止。
+            // 返回：当前语言文本；已停止时将取消按钮替换为保留日志并退出的文字。
             [&stopped](std::string_view key)
             { return GetUiText(key == "cleanup.cancel" && stopped ? "cleanup.keep_logs_exit" : key); }));
         require(renderer.BindBool(
-            "deleteLogs", [&deleteLogs]() { return RendererBoolResult{true, deleteLogs, {}}; },
+            "deleteLogs",
+                // 读取本次退出清理的删除日志选项。
+                // 入参：无显式入参；借用 deleteLogs 草稿。
+                // 返回：成功的 RendererBoolResult，其 value 为当前删除日志选项。
+                [&deleteLogs]() { return RendererBoolResult{true, deleteLogs, {}}; },
+            // 更新本次退出清理的删除日志草稿。
+            // 入参：value：复选框新值；借用 deleteLogs 存储草稿。
+            // 返回：表示变更成功的 RendererChangeResult，不写持久化设置。
             [&deleteLogs](bool value)
             {
                 deleteLogs = value;
                 return RendererChangeResult{};
             }));
+        // 处理用户取消清理窗口的操作。
+        // 入参：无显式入参；借用 stopped、exitRequested 和 renderer。
+        // 返回：无返回值；请求延迟关闭，业务已经停止时同时记录退出意图。
         const auto cancel = [&]()
         {
             exitRequested = stopped;
@@ -1713,6 +1886,9 @@ void App::ShowCleanup()
         require(renderer.SetCloseHandler(cancel));
         require(renderer.SetDefaultAction("cleanupCancel"));
         require(renderer.BindAction("cleanupConfirm",
+                                    // 执行用户确认的启动项清理、业务停止和可选日志删除。
+                                    // 入参：无显式入参；借用清理窗口状态与 renderer，捕获 App。
+                                    // 返回：无返回值；失败显示状态并允许重试，成功请求关闭窗口并退出。
                                     [&]()
                                     {
                                         if (!stopped)
@@ -1771,22 +1947,40 @@ void App::ShowCleanup()
     }
 }
 
-// 显示包含当前构建版本号的本地化关于对话框。
+// 显示包含当前构建版本的本地化关于窗口。
+// 入参：无。
+// 返回：无返回值；复用简单模态消息入口。
 void App::ShowAbout()
 {
+    // 生成包含构建版本号的关于窗口正文。
+    // 入参：无。
+    // 返回：当前语言的关于说明宽字符串，其中包含 OPEN_ST_VERSION。
     this->ShowSimpleMessage([]() { return GetUiText("about.body", {{L"version", OPEN_ST_WIDEN(OPEN_ST_VERSION)}}); },
+                            // 提供关于窗口的本地化标题。
+                            // 入参：无。
+                            // 返回：about.title 对应的当前语言宽字符串。
                             []() { return GetUiText("about.title"); }, MB_OK | MB_ICONINFORMATION);
 }
 
-// 将底层截图失败详情嵌入本地化消息外壳并显示错误对话框。
+// 显示截图失败的本地化原因。
+// 入参：detailKey：描述失败原因的本地化文本键，仅在本次同步提示中借用。
+// 返回：无返回值；将原因嵌入截图错误消息正文后显示。
 void App::ShowCaptureError(std::string_view detailKey)
 {
+    // 生成包含具体原因的截图错误提示正文。
+    // 入参：无显式入参；捕获借用的 detailKey，调用期间须保持有效。
+    // 返回：本地化截图错误外壳与 detailKey 对应原因组合后的宽字符串。
     this->ShowSimpleMessage([detailKey]()
                             { return GetUiText("capture.error.message", {{L"detail", GetUiText(detailKey)}}); },
+                            // 提供应用提示窗口的当前语言标题。
+                            // 入参：无。
+                            // 返回：app.title 对应的本地化宽字符串。
                             []() { return GetUiText("app.title"); }, MB_OK | MB_ICONERROR);
 }
 
-// 守卫覆盖 Renderer 与系统兜底两条路径；正常关闭和 WM_QUIT 返回不再次弹窗。
+// 显示可随语言变化刷新的简单模态提示，并在 Renderer 失败时回退系统提示。
+// 入参：message、title：正文和标题查询回调；fallbackFlags：MessageBoxW 的按钮及图标标志。
+// 返回：无返回值；守卫覆盖自定义和系统提示两条路径，阻止模态期间再次进入业务。
 void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function<std::wstring()> title,
                             UINT fallbackFlags)
 {
@@ -1794,13 +1988,24 @@ void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function
     {
         return;
     }
+    // 在模态业务忙状态变化后同步截图准入门禁。
+    // 入参：无显式入参；捕获存活中的 App 指针。
+    // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
     CompletionBusyGuard dialogGuard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
     bool shown = false;
     try
     {
         shown = TryShowSimpleMessageWindow(
-            this->messageWindow_, this->largeIcon_, title, message, []() { return GetUiText("dialog.ok"); },
-            this->messageRenderer_, [this](MSG& threadMessage)
+            this->messageWindow_, this->largeIcon_, title, message,
+                // 提供简单提示窗口确认按钮的当前语言文字。
+                // 入参：无。
+                // 返回：当前语言的确认按钮文本宽字符串。
+                []() { return GetUiText("dialog.ok"); },
+            this->messageRenderer_,
+                // 在简单提示的模态循环中处理设置窗口键盘导航。
+                // 入参：threadMessage：可由设置窗口消费的线程消息引用；捕获 App。
+                // 返回：设置窗口存在且消费消息时 true，否则 false。
+                [this](MSG& threadMessage)
             { return this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(threadMessage); });
     }
     catch (...)

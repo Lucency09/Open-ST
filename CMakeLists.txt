@@ -1,3 +1,5 @@
+# 配置 Open-ST 工程选项、依赖与版本生成，并加载产品和可选测试构建。
+
 # 指定配置本项目所需的最低 CMake 版本。
 # 3.28 及以上版本能够稳定支持本项目使用的现代 CMake 功能和 vcpkg manifest 模式。
 cmake_minimum_required(VERSION 3.28)

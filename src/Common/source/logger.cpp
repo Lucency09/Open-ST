@@ -1,3 +1,5 @@
+// 实现带线程同步、按日期和容量轮转及受限文件清理的本地日志服务。
+
 #include <log.h>
 
 #include "logger.h"
@@ -42,6 +44,9 @@ struct FileTimestamp
     std::string value;
 };
 
+// 识别日志文件名中的日期片段格式。
+// 入参：text：待检查的 YYYY-MM-DD 片段。
+// 返回：数字和连字符位置符合格式时 true；否则 false，不校验日期实际存在。
 bool IsDateText(std::string_view text) noexcept
 {
     if (text.size() != DATE_LENGTH || text[4] != '-' || text[7] != '-')
@@ -62,6 +67,9 @@ bool IsDateText(std::string_view text) noexcept
     return true;
 }
 
+// 识别日志文件名的毫秒时间戳格式。
+// 入参：text：待检查的 YYYY-MM-DD-HH-MM-SS-mmm 片段。
+// 返回：长度和数字、连字符位置全部合法时 true；否则 false，不校验时间取值范围。
 bool IsFileTimestampText(std::string_view text) noexcept
 {
     if (text.size() != FILE_TIMESTAMP_LENGTH)
@@ -87,6 +95,9 @@ bool IsFileTimestampText(std::string_view text) noexcept
     return true;
 }
 
+// 解析日志文件重名时附加的正整数序号。
+// 入参：text：待解析的十进制文本；value：输出解析数值。
+// 返回：完整解析为非零 uint64_t 时 true；否则 false，失败时 value 可能已被部分解析结果修改。
 bool ParsePositiveIndex(std::string_view text, std::uint64_t& value) noexcept
 {
     if (text.empty())
@@ -97,6 +108,9 @@ bool ParsePositiveIndex(std::string_view text, std::uint64_t& value) noexcept
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() && value > 0;
 }
 
+// 识别当前及旧版日志文件名并提取排序依据。
+// 入参：path：候选日志路径；result：输出文件日期、时间戳及冲突序号，调用前应使用新记录。
+// 返回：名称符合日志规则时 true；不匹配或异常时 false，失败可能已部分修改 result。
 bool ParseLogFile(const std::filesystem::path& path, LogFileInfo& result) noexcept
 {
     try
@@ -154,6 +168,9 @@ bool ParseLogFile(const std::filesystem::path& path, LogFileInfo& result) noexce
     }
 }
 
+// 把系统时间点转换为日志使用的本地日历时间。
+// 入参：time：system_clock 时间点。
+// 返回：localtime_s 填充的 tm 结构；本函数不单独报告时间转换错误。
 std::tm LocalTime(std::chrono::system_clock::time_point time) noexcept
 {
     const std::time_t rawTime = std::chrono::system_clock::to_time_t(time);
@@ -162,6 +179,9 @@ std::tm LocalTime(std::chrono::system_clock::time_point time) noexcept
     return local;
 }
 
+// 生成检测日志跨日轮转所需的本地日期。
+// 入参：无。
+// 返回：当前本地时间对应的 YYYY-MM-DD 字符串。
 std::string CurrentDate()
 {
     const std::tm local = LocalTime(std::chrono::system_clock::now());
@@ -170,6 +190,9 @@ std::string CurrentDate()
     return stream.str();
 }
 
+// 缩短日志中的源码位置并统一路径分隔符。
+// 入参：sourceFile：source_location 提供的源码路径视图。
+// 返回：优先截取 src/ 或 testing/ 开始的路径；未找到标记时返回统一为斜杠的完整输入路径。
 std::string RelativeSourcePath(std::string_view sourceFile)
 {
     std::string path(sourceFile);
@@ -186,6 +209,9 @@ std::string RelativeSourcePath(std::string_view sourceFile)
     return path;
 }
 
+// 为新日志文件生成一致的日期及毫秒时间戳。
+// 入参：无。
+// 返回：同一当前时刻产生的 FileTimestamp，date 为日期，value 为文件名时间戳。
 FileTimestamp CurrentFileTimestamp()
 {
     const std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
@@ -201,6 +227,9 @@ FileTimestamp CurrentFileTimestamp()
     return FileTimestamp{date.str(), value.str()};
 }
 
+// 为日志记录选择可读的级别名称。
+// 入参：level：日志级别枚举。
+// 返回：静态字符串指针，未知值为 UNKNOWN，调用方不负责释放。
 const char* LevelName(open_st::log_detail::LogLevel level) noexcept
 {
     switch (level)
@@ -220,6 +249,9 @@ const char* LevelName(open_st::log_detail::LogLevel level) noexcept
     }
 }
 
+// 按构建配置判断是否记录指定级别日志。
+// 入参：level：待判断的日志级别。
+// 返回：Debug 构建接受 Debug 及以上，Release 接受 Info 及以上；达到阈值时 true。
 bool IsEnabled(open_st::log_detail::LogLevel level) noexcept
 {
 #if defined(OPEN_ST_DEBUG_LOGS)
@@ -229,6 +261,9 @@ bool IsEnabled(open_st::log_detail::LogLevel level) noexcept
 #endif
 }
 
+// 查找日志默认存放位置所依赖的程序目录。
+// 入参：无。
+// 返回：当前可执行文件父目录；系统查询失败或路径超出缓冲区上限时返回空路径。
 std::filesystem::path ExecutableDirectory()
 {
     std::vector<wchar_t> buffer(512);
@@ -251,6 +286,9 @@ std::filesystem::path ExecutableDirectory()
 class LoggerState final
 {
   public:
+    // 按应用目录与轮转配置启动进程日志输出。
+    // 入参：applicationDirectory：应用基准目录，日志位于其 data/logs；options：最大行数、文件字节数和保留数量。
+    // 返回：配置有效且目录和输出文件准备成功时 true；失败或异常时 false 并重置日志状态。
     bool Initialize(const std::filesystem::path& applicationDirectory, const open_st::LogOptions& options) noexcept
     {
         try
@@ -290,6 +328,9 @@ class LoggerState final
         }
     }
 
+    // 刷新并停止日志输出，保留磁盘日志文件。
+    // 入参：无。
+    // 返回：无返回值；关闭输出流并重置进程日志状态，不删除历史文件。
     void Shutdown() noexcept
     {
         try
@@ -302,7 +343,9 @@ class LoggerState final
         }
     }
 
-    // 在同一把锁内停写并清理；目录与父目录句柄禁止改名替换，文件按句柄删除。
+    // 停止日志输出并删除可识别的程序日志，供退出清理重试。
+    // 入参：无；使用初始化时记录的日志目录。
+    // 返回：目录不存在或全部清理成功 true；路径含重解析点、访问失败或删除失败 false，保留目录供重试。
     bool ShutdownAndClear() noexcept
     {
         try
@@ -313,7 +356,9 @@ class LoggerState final
                 return true;
             struct CloseHandleDeleter
             {
-                // 统一释放成功或失败的 Win32 句柄。
+                // 释放退出清理过程中打开的 Win32 句柄。
+                // 入参：handle：待释放的文件或目录句柄，可为 nullptr 或 INVALID_HANDLE_VALUE。
+                // 返回：无返回值；有效句柄调用 CloseHandle，无效值不操作。
                 void operator()(void* handle) const noexcept
                 {
                     if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
@@ -384,6 +429,9 @@ class LoggerState final
         }
     }
 
+    // 向进程日志服务提交文本并按日期、行数或容量轮转。
+    // 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置。
+    // 返回：无返回值；未初始化或级别未启用时忽略，写入失败停止本次输出，Error/Fatal 立即刷新。
     void Write(open_st::log_detail::LogLevel level, const std::string& message, std::string_view sourceFile,
                std::uint_least32_t sourceLine) noexcept
     {
@@ -457,6 +505,9 @@ class LoggerState final
     }
 
   private:
+    // 在持锁状态下关闭当前文件并复位日志运行状态。
+    // 入参：clearDirectory：是否同时清除日志目录，false 保留目录以便清理重试；调用方须持有 mutex_。
+    // 返回：无返回值；刷新关闭输出，清空路径及计数并取消初始化状态。
     void ResetLocked(bool clearDirectory = true) noexcept
     {
         if (this->file_.is_open())
@@ -475,6 +526,9 @@ class LoggerState final
         this->initialized_ = false;
     }
 
+    // 枚举程序日志文件并按从旧到新排序以支持续写和保留清理。
+    // 入参：无显式入参；调用方须持有 mutex_。
+    // 返回：符合日志命名规则的普通文件信息列表；按日期、时间戳及冲突序号排序，枚举失败可能仅返回已收集项。
     std::vector<LogFileInfo> ListFilesLocked() const
     {
         std::vector<LogFileInfo> files;
@@ -491,6 +545,9 @@ class LoggerState final
             iterator.increment(error);
         }
         std::sort(files.begin(), files.end(),
+                  // 比较两个日志文件的时间先后，供保留策略排序。
+                  // 入参：left、right：只读日志文件信息。
+                  // 返回：左项日期、时间戳或冲突序号按字典顺序更小时 true，否则 false。
                   [](const LogFileInfo& left, const LogFileInfo& right)
                   {
                       if (left.date != right.date)
@@ -506,6 +563,9 @@ class LoggerState final
         return files;
     }
 
+    // 续写指定日期的最新时间戳日志，必要时新建文件。
+    // 入参：date：用于筛选已有日志的本地日期；调用方须持有 mutex_。
+    // 返回：成功打开可写日志时 true；打开失败 false，日志缺失或已满时转为创建新日志。
     bool OpenLatestLocked(const std::string& date)
     {
         const std::vector<LogFileInfo> files = this->ListFilesLocked();
@@ -533,6 +593,9 @@ class LoggerState final
         return true;
     }
 
+    // 使用当前毫秒时间戳创建新的轮转日志文件。
+    // 入参：无显式入参；调用方须持有 mutex_。
+    // 返回：找到未使用名称并打开文件时 true；文件查询、打开失败或重名序号耗尽时 false。
     bool OpenNewLocked()
     {
         const FileTimestamp timestamp = CurrentFileTimestamp();
@@ -561,6 +624,9 @@ class LoggerState final
         return false;
     }
 
+    // 切换到指定日志文件并恢复追加写入所需的计数。
+    // 入参：path：目标日志路径；date：该文件对应日期；调用方须持有 mutex_。
+    // 返回：文件成功以追加方式打开时 true；读取长度、行数或打开失败时 false，旧输出流已关闭。
     bool OpenPathLocked(const std::filesystem::path& path, const std::string& date)
     {
         if (this->file_.is_open())
@@ -596,6 +662,9 @@ class LoggerState final
         return true;
     }
 
+    // 读取现有日志行数及结尾状态，避免追加时拼接到旧末行。
+    // 入参：path：日志文件路径；count：输出行数；endsWithNewline：输出是否为空或以换行结束；调用方须持锁。
+    // 返回：扫描至文件末尾时 true；打开或读取失败 false，count 可能已有部分计数。
     bool CountLinesLocked(const std::filesystem::path& path, std::size_t& count, bool& endsWithNewline) const
     {
         std::ifstream input(path, std::ios::binary);
@@ -634,6 +703,9 @@ class LoggerState final
         return true;
     }
 
+    // 生成带时间、级别及可选位置的单行日志记录。
+    // 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置；调用方须持有 mutex_。
+    // 返回：带末尾换行的日志字节串；移除回车、转义正文换行，按消息及文件字节预算截断正文，可能截断多字节字符。
     std::string BuildRecordLocked(open_st::log_detail::LogLevel level, const std::string& message,
                                   std::string_view sourceFile, std::uint_least32_t sourceLine) const
     {
@@ -681,6 +753,9 @@ class LoggerState final
         return record;
     }
 
+    // 按保留数量清理最旧日志并保留当前输出文件。
+    // 入参：无显式入参；调用方须持有 mutex_。
+    // 返回：无返回值；达到保留数量即停止，删除错误或异常时提前结束，不删除当前输出文件。
     void CleanupLocked() noexcept
     {
         try
@@ -723,6 +798,9 @@ class LoggerState final
     bool initialized_{};
 };
 
+// 获取进程唯一的日志状态对象。
+// 入参：无。
+// 返回：静态日志状态引用，由进程生命周期管理，调用方不释放。
 LoggerState& GetLoggerState()
 {
     static LoggerState state;
@@ -732,6 +810,9 @@ LoggerState& GetLoggerState()
 
 namespace open_st
 {
+// 使用当前程序目录和默认轮转配置启动日志服务。
+// 入参：无。
+// 返回：默认日志初始化成功时 true；程序路径查询或日志准备失败时 false。
 bool Logger::Initialize() noexcept
 {
     try
@@ -745,33 +826,50 @@ bool Logger::Initialize() noexcept
     }
 }
 
+// 按应用目录与轮转配置启动进程日志输出。
+// 入参：applicationDirectory：应用基准目录，日志位于其 data/logs；options：最大行数、文件字节数和保留数量。
+// 返回：配置有效且目录和输出文件准备成功时 true；失败或异常时 false 并重置日志状态。
 bool Logger::Initialize(const std::filesystem::path& applicationDirectory, const LogOptions& options) noexcept
 {
     return GetLoggerState().Initialize(applicationDirectory, options);
 }
 
+// 刷新并停止日志输出，保留磁盘日志文件。
+// 入参：无。
+// 返回：无返回值；关闭输出流并重置进程日志状态，不删除历史文件。
 void Logger::Shutdown() noexcept
 {
     GetLoggerState().Shutdown();
 }
 
-// 清理入口保留结果供退出窗口决定重试或保留日志退出。
+// 停止日志输出并删除可识别的程序日志，供退出清理重试。
+// 入参：无；使用初始化时记录的日志目录。
+// 返回：目录不存在或全部清理成功 true；路径含重解析点、访问失败或删除失败 false，保留目录供重试。
 bool Logger::ShutdownAndClear() noexcept
 {
     return GetLoggerState().ShutdownAndClear();
 }
 
+// 向进程日志服务提交文本并按日期、行数或容量轮转。
+// 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置。
+// 返回：无返回值；未初始化或级别未启用时忽略，写入失败停止本次输出，Error/Fatal 立即刷新。
 void Logger::WriteText(log_detail::LogLevel level, const std::string& message, std::string_view sourceFile,
                        std::uint_least32_t sourceLine) noexcept
 {
     GetLoggerState().Write(level, message, sourceFile, sourceLine);
 }
 
+// 使用当前程序目录和默认轮转配置启动日志服务。
+// 入参：无。
+// 返回：默认日志初始化成功时 true；程序路径查询或日志准备失败时 false。
 bool InitializeLogging() noexcept
 {
     return Logger::Initialize();
 }
 
+// 刷新并停止日志输出，保留磁盘日志文件。
+// 入参：无。
+// 返回：无返回值；关闭输出流并重置进程日志状态，不删除历史文件。
 void ShutdownLogging() noexcept
 {
     Logger::Shutdown();
@@ -779,6 +877,9 @@ void ShutdownLogging() noexcept
 
 namespace log_detail
 {
+// 向进程日志服务提交文本并按日期、行数或容量轮转。
+// 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置。
+// 返回：无返回值；未初始化或级别未启用时忽略，写入失败停止本次输出，Error/Fatal 立即刷新。
 void WriteText(LogLevel level, const std::string& message, std::string_view sourceFile,
                std::uint_least32_t sourceLine) noexcept
 {

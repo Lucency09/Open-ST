@@ -1,3 +1,5 @@
+// 验证通用业务提示窗口的运行期文本刷新、模态退出和异常回收。
+
 #include "simple_message_window.h"
 #include <array>
 #include <gtest/gtest.h>
@@ -17,6 +19,8 @@ struct TextSearch final
 };
 
 // 只检查当前测试创建的窗口子控件文字。
+// 入参：control 为当前枚举到的子控件句柄；parameter 为借用的查找条件及结果结构指针。
+// 返回：找到目标控件时返回 FALSE 停止枚举；未匹配时返回 TRUE 继续枚举。
 BOOL CALLBACK FindText(HWND control, LPARAM parameter)
 {
     TextSearch& search = *reinterpret_cast<TextSearch*>(parameter);
@@ -31,6 +35,8 @@ BOOL CALLBACK FindText(HWND control, LPARAM parameter)
 }
 
 // 从借用父窗读取控件，避免跨测试搜索其他窗口。
+// 入参：parent 为限定查找范围的父窗口；text 为待匹配的控件文本。
+// 返回：匹配控件或窗口的借用句柄；未找到时为 nullptr，调用方不取得销毁责任。
 HWND ChildWithText(HWND parent, std::wstring text)
 {
     TextSearch search{std::move(text), nullptr};
@@ -38,7 +44,9 @@ HWND ChildWithText(HWND parent, std::wstring text)
     return search.found;
 }
 
-// 运行期刷新标题、正文和确认按钮，结束后清空宿主借用指针。
+// 验证运行期刷新标题、正文和确认按钮，结束后清空宿主借用指针。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SimpleMessageWindowTest, language_refresh_updates_every_visible_text)
 {
     MSG queued{};
@@ -48,8 +56,23 @@ TEST(SimpleMessageWindowTest, language_refresh_updates_every_visible_text)
     bool visited = false;
     WindowRenderer* active = nullptr;
     const bool shown = TryShowSimpleMessageWindow(
-        nullptr, nullptr, [&chinese]() { return chinese ? L"新标题" : L"Old title"; }, [&chinese]()
-        { return chinese ? L"新正文" : L"Old body"; }, [&chinese]() { return chinese ? L"确定" : L"OK"; }, active,
+        nullptr, nullptr,
+        // 按模拟语言返回提示窗口标题。
+        // 入参：无显式入参。
+        // 返回：当前模拟语言对应的提示窗口标题。
+        [&chinese]() { return chinese ? L"新标题" : L"Old title"; },
+        // 按模拟语言返回提示窗口正文。
+        // 入参：无显式入参。
+        // 返回：当前模拟语言对应的提示窗口正文。
+        [&chinese]()
+        { return chinese ? L"新正文" : L"Old body"; },
+        // 按模拟语言返回确认按钮文字。
+        // 入参：无显式入参。
+        // 返回：当前模拟语言对应的确认按钮文字。
+        [&chinese]() { return chinese ? L"确定" : L"OK"; }, active,
+        // 消费测试消息，切换语言并核验所有可见文本后关闭窗口。
+        // 入参：message 为模态循环当前取得的线程消息，按测试消息编号决定是否消费。
+        // 返回：测试消息已消费时为 true；其他消息为 false，交由模态循环继续处理。
         [&chinese, &visited, &active](MSG& message)
         {
             if (message.message != WM_APP + 105)
@@ -80,13 +103,26 @@ TEST(SimpleMessageWindowTest, language_refresh_updates_every_visible_text)
     EXPECT_EQ(active, nullptr);
 }
 
-// 文本回调异常导致创建失败时同样不留下悬空借用指针。
+// 验证文本回调异常导致创建失败时同样不留下悬空借用指针。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SimpleMessageWindowTest, text_failure_clears_borrowed_renderer)
 {
     WindowRenderer* active = nullptr;
     EXPECT_FALSE(TryShowSimpleMessageWindow(
-        nullptr, nullptr, []() -> std::wstring { throw std::runtime_error("text unavailable"); },
-        []() { return L"Body"; }, []() { return L"OK"; }, active, {}));
+        nullptr, nullptr,
+        // 在标题查询中抛出异常，验证模态创建失败会解除宿主绑定。
+        // 入参：无显式入参。
+        // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
+        []() -> std::wstring { throw std::runtime_error("text unavailable"); },
+        // 提供固定正文，隔离标题查询故障。
+        // 入参：无显式入参。
+        // 返回：固定正文 Body。
+        []() { return L"Body"; },
+        // 提供固定确认文字，隔离标题查询故障。
+        // 入参：无显式入参。
+        // 返回：固定确认文字 OK。
+        []() { return L"OK"; }, active, {}));
     EXPECT_EQ(active, nullptr);
 }
 } // namespace

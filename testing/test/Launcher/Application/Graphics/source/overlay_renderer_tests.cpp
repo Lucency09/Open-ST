@@ -1,3 +1,5 @@
+// 文件职责：以隐藏窗口验证遮罩渲染器初始化、资源释放及选区内外的实际像素结果。
+
 #include <gtest/gtest.h>
 
 #include <desktop_preview.h>
@@ -16,7 +18,9 @@ namespace open_st
 // 友元只让集成测试在 Present 之前读取实际绘制结果，不向应用开放截图覆盖图导出接口。
 struct OverlayRendererTestAccess final
 {
-    // 使用产品绘制路径生成一帧并从同一个未翻转后缓冲回读。
+    // 使用正式渲染路径绘制选区，再在交换链翻转前读取像素以便测试比对。
+    // 入参：renderer：已初始化的渲染器；snapshot：物理像素选区快照；readback：输出参数，接收后缓冲预览；errorMessage：输出参数，接收绘制或回读失败原因。
+    // 返回：绘制和回读均成功时为 true；任一步失败时为 false，并保留对应诊断。
     static bool DrawAndRead(OverlayRenderer& renderer, SelectionSnapshot snapshot,
                             OutputPreviewFrame& readback, std::wstring& errorMessage)
     {
@@ -30,7 +34,9 @@ namespace
 class OverlayRendererIntegrationTest : public testing::Test
 {
   protected:
-    // 只有不存在 Windows 显示输出的平台环境才跳过；具备显示环境后的设备或呈现失败必须报错。
+    // 在每个覆盖绘制用例运行前确认当前 Windows 会话具备显示输出。
+    // 入参：无。
+    // 返回：无返回值；没有显示输出时标记跳过，有输出时继续运行实际绘制检查。
     void SetUp() override
     {
         if (GetSystemMetrics(SM_CMONITORS) == 0)
@@ -43,14 +49,18 @@ class OverlayRendererIntegrationTest : public testing::Test
 class HiddenWindow final
 {
   public:
-    // 创建不显示、不激活的无边框测试窗口，客户区与指定物理像素大小一致。
+    // 创建供 GPU 绘制与回读测试使用的隐藏无边框窗口。
+    // 入参：width、height：客户区宽高，单位物理像素。
+    // 返回：无返回值；窗口创建失败时 Get() 返回 nullptr。
     HiddenWindow(int width, int height)
         : window_(CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP,
                                    0, 0, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr))
     {
     }
 
-    // 测试结束后释放隐藏窗口，不对真实截图窗口执行任何操作。
+    // 销毁本用例创建的隐藏窗口并归还窗口资源。
+    // 入参：无。
+    // 返回：无返回值；析构完成对应资源清理。
     ~HiddenWindow()
     {
         if (this->window_ != nullptr)
@@ -60,10 +70,16 @@ class HiddenWindow final
     }
 
     // 禁止复制窗口所有权。
+    // 入参：未命名 const HiddenWindow 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     HiddenWindow(const HiddenWindow&) = delete;
     // 禁止复制赋值窗口所有权。
+    // 入参：未命名 const HiddenWindow 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     HiddenWindow& operator=(const HiddenWindow&) = delete;
-    // 返回借用窗口句柄，供本测试渲染器初始化使用。
+    // 向测试渲染器提供隐藏窗口句柄，不转移窗口所有权。
+    // 入参：无。
+    // 返回：当前隐藏窗口的借用 HWND；窗口创建失败时为 nullptr。
     HWND Get() const noexcept
     {
         return this->window_;
@@ -73,7 +89,9 @@ class HiddenWindow final
     HWND window_{};
 };
 
-// 构造边框在目标之外的全局跨屏选区，让回读只包含未遮罩、未描边的冻结像素。
+// 生成边框位于测试窗口外的跨屏选区，使像素回读不受暗层和描边影响。
+// 入参：无。
+// 返回：覆盖测试窗口且不显示控制点的选区快照，矩形为 -100 至 100 的物理像素范围。
 open_st::SelectionSnapshot UnobstructedSelection() noexcept
 {
     open_st::SelectionSnapshot snapshot{};
@@ -84,6 +102,8 @@ open_st::SelectionSnapshot UnobstructedSelection() noexcept
 } // namespace
 
 // 验证实际 FP16 上传、D2D 绘制、GPU 回读保留中灰、1.0、超白和负通道，不重复乘 UI 白亮度。
+// 入参：无运行时形参；宏参数 OverlayRendererIntegrationTest 为测试套件，preserves_native_half_values_through_gpu_rendering 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(OverlayRendererIntegrationTest, preserves_native_half_values_through_gpu_rendering)
 {
     HiddenWindow window(4, 4);
@@ -112,6 +132,9 @@ TEST_F(OverlayRendererIntegrationTest, preserves_native_half_values_through_gpu_
 }
 
 // 验证 SDR BGRA8 不改码值，且跨屏选区不会在本屏左右边界错误生成选区边框。
+// 入参：无运行时形参；宏参数 OverlayRendererIntegrationTest 为测试套件，preserves_sdr_bytes_and_has_no_internal_monitor_border
+// 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(OverlayRendererIntegrationTest, preserves_sdr_bytes_and_has_no_internal_monitor_border)
 {
     HiddenWindow window(8, 8);
@@ -139,6 +162,8 @@ TEST_F(OverlayRendererIntegrationTest, preserves_sdr_bytes_and_has_no_internal_m
 }
 
 // 验证 HDR 控制点白只应用 UI 白亮度比例，实际线性 FP16 画刷可以输出大于 1.0 的值。
+// 入参：无运行时形参；宏参数 OverlayRendererIntegrationTest 为测试套件，scales_hdr_handle_white_without_clamping 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(OverlayRendererIntegrationTest, scales_hdr_handle_white_without_clamping)
 {
     HiddenWindow window(16, 16);
@@ -170,6 +195,8 @@ TEST_F(OverlayRendererIntegrationTest, scales_hdr_handle_white_without_clamping)
 }
 
 // 验证交换链实际显示器与捕获身份不一致时初始化明确失败，不在错误的显示输出上继续呈现。
+// 入参：无运行时形参；宏参数 OverlayRendererIntegrationTest 为测试套件，rejects_stale_output_identity 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(OverlayRendererIntegrationTest, rejects_stale_output_identity)
 {
     HiddenWindow window(4, 4);
@@ -188,6 +215,8 @@ TEST_F(OverlayRendererIntegrationTest, rejects_stale_output_identity)
 }
 
 // 验证调用方注入的 RGB 用于实际边框，且初始化返回后不再借用配置字符串。
+// 入参：无运行时形参；宏参数 OverlayRendererIntegrationTest 为测试套件，uses_injected_border_color_without_retaining_string 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(OverlayRendererIntegrationTest, uses_injected_border_color_without_retaining_string)
 {
     HiddenWindow window(32, 32);

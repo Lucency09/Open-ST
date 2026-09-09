@@ -1,3 +1,5 @@
+// 文件职责：实现紧凑 BGRA8 帧的缓冲区分配、尺寸校验、像素访问和清理。
+
 #include <bgra_frame.h>
 
 #include <limits>
@@ -10,7 +12,9 @@ constexpr std::size_t BYTES_PER_PIXEL = 4;
 
 namespace open_st
 {
-// 使用截屏矩形进行初始化，计算行跨度和总缓冲区大小，防止 size_t 溢出。
+// 为指定桌面区域分配紧凑 BGRA8 帧，供捕获或像素处理写入。
+// 入参：bounds：虚拟桌面物理像素半开边界，用于确定 BGRA8 缓冲区尺寸。
+// 返回：无返回值；空边界得到无效帧，尺寸乘法溢出或内存分配失败时抛出异常。
 BgraFrame::BgraFrame(RectI bounds) : bounds_(bounds)
 {
     // 判断矩形合法性
@@ -40,53 +44,66 @@ BgraFrame::BgraFrame(RectI bounds) : bounds_(bounds)
     this->pixels_.resize(this->stride_ * height);
 }
 
-// 判断帧有效性，要求 bounds 非空、stride 非零且像素缓冲区大小正确。
+// 检查 BGRA 帧是否可供下游读取和处理。
+// 入参：无。
+// 返回：边界、行跨度及像素存储符合帧格式时为 true，否则为 false。
 bool BgraFrame::IsValid() const noexcept
 {
     return !this->bounds_.IsEmpty() && this->stride_ != 0 &&
            this->pixels_.size() == this->stride_ * static_cast<std::size_t>(this->Height());
 }
 
-// 返回帧的虚拟桌面物理像素矩形，可能为负数。
+// 提供图像在虚拟桌面中的物理像素范围。
+// 入参：无。
+// 返回：当前对象所持半开矩形的只读引用；仅借用对象内存，不转移所有权。
 const RectI& BgraFrame::Bounds() const noexcept
 {
     return this->bounds_;
 }
 
-// 返回 BGRA8 帧的像素宽度。
+// 查询矩形或图像的水平物理像素尺寸。
+// 入参：无。
+// 返回：right 减 left 的有符号宽度，空或反向边界可能为零或负数。
 int BgraFrame::Width() const noexcept
 {
     return this->bounds_.Width();
 }
 
-// 返回 BGRA8 帧的像素高度。
+// 查询矩形或图像的垂直物理像素尺寸。
+// 入参：无。
+// 返回：bottom 减 top 的有符号高度，空或反向边界可能为零或负数。
 int BgraFrame::Height() const noexcept
 {
     return this->bounds_.Height();
 }
 
-// 返回每行字节数，等于 Width() * 4；0 表示无效帧。
+// 查询逐行访问图像所需的字节步长。
+// 入参：无。
+// 返回：一行紧凑像素的字节数，不包含驱动行填充。
 std::size_t BgraFrame::Stride() const noexcept
 {
     return this->stride_;
 }
 
-// span 不拥有内存，其有效期不超过 BgraFrame；Stride() 用于逐行定位像素。
-// 因为this->pixels_;是一个std::vector<std::uint8_t>，所以返回一个span<const std::uint8_t>，表示只读的像素数据。
-// 此处做了一次隐式转换，将vector的data()和size()传给span的构造函数，创建一个span对象。
+// 向图像消费者提供只读像素视图，避免复制完整缓冲区。
+// 入参：无。
+// 返回：借用当前对象像素内存的只读 span；对象销毁或缓冲区改变后不可继续使用。
 std::span<const std::uint8_t> BgraFrame::Pixels() const noexcept
 {
     return this->pixels_;
 }
 
-// 捕获模块独占写入此缓冲区；帧交给应用后只通过 const 接口读取。
-// 此处相当于返回一个span<std::uint8_t>，表示可写的像素数据。
+// 为捕获阶段提供图像像素的可写视图。
+// 入参：无。
+// 返回：借用当前帧像素内存的可写 span；调用方不能延长缓冲区生命周期。
 std::span<std::uint8_t> BgraFrame::WritablePixels() noexcept
 {
     return this->pixels_;
 }
 
-// 释放像素并把边界和 stride 同步复位为无效状态。
+// 丢弃BGRA 帧像素并复位图像几何信息。
+// 入参：无。
+// 返回：无返回值；对象恢复为空且 IsValid() 为 false。
 void BgraFrame::Clear() noexcept
 {
     this->bounds_ = {};

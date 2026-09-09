@@ -1,3 +1,5 @@
+// 加载并验证多语言资源，维护生效语言并实现英文回退和文本参数替换。
+
 #include <ui_text.h>
 
 #include "ui_text_internal.h"
@@ -24,7 +26,9 @@ constexpr int RESOURCE_SCHEMA_VERSION = 1;
 constexpr std::string_view UI_TEXT_CARD_NAME = "localization.ui_text";
 constexpr std::string_view DEFAULT_LANGUAGE_CODE = "en-US";
 
-// 语言下拉框直接显示代码，因此只接受可安全显示的 ASCII BCP-47 风格字符。
+// 验证语言代码能否安全显示在语言选择列表中。
+// 入参：languageCode：待校验的语言代码视图。
+// 返回：非空且仅含 ASCII 字母、数字、连字符时 true；否则 false，不执行完整 BCP-47 语法校验。
 bool IsLanguageCode(std::string_view languageCode) noexcept
 {
     if (languageCode.empty())
@@ -43,7 +47,9 @@ bool IsLanguageCode(std::string_view languageCode) noexcept
     return true;
 }
 
-// 把 JSON 中的 UTF-8 文本转换为 Win32 W 接口所需的 UTF-16 宽字符串。
+// 把资源中的 UTF-8 文本转换为 Win32 使用的宽字符串。
+// 入参：text：借用的 UTF-8 文本。
+// 返回：成功返回 UTF-16 文本；空输入、长度过大、无效编码或系统转换失败返回空字符串。
 std::wstring Utf8ToWide(std::string_view text)
 {
     if (text.empty() || text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
@@ -64,7 +70,9 @@ std::wstring Utf8ToWide(std::string_view text)
     return written == length ? converted : std::wstring{};
 }
 
-// 只校验本地化资源的固定外层协议；文本 key 和语言代码全部由 JSON 动态提供。
+// 验证本地化文档外层协议及动态语言和文本键结构。
+// 入参：document：只读候选 JSON 文档。
+// 返回：schemaVersion、languages、texts 结构合法且声明 en-US 时 true；非法或异常时 false。
 bool IsUiTextDocument(const nlohmann::json& document) noexcept
 {
     try
@@ -116,7 +124,9 @@ bool IsUiTextDocument(const nlohmann::json& document) noexcept
     }
 }
 
-// 判断一份已通过外层协议校验的资源是否仍声明指定动态语言。
+// 检查资源是否声明指定的运行语言。
+// 入参：document：已通过外层校验的资源文档；languageCode：待查语言代码。
+// 返回：languages 中存在精确匹配项时 true；不存在或访问异常时 false。
 bool ContainsLanguage(const nlohmann::json& document, std::string_view languageCode) noexcept
 {
     try
@@ -135,7 +145,9 @@ bool ContainsLanguage(const nlohmann::json& document, std::string_view languageC
     return false;
 }
 
-// 获取程序目录，作为正式运行时 resources/ 的路径基准。
+// 获取程序资源定位所需的可执行文件目录。
+// 入参：无。
+// 返回：当前 EXE 的父目录；系统路径查询失败或超出缓冲区时返回空路径。
 std::filesystem::path ExecutableDirectory()
 {
     std::array<wchar_t, 32768> pathBuffer{};
@@ -150,7 +162,9 @@ std::filesystem::path ExecutableDirectory()
 class UiTextState final
 {
   public:
-    // 只取得具名 JSON 句柄并记录资源位置，不在初始化阶段读取文件。
+    // 建立本地化资源的懒加载句柄并重置运行语言。
+    // 入参：applicationDirectory：包含 resources/ui_text.json 的应用目录。
+    // 返回：取得有效 JSON 句柄时 true，不表示资源内容已读入；句柄获取或初始化异常时 false。
     bool Initialize(const std::filesystem::path& applicationDirectory) noexcept
     {
         this->Shutdown();
@@ -177,7 +191,9 @@ class UiTextState final
         }
     }
 
-    // 释放模块句柄和已生效业务文本，不干预 Common 的缓存或名称绑定。
+    // 释放本地化句柄和已接受的业务文本，重置语言与告警状态。
+    // 入参：无。
+    // 返回：无返回值；恢复默认 en-US，不清理 Common 管理器的缓存或名称绑定。
     void Shutdown() noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
@@ -190,14 +206,18 @@ class UiTextState final
         this->initialized_ = false;
     }
 
-    // 消费一次业务读取告警，保留持续故障标记以免 UI 连续弹窗。
+    // 消费一次需要由应用显示的资源读取或结构错误告警。
+    // 入参：无。
+    // 返回：原本有待提示告警时 true，否则 false；仅清除待提示标记，持续故障仍保持去重。
     bool ConsumeReadWarning() noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
         return std::exchange(this->readWarningPending_, false);
     }
 
-    // 从当前资源动态判断语言是否存在；不再维护固定语言代码列表。
+    // 将运行界面语言切换为当前资源声明的语言。
+    // 入参：languageCode：拟生效的语言代码。
+    // 返回：支持该代码时 true 并切换；不支持或异常时 false 并回退 en-US。
     bool SetLanguage(std::string_view languageCode) noexcept
     {
         try
@@ -225,20 +245,26 @@ class UiTextState final
         }
     }
 
-    // 在线程同步保护下返回当前语言代码的独立副本。
+    // 查询当前生效的运行语言。
+    // 入参：无。
+    // 返回：当前语言代码的独立字符串副本，查询本身不重新读取资源。
     std::string LanguageCode() noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
         return this->languageCode_;
     }
 
-    // 发起一次真实读取并确认当前或最后有效的本地化业务快照可用。
+    // 尝试读取当前资源并判断是否存在可显示的业务文本。
+    // 入参：无。
+    // 返回：存在当前或先前已接受的有效文档时 true；没有有效文档时 false，并非本次磁盘读取成功标志。
     bool Available() noexcept
     {
         return this->Document() != nullptr;
     }
 
-    // 按 languages 数组声明顺序返回选项，不从译文推断可用语言。
+    // 获取供设置窗口使用的动态语言选项。
+    // 入参：无。
+    // 返回：按已接受文档 languages 顺序返回代码列表；没有有效文档或提取异常时返回空列表。
     std::vector<std::string> Languages() noexcept
     {
         try
@@ -255,7 +281,9 @@ class UiTextState final
         return {};
     }
 
-    // 每次查询先让 Common 句柄检查磁盘版本，再按当前语言读取并执行英文回退。
+    // 按当前运行语言查询界面文本并应用英文回退。
+    // 入参：key：JSON texts 中的动态文本键。
+    // 返回：当前语言非空文本；缺失时尝试 en-US；无有效文本或无法转换时返回问号宽字符串。
     std::wstring Text(std::string_view key)
     {
         const std::shared_ptr<const nlohmann::json> document = this->Document();
@@ -308,7 +336,9 @@ class UiTextState final
     }
 
   private:
-    // 串行读取、校验并接受业务文本；失败时只保留已生效文本，不接触 Common 缓存状态。
+    // 读取并验证本地化业务文档，在读取故障时保留已生效文本。
+    // 入参：无。
+    // 返回：共享的不可变有效文档；读取或结构失败保留先前文档，尚无有效文档或未初始化时 nullptr。
     std::shared_ptr<const nlohmann::json> Document() noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
@@ -366,7 +396,9 @@ class UiTextState final
     bool initialized_{};
 };
 
-// 返回进程内唯一的本地化状态对象。
+// 取得进程唯一的本地化状态对象。
+// 入参：无。
+// 返回：静态状态对象引用，生命周期持续到进程退出，调用方不负责释放。
 UiTextState& GetUiTextState()
 {
     static UiTextState state;
@@ -376,7 +408,9 @@ UiTextState& GetUiTextState()
 
 namespace open_st
 {
-// 以可执行文件目录为基准建立正式运行时的本地化 JSON 句柄。
+// 以当前可执行文件目录为基准建立本地化懒加载句柄。
+// 入参：无。
+// 返回：目录查询及句柄初始化成功时 true；失败或异常时 false，初始化不读取内容，后续查询或可用性检查时读取。
 bool InitializeUiText() noexcept
 {
     try
@@ -390,49 +424,65 @@ bool InitializeUiText() noexcept
     }
 }
 
-// 以调用方提供的目录建立句柄，供隔离测试使用；此调用本身不读取资源文件。
+// 建立本地化资源的懒加载句柄并重置运行语言。
+// 入参：applicationDirectory：包含 resources/ui_text.json 的应用目录。
+// 返回：取得有效 JSON 句柄时 true，不表示资源内容已读入；句柄获取或初始化异常时 false。
 bool InitializeUiText(const std::filesystem::path& applicationDirectory) noexcept
 {
     return GetUiTextState().Initialize(applicationDirectory);
 }
 
-// 释放本地化句柄和模块状态。
+// 释放本地化句柄和已接受的业务文本，重置语言与告警状态。
+// 入参：无。
+// 返回：无返回值；恢复默认 en-US，不清理 Common 管理器的缓存或名称绑定。
 void ShutdownUiText() noexcept
 {
     GetUiTextState().Shutdown();
 }
 
-// 显式触发首次懒加载并报告本地化资源是否可用。
+// 尝试读取当前资源并判断是否存在可显示的业务文本。
+// 入参：无。
+// 返回：存在当前或先前已接受的有效文档时 true；没有有效文档时 false，并非本次磁盘读取成功标志。
 bool IsUiTextAvailable() noexcept
 {
     return GetUiTextState().Available();
 }
 
-// 向 Application 提供一次性的读取故障提示，不向 UI 暴露 Common 状态。
+// 消费一次需要由应用显示的资源读取或结构错误告警。
+// 入参：无。
+// 返回：原本有待提示告警时 true，否则 false；仅清除待提示标记，持续故障仍保持去重。
 bool ConsumeUiTextReadWarning() noexcept
 {
     return GetUiTextState().ConsumeReadWarning();
 }
 
-// 切换语言；有效语言代码来自当前 ui_text.json 的 languages 数组。
+// 将运行界面语言切换为当前资源声明的语言。
+// 入参：languageCode：拟生效的语言代码。
+// 返回：支持该代码时 true 并切换；不支持或异常时 false 并回退 en-US。
 bool SetUiLanguage(std::string_view languageCode) noexcept
 {
     return GetUiTextState().SetLanguage(languageCode);
 }
 
-// 返回当前语言代码的副本。
+// 查询当前生效的运行语言。
+// 入参：无。
+// 返回：当前语言代码的独立字符串副本，查询本身不重新读取资源。
 std::string CurrentUiLanguageCode() noexcept
 {
     return GetUiTextState().LanguageCode();
 }
 
-// 按当前资源 languages 数组的顺序返回语言代码，供设置窗口生成下拉选项。
+// 获取供设置窗口使用的动态语言选项。
+// 入参：无。
+// 返回：按已接受文档 languages 顺序返回代码列表；没有有效文档或提取异常时返回空列表。
 std::vector<std::string> GetAvailableUiLanguages() noexcept
 {
     return GetUiTextState().Languages();
 }
 
-// 按动态 JSON key 取得宽字符串，并执行调用方明确提供的命名占位符替换。
+// 取得本地化界面文本并替换调用方指定的命名占位符。
+// 入参：key：动态文本键；arguments：占位符 name 和替换 value，仅在本次调用借用，空名称忽略。
+// 返回：按参数顺序完成 {name} 替换的宽字符串；文本查找失败保留问号结果，未指定占位符不替换。
 std::wstring GetUiText(std::string_view key, std::initializer_list<UiTextArgument> arguments)
 {
     std::wstring result = GetUiTextState().Text(key);

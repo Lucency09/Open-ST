@@ -1,3 +1,5 @@
+// 验证设置编辑草稿的变更检测、默认值恢复与提交校验。
+
 #include "json_file_test_access.h"
 #include "settings_edit.h"
 #include "settings_internal.h"
@@ -16,6 +18,8 @@ class SettingsEditTest : public testing::Test
 {
   protected:
     // 隔离业务状态、Common 名称绑定和磁盘目录，避免测试影响正式设置。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         open_st::ShutdownSettings();
@@ -34,6 +38,8 @@ class SettingsEditTest : public testing::Test
     }
 
     // 释放全部窗口资源卡并恢复只读属性后清理隔离目录。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         open_st::ShutdownSettings();
@@ -47,6 +53,8 @@ class SettingsEditTest : public testing::Test
     }
 
     // 模拟外部编辑器直接改变隔离文件的内容。
+    // 入参：relative 为相对隔离测试根目录的文件路径；content 为写入的原始文本。
+    // 返回：无返回值。
     void Write(const std::filesystem::path& relative, std::string_view content)
     {
         std::ofstream output(this->root_ / relative, std::ios::binary | std::ios::trunc);
@@ -56,6 +64,8 @@ class SettingsEditTest : public testing::Test
     }
 
     // 独立读取用户文档以验证真正磁盘结果。
+    // 入参：无显式入参。
+    // 返回：从测试用户配置文件解析得到的 JSON 文档。
     nlohmann::json ReadUser()
     {
         std::ifstream input(this->root_ / "data/settings.json", std::ios::binary);
@@ -65,7 +75,9 @@ class SettingsEditTest : public testing::Test
     std::filesystem::path root_;
 };
 
-// 缺失字段显示默认值但不补写，改回有效基线也必须保持文件缺失字段。
+// 验证缺失字段显示默认值但不补写，改回有效基线也必须保持文件缺失字段。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, fallback_and_reverted_draft_do_not_write)
 {
     open_st::SettingsEditSession session;
@@ -79,7 +91,9 @@ TEST_F(SettingsEditTest, fallback_and_reverted_draft_do_not_write)
     EXPECT_FALSE(this->ReadUser().at("settings").contains("ui.language"));
 }
 
-// 一次差异提交保留外部新增字段，成功基线允许连续编辑并验证仅重试生效。
+// 验证一次差异提交保留外部新增字段，成功基线允许连续编辑并验证仅重试生效。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, batch_commit_preserves_external_unrelated_fields)
 {
     open_st::SettingsEditSession session;
@@ -97,7 +111,9 @@ TEST_F(SettingsEditTest, batch_commit_preserves_external_unrelated_fields)
     EXPECT_EQ(session.VerifySavedString("ui.language", "en-US"), open_st::SettingsCommitResult::Conflict);
 }
 
-// 缺失和显式 null 不等价，任一字段冲突必须取消整批写入且保留全部草稿。
+// 验证缺失和显式 null 不等价，任一字段冲突必须取消整批写入且保留全部草稿。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, raw_existence_conflict_cancels_entire_batch)
 {
     open_st::SettingsEditSession session;
@@ -111,7 +127,9 @@ TEST_F(SettingsEditTest, raw_existence_conflict_cancels_entire_batch)
     EXPECT_TRUE(session.IsDirty());
 }
 
-// 原始错误类型与有效默认分离，外部写入相同目标仍可安全完成提交。
+// 验证原始错误类型与有效默认分离，外部写入相同目标仍可安全完成提交。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, invalid_raw_type_and_external_target_are_supported)
 {
     this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":7}})");
@@ -124,7 +142,9 @@ TEST_F(SettingsEditTest, invalid_raw_type_and_external_target_are_supported)
     EXPECT_FALSE(session.IsDirty());
 }
 
-// 数字七和浮点七虽然 JSON 数值相等，原始类型改变仍须报告冲突。
+// 验证数字七和浮点七虽然 JSON 数值相等，原始类型改变仍须报告冲突。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, raw_numeric_type_change_is_a_conflict)
 {
     this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":7}})");
@@ -136,7 +156,9 @@ TEST_F(SettingsEditTest, raw_numeric_type_change_is_a_conflict)
     EXPECT_TRUE(this->ReadUser().at("settings").at("ui.language").is_number_float());
 }
 
-// 尚未建立可靠基线的会话不能因没有差异就被认定可提交。
+// 验证尚未建立可靠基线的会话不能因没有差异就被认定可提交。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, unopened_session_rejects_commit_and_unknown_field)
 {
     open_st::SettingsEditSession session;
@@ -147,7 +169,9 @@ TEST_F(SettingsEditTest, unopened_session_rejects_commit_and_unknown_field)
     EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::ReadFailed);
 }
 
-// 删除和损坏用户文件后拒绝重建；修复并显式重开后才取得新的可靠基线。
+// 验证删除和损坏用户文件后拒绝重建；修复并显式重开后才取得新的可靠基线。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, deleted_or_corrupt_user_is_never_recreated)
 {
     open_st::SettingsEditSession session;
@@ -166,7 +190,9 @@ TEST_F(SettingsEditTest, deleted_or_corrupt_user_is_never_recreated)
     EXPECT_FALSE(session.IsDirty());
 }
 
-// 只读提交失败不能推进基线；解除只读后可按原草稿重试。
+// 验证只读提交失败不能推进基线；解除只读后可按原草稿重试。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, read_only_failure_preserves_draft_for_retry)
 {
     open_st::SettingsEditSession session;
@@ -179,7 +205,9 @@ TEST_F(SettingsEditTest, read_only_failure_preserves_draft_for_retry)
     EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
 }
 
-// 本页默认只改变指定字段，多个字段中一个默认无效时不能部分恢复。
+// 验证本页默认只改变指定字段，多个字段中一个默认无效时不能部分恢复。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, restore_defaults_is_scoped_and_atomic)
 {
     open_st::SettingsEditSession session;
@@ -195,7 +223,9 @@ TEST_F(SettingsEditTest, restore_defaults_is_scoped_and_atomic)
     EXPECT_EQ(session.ReadString("other"), "changed");
 }
 
-// 布局必须读取初始化目录的 Common 入口，并在读取失败时保持输出原值。
+// 验证布局必须读取初始化目录的 Common 入口，并在读取失败时保持输出原值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, layout_uses_initialized_resource_directory)
 {
     this->Write("resources/setting_windows.json", R"({"schemaVersion":1,"pages":[]})");
@@ -206,7 +236,9 @@ TEST_F(SettingsEditTest, layout_uses_initialized_resource_directory)
     EXPECT_FALSE(open_st::ReadSettingsLayout(layout));
     EXPECT_TRUE(layout.at("pages").is_array());
 }
-// 布尔和字符串保持类型安全，并在欢迎确认时保存默认意图。
+// 验证布尔和字符串保持类型安全，并在欢迎确认时保存默认意图。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, boolean_drafts_and_required_welcome_fields)
 {
     this->Write(
@@ -229,7 +261,9 @@ TEST_F(SettingsEditTest, boolean_drafts_and_required_welcome_fields)
     EXPECT_FALSE(session.IsDirty());
 }
 
-// 同批布尔字段冲突阻止语言一起保存；重试校验不接受字符串冒充布尔。
+// 验证同批布尔字段冲突阻止语言一起保存；重试校验不接受字符串冒充布尔。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsEditTest, boolean_conflict_preserves_entire_batch)
 {
     this->Write("resources/default_settings.json",

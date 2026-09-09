@@ -1,3 +1,5 @@
+// 文件职责：定义 HDR 模块自有的借用图像视图和输入格式，明确行跨度及 scRGB 亮度单位。
+
 #pragma once
 
 #include <cstddef>

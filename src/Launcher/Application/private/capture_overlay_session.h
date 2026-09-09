@@ -1,3 +1,5 @@
+// 声明截图覆盖会话及每屏窗口资源，集中约束 HWND 和渲染器生命周期。
+
 #pragma once
 
 #include <overlay_renderer.h>
@@ -20,33 +22,61 @@ struct CaptureOverlayOutput final
 class CaptureOverlaySession final
 {
   public:
-    // 创建空会话，窗口在捕获完成后逐一登记。
+    // 创建空的截图覆盖会话，供捕获完成后登记各屏窗口。
+    // 入参：无。
+    // 返回：构造函数无返回值；初始不持有窗口。
     CaptureOverlaySession() = default;
-    // 关闭已登记的全部窗口和呈现资源。
+    // 销毁截图覆盖会话并释放全部已登记窗口和渲染资源。
+    // 入参：无。
+    // 返回：析构函数无返回值。
     ~CaptureOverlaySession();
-    // 禁止复制窗口所有权。
+    // 禁止复制构造，确保截图覆盖窗口和渲染资源只由原对象管理。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     CaptureOverlaySession(const CaptureOverlaySession&) = delete;
-    // 禁止复制赋值，防止重复销毁 HWND。
+    // 禁止复制赋值，避免截图覆盖窗口和渲染资源出现多个所有者。
+    // 入参：未命名的同类型 const 引用：拟复制的源对象。
+    // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
     CaptureOverlaySession& operator=(const CaptureOverlaySession&) = delete;
-    // 登记尚未显示的窗口，并返回其稳定的记录地址。
+    // 把截图覆盖窗口交给当前会话统一管理。
+    // 入参：window：交由会话负责销毁的窗口句柄。
+    // 返回：新增输出记录的引用；会话关闭前地址稳定，不因后续登记而移动。
     CaptureOverlayOutput& Add(HWND window);
-    // 按 HWND 找到当前输出；不是本会话的窗口时返回 nullptr。
+    // 查找窗口在当前截图会话中的输出记录。
+    // 入参：window：待查找的截图覆盖窗口句柄。
+    // 返回：匹配记录的借用指针；不存在时返回 nullptr。
     [[nodiscard]] CaptureOverlayOutput* Find(HWND window) const noexcept;
-    // 返回光标所在输出窗口；查询失败时退回首个窗口。
+    // 选择应接收截图键盘输入的覆盖窗口。
+    // 入参：无。
+    // 返回：光标所在覆盖窗口的借用句柄；查询失败或未命中时取首个窗口，空会话返回 nullptr。
     [[nodiscard]] HWND ActivationWindow() const noexcept;
-    // 按监视器借用本会话窗口，为工具栏提供目标输出的实际窗口 DPI。
+    // 查找指定显示器对应的截图覆盖窗口。
+    // 入参：monitor：目标显示器句柄。
+    // 返回：匹配窗口的借用句柄；未找到时返回 nullptr，不转移窗口所有权。
     [[nodiscard]] HWND WindowForMonitor(HMONITOR monitor) const noexcept;
-    // 标记全部显示输出重绘，保证共享选区跨屏同步。
+    // 请求当前会话的所有覆盖窗口重绘，使跨屏选区显示保持同步。
+    // 入参：无。
+    // 返回：无返回值；仅标记重绘区域，实际绘制由窗口消息驱动。
     void Invalidate() const noexcept;
-    // 仅释放属于本截图会话的鼠标捕获。
+    // 解除当前截图会话占用的鼠标捕获。
+    // 入参：无。
+    // 返回：无返回值；其他窗口持有的鼠标捕获保持不变。
     void ReleaseMouse() const noexcept;
-    // 所有隐藏窗口准备成功后统一显示，并激活光标所在窗口。
+    // 显示已准备好的全部截图覆盖窗口，并激活光标所在窗口。
+    // 入参：无。
+    // 返回：无返回值；请求前台、键盘焦点及重绘，不报告系统拒绝激活的结果。
     void Show() const noexcept;
-    // 从模态操作恢复选区窗口的前台与键盘焦点。
+    // 在模态操作结束后恢复截图覆盖窗口的焦点及选区显示。
+    // 入参：无。
+    // 返回：无返回值；无可激活窗口时不操作。
     void RestoreFocus() const noexcept;
-    // 刷新全部覆盖窗口的本地化标题。
+    // 更新当前会话全部截图覆盖窗口的标题。
+    // 入参：title：由宿主提供的本地化标题，本次调用借用。
+    // 返回：无返回值；标题写入各窗口，不保存字符串引用。
     void SetTitle(const std::wstring& title) const noexcept;
-    // 清理前先解除所有窗口回调绑定，使同步销毁消息不能重入 App。
+    // 关闭整个截图覆盖会话，先解绑窗口回调再释放渲染器和窗口。
+    // 入参：无。
+    // 返回：无返回值；清空输出记录，可重复调用。
     void Close() noexcept;
 
   private:

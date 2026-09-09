@@ -53,7 +53,9 @@ $releaseStagingDir = Join-Path $buildRoot '.release-staging'
 $buildDir = if ($Configuration -eq 'Release') { $releaseWorkDir } else { Join-Path $buildRoot $Configuration }
 $vcpkgCacheRoot = Join-Path $projectRoot '.cache\vcpkg_installed\x64-windows'
 
-# 返回经过验证的绝对路径；所有递归清理目标必须严格位于指定根目录下。
+# 校验文件操作目标位于指定根目录之下，限制递归清理范围。
+# 入参：Root 为允许的根目录；Candidate 为待验证的目标路径。
+# 返回：规范化的绝对目标路径；目标不属于根目录子路径时抛出异常。
 function Get-VerifiedChildPath {
     param(
         [Parameter(Mandatory)]
@@ -72,7 +74,9 @@ function Get-VerifiedChildPath {
     return $resolvedCandidate
 }
 
-# 把一个目录的直接子项复制到另一个目录，避免用通配符决定文件操作范围。
+# 将源目录内的文件及子目录复制到目标目录，整理运行或发布文件。
+# 入参：Source 为源目录；Destination 为目标目录，已有同名文件允许覆盖。
+# 返回：无管道返回值；复制源目录的直接子项并递归处理其内容，错误按脚本错误策略处理。
 function Copy-DirectoryContents {
     param(
         [Parameter(Mandatory)]

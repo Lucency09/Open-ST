@@ -1,3 +1,5 @@
+// 文件职责：声明 SDR、scRGB、HDR10 与浮点编码之间的纯颜色转换函数。
+
 #pragma once
 
 #include <cstdint>
@@ -20,14 +22,24 @@ struct LinearScRgb final
     float blue{};
 };
 
-// 把 IEEE 754 binary16 位模式解码为 binary32，完整处理次正规数和非有限值。
+// 将 binary16 原始位模式解码为单精度浮点，保留 HDR 值域。
+// 入参：value：IEEE 754 binary16 的 16 位编码。
+// 返回：对应 binary32 数值，包括符号、次正规数、无穷和 NaN。
 [[nodiscard]] float DecodeFloat16(std::uint16_t value) noexcept;
-// 把 binary32 舍入为 binary16，保留符号、次正规数和非有限值，不钳制 HDR 颜色范围。
+// 将单精度浮点编码为半精度像素通道，供 FP16 图像存储。
+// 入参：value：待编码的 binary32 数值。
+// 返回：舍入后的 binary16 位模式，保留符号和特殊值，不将颜色限制在 0 至 1。
 [[nodiscard]] std::uint16_t EncodeFloat16(float value) noexcept;
-// 把归一化 sRGB 界面或 SDR 兼容颜色解码为线性通道，不执行亮度缩放。
+// 将 sRGB 编码颜色解码为线性通道，作为 SDR UI 的 HDR 合成基础。
+// 入参：value：归一化 sRGB 编码通道。
+// 返回：按 sRGB 分段传递函数计算的线性值，不附加参考白缩放。
 [[nodiscard]] float SrgbToLinear(float value) noexcept;
-// 把 RGB10A2 像素按自有颜色空间解码为线性 scRGB；alpha 不参与不透明桌面输出。
+// 解包 RGB10A2 像素并按指定颜色空间转换到统一线性 scRGB。
+// 入参：pixel：打包的 RGB10A2 原始像素；colorSpace：RGB 通道所采用的 SDR、scRGB 或 HDR10 语义。
+// 返回：线性 scRGB RGB 三通道，忽略 alpha；HDR10 经 PQ 和色域转换后以 80 nit 为 1.0。
 [[nodiscard]] LinearScRgb DecodeRgb10A2ToScRgb(std::uint32_t pixel, Rgb10ColorSpace colorSpace) noexcept;
-// 把 10 位 UNORM 通道直接量化为 8 位 SDR 兼容通道。
+// 将 10 位 UNORM 通道量化为兼容的 8 位 SDR 通道。
+// 入参：value：10 位 UNORM 通道整数。
+// 返回：范围 0 至 255 的四舍五入量化值，输入超范围时先限制到 1023。
 [[nodiscard]] std::uint8_t Unorm10ToByte(std::uint32_t value) noexcept;
 } // namespace open_st

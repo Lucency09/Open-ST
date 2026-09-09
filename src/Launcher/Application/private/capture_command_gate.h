@@ -1,3 +1,5 @@
+// 定义截图命令代次、输入时间屏障和单请求预订，阻止重复及过期操作。
+
 #pragma once
 
 #include <cstdint>
@@ -8,28 +10,38 @@ namespace open_st
 class CaptureCommandGate final
 {
   public:
-    // 返回当前选区操作代次，用于工具栏显示及消息投递。
+    // 查询当前截图选区的命令代次。
+    // 入参：无。
+    // 返回：非零代次编号，用于工具栏显示和排队命令的有效性校验。
     [[nodiscard]] std::uint64_t Token() const noexcept
     {
         return this->token_;
     }
-    // 返回是否已有按钮或快捷键命令等待处理。
+    // 查询是否已有完成命令占用待处理位置。
+    // 入参：无。
+    // 返回：存在已预订请求时为 true，否则为 false。
     [[nodiscard]] bool Pending() const noexcept
     {
         return this->pending_;
     }
-    // 选区/会话变更及模态边界记录系统消息时钟，屏蔽此前尚未分派的完成快捷键。
+    // 记录输入时间边界，以拒绝会话变化或模态操作之前积压的快捷键。
+    // 入参：time：GetTickCount 或 Win32 消息时钟的毫秒值。
+    // 返回：无返回值；后续输入按本次边界判断。
     void SetInputBarrier(std::uint32_t time) noexcept
     {
         this->inputBarrier_ = time;
         this->hasInputBarrier_ = true;
     }
-    // Win32 毫秒计数允许回绕；与边界同毫秒的输入保守拒绝。
+    // 判断输入消息是否晚于最近一次会话或模态时间边界。
+    // 入参：time：输入消息的 Win32 毫秒时钟值，允许计数回绕。
+    // 返回：尚未设置边界或输入严格晚于边界时为 true；早于或同毫秒时为 false。
     [[nodiscard]] bool AcceptsInput(std::uint32_t time) const noexcept
     {
         return !this->hasInputBarrier_ || static_cast<std::int32_t>(time - this->inputBarrier_) > 0;
     }
-    // 选区改变、关闭或进入模态操作时，撤销旧请求并切换代次。
+    // 使旧选区命令失效并释放待处理位置。
+    // 入参：无。
+    // 返回：无返回值；代次递增且跳过零，清除 pending 状态。
     void Invalidate() noexcept
     {
         ++this->token_;
@@ -39,7 +51,9 @@ class CaptureCommandGate final
         }
         this->pending_ = false;
     }
-    // 两种输入共享预订；投递失败由调用者 Invalidate 回滚。
+    // 为按钮或快捷键预订唯一的截图完成请求。
+    // 入参：token：请求携带的选区代次；command：稳定命令 ID；ready：业务当前是否允许完成。
+    // 返回：业务就绪、代次匹配且无待处理请求时为 true 并记录请求；否则 false 且不改状态。
     [[nodiscard]] bool Reserve(std::uint64_t token, std::uint32_t command, bool ready) noexcept
     {
         if (!ready || this->pending_ || token != this->token_)
@@ -50,7 +64,9 @@ class CaptureCommandGate final
         this->command_ = command;
         return true;
     }
-    // 消息只能消费一次；旧消息不能释放新请求的 pending 状态。
+    // 消费匹配的排队命令并防止重复执行。
+    // 入参：token：请求代次；command：请求命令 ID；ready：消费时业务是否仍可执行。
+    // 返回：匹配预订时使其失效并返回 ready；不匹配时 false，保留其他有效预订。
     [[nodiscard]] bool Consume(std::uint64_t token, std::uint32_t command, bool ready) noexcept
     {
         if (!this->pending_ || token != this->token_ || command != this->command_)

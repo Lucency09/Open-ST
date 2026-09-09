@@ -1,3 +1,5 @@
+# 配置 Common 的镜像测试目标、链接依赖及用例发现。
+
 add_subdirectory(WindowRenderer)
 
 add_executable(open_st_common_tests)

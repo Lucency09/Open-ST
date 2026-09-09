@@ -191,7 +191,7 @@ Windows Imaging Component 负责：
 
 ### 2.9 UI Automation
 
-窗口矩形检测只能得到顶层或子窗口边界，现代应用中的按钮、列表项等控件未必各自拥有 HWND。UI Automation 用于：
+窗口矩形检测只能得到顶层或子窗口边界，现代应用中的按钮、列表项等控件未必各自拥有 HWND。UI Automation 
 
 - 在光标位置查找可访问性元素。
 - 读取其屏幕边界。
@@ -238,7 +238,7 @@ Windows Imaging Component 负责：
 
 ### 2.12 nlohmann/json
 
-用于：
+
 
 - 读写 `data/settings.json`。
 - 构造和解析翻译 API 的 JSON。

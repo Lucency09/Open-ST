@@ -1,3 +1,5 @@
+// 验证截图遮罩会话的输出所有权、销毁前解绑和跨屏准备链路。
+
 #include "capture_overlay_session.h"
 
 #include <gtest/gtest.h>
@@ -18,6 +20,8 @@ struct DestroyProbe final
 };
 
 // 通过独立窗口属性记录销毁时的 App 绑定，避免探针本身依赖待清空的 GWLP_USERDATA。
+// 入参：window 为接收消息的测试宿主窗口；message 为消息编号；wParam、lParam 为消息专属附加数据。
+// 返回：DefWindowProcW 对该消息的处理结果；销毁观察通过 probe 记录。
 LRESULT CALLBACK ProbeWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if (message == WM_DESTROY)
@@ -34,6 +38,8 @@ LRESULT CALLBACK ProbeWindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 }
 
 // 创建不显示的测试窗口；登记成功后由 CaptureOverlaySession 接管销毁责任。
+// 入参：probe 为借用的销毁观察状态，必须活到窗口销毁；bounds 为隐藏窗口的屏幕物理像素边界。
+// 返回：创建成功的隐藏窗口句柄；注册或创建失败为 nullptr，成功后可交给截图会话管理。
 HWND CreateProbeWindow(DestroyProbe& probe, open_st::RectI bounds = {0, 0, 16, 16})
 {
     WNDCLASSW windowClass{};
@@ -59,9 +65,13 @@ HWND CreateProbeWindow(DestroyProbe& probe, open_st::RectI bounds = {0, 0, 16, 1
 class PhysicalPixelsGuard final
 {
   public:
-    // 仅改变本测试线程，不影响同时存在的其他测试线程或系统设置。
+    // 临时将测试线程切换到 Per-Monitor V2 DPI 上下文，以物理像素测试窗口边界。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     PhysicalPixelsGuard() : previous_(SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {}
     // 恢复进入测试前的 DPI 上下文。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~PhysicalPixelsGuard()
     {
         if (this->previous_ != nullptr)
@@ -70,8 +80,12 @@ class PhysicalPixelsGuard final
         }
     }
     // 禁止复制临时线程状态恢复责任。
+    // 入参：未命名 PhysicalPixelsGuard 引用为被禁止复制或赋值的线程 DPI 恢复责任来源。
+    // 返回：无可调用实现；该操作已删除，尝试调用会导致编译错误。
     PhysicalPixelsGuard(const PhysicalPixelsGuard&) = delete;
     // 禁止复制赋值，避免多次恢复线程上下文。
+    // 入参：未命名 PhysicalPixelsGuard 引用为被禁止复制或赋值的线程 DPI 恢复责任来源。
+    // 返回：无可调用实现；该操作已删除，尝试调用会导致编译错误。
     PhysicalPixelsGuard& operator=(const PhysicalPixelsGuard&) = delete;
 
   private:
@@ -80,6 +94,8 @@ class PhysicalPixelsGuard final
 } // namespace
 
 // 验证多个隐藏输出只关闭一次，且任何 WM_DESTROY 发生前都已经解除 App 回调绑定。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(CaptureOverlaySessionTest, closes_all_outputs_after_detaching_callbacks)
 {
     DestroyProbe probe;
@@ -102,6 +118,8 @@ TEST(CaptureOverlaySessionTest, closes_all_outputs_after_detaching_callbacks)
 }
 
 // 验证初始化失败时空记录与已创建输出可以一起回收，不要求已经建立渲染器。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(CaptureOverlaySessionTest, partially_prepared_session_is_released_by_destructor)
 {
     DestroyProbe probe;
@@ -119,6 +137,8 @@ TEST(CaptureOverlaySessionTest, partially_prepared_session_is_released_by_destru
 }
 
 // 验证同一个物理像素选区可以跨负坐标双屏创建、移动和缩放，无显示器局部坐标跳变。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(CaptureOverlaySessionTest, shared_selection_crosses_monitor_boundary)
 {
     open_st::SelectionModel selection;
@@ -136,7 +156,9 @@ TEST(CaptureOverlaySessionTest, shared_selection_crosses_monitor_boundary)
     EXPECT_EQ(selection.Snapshot().rectangle.bottom, 1000);
 }
 
-// 在真实交互式桌面验证原生捕获到每屏隐藏交换链的完整准备链路；不显示窗口或保存截图。
+// 验证在真实交互式桌面验证原生捕获到每屏隐藏交换链的完整准备链路；不显示窗口或保存截图。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(CaptureOverlaySessionTest, captures_and_prepares_all_real_outputs)
 {
     const HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);

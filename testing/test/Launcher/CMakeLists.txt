@@ -1,3 +1,5 @@
+# 配置 Launcher 的镜像测试目标、链接依赖及用例发现。
+
 # launcher 使用标准 gTest case 验证基础产品元数据。
 add_subdirectory(Application)
 

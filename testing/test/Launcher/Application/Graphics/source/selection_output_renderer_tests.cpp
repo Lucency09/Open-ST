@@ -1,3 +1,5 @@
+// 文件职责：验证冻结选区的精确裁切、跨屏拼接、SDR 像素保真及 HDR 转换和失败恢复。
+
 #include <array>
 #include <color_conversion.h>
 #include <cstring>
@@ -12,23 +14,31 @@ namespace open_st
 {
 namespace
 {
-// 接管测试像素，构造明确 SDR 颜色语义的紧凑 plane。
+// 从预设 SDR 像素构造原生冻结 plane，供裁切和跨屏拼接测试使用。
+// 入参：bounds：该 plane 在虚拟桌面的物理像素半开边界；pixels：转移所有权的紧凑 BGRA8 测试字节。
+// 返回：标记为 SDR 颜色空间并拥有给定像素的 plane。
 CapturedOutputPlane SdrPlane(RectI bounds, std::vector<std::uint8_t> pixels)
 {
     return {bounds, CapturedPixelFormat::Bgra8Unorm, CapturedColorSpace::SdrGamma22P709, {}, std::move(pixels)};
 }
-// 返回拥有旧数据的输出，检验失败路径不会留存可发布结果。
+// 构造非空旧选区输出，用于验证后续失败会清除旧结果。
+// 入参：无。
+// 返回：预填充像素的有效 SDR 选区帧，供失败回退测试作为初始输出。
 SdrSelectionFrame PreviousOutput()
 {
     return {{0, 0, 1, 1}, {1, 2, 3, 4}};
 }
-// 将结果转为向量以比较完整图像布局。
+// 将 SDR 输出借用视图复制为独立字节数组，以便逐字节断言。
+// 入参：frame：待检查的 SDR 选区输出帧。
+// 返回：当前 frame 像素的自有字节副本。
 std::vector<std::uint8_t> Bytes(const SdrSelectionFrame& frame)
 {
     return {frame.Pixels().begin(), frame.Pixels().end()};
 }
 
 // 验证负桌面坐标下裁切行列偏移准确，SDR 的四个原始字节完整保留。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，negative_coordinates_preserve_sdr_bytes 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, negative_coordinates_preserve_sdr_bytes)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -46,6 +56,8 @@ TEST(SelectionOutputTest, negative_coordinates_preserve_sdr_bytes)
 }
 
 // 验证跨屏拼接保留各屏像素，布局空洞固定为不透明黑色。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，cross_monitor_gap_is_opaque_black 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, cross_monitor_gap_is_opaque_black)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -60,6 +72,8 @@ TEST(SelectionOutputTest, cross_monitor_gap_is_opaque_black)
 }
 
 // 验证空选区、越界、反向及有符号跨度溢出均失败，并清空旧输出。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，invalid_selection_clears_previous_output 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, invalid_selection_clears_previous_output)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -83,6 +97,8 @@ TEST(SelectionOutputTest, invalid_selection_clears_previous_output)
 }
 
 // 验证只拒绝与选区相交的重叠输出，远处重叠不会阻止无歧义裁切。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，overlapping_outputs_rejected_only_inside_selection 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, overlapping_outputs_rejected_only_inside_selection)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -99,6 +115,8 @@ TEST(SelectionOutputTest, overlapping_outputs_rejected_only_inside_selection)
 }
 
 // 验证 SDR RGB10 按通道四舍五入量化为 BGRX，忽略两位 alpha 且无需 HDR 设备。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，sdr_rgb10_quantizes_channels 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, sdr_rgb10_quantizes_channels)
 {
     const std::array<std::uint32_t, 2> packed{1023U | (512U << 10U), (1023U << 20U) | (3U << 30U)};
@@ -116,6 +134,8 @@ TEST(SelectionOutputTest, sdr_rgb10_quantizes_channels)
 }
 
 // 验证第一屏成功后遇到未知颜色空间仍整次失败，不发布部分拼接结果。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，unknown_color_discards_partial_output 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, unknown_color_discards_partial_output)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -133,6 +153,8 @@ TEST(SelectionOutputTest, unknown_color_discards_partial_output)
 }
 
 // 验证 FP16 非有限原生像素失败，不保留上一次或部分 SDR 输出。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，non_finite_hdr_discards_output 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, non_finite_hdr_discards_output)
 {
     const std::array<std::uint16_t, 4> half{0x7C00U, 0x0000U, 0x0000U, 0x3C00U};
@@ -153,7 +175,9 @@ TEST(SelectionOutputTest, non_finite_hdr_discards_output)
 class SelectionOutputIntegrationTest : public ::testing::Test
 {
   protected:
-    // 仅无硬件适配器时跳过；枚举或描述查询失败按测试失败处理。
+    // 在每个图形集成用例运行前验证独立于被测函数的 Windows 图形平台前提。
+    // 入参：无。
+    // 返回：无返回值；平台前提不满足时标记跳过，平台查询错误按断言报告失败。
     void SetUp() override
     {
         Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
@@ -178,6 +202,8 @@ class SelectionOutputIntegrationTest : public ::testing::Test
 };
 
 // 验证合成 SDR/HDR 跨屏裁切：SDR 含 X 字节原样保留，HDR 与相同非紧凑 ROI 单独转换逐字节一致。
+// 入参：无运行时形参；宏参数 SelectionOutputIntegrationTest 为测试套件，mixed_sdr_hdr_matches_standalone_roi 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(SelectionOutputIntegrationTest, mixed_sdr_hdr_matches_standalone_roi)
 {
     const std::vector<std::uint8_t> sdr{1,  2,  3,  0,  4,  5,  6,  17,  7,  8,  9,  31,

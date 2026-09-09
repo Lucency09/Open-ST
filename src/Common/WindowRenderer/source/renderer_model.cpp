@@ -1,3 +1,5 @@
+// 校验布局 JSON 的字段、尺寸和控件结构，并构建独立的布局树。
+
 #include "renderer_model.h"
 #include <algorithm>
 #include <initializer_list>
@@ -10,7 +12,9 @@ namespace
 class Parser
 {
   public:
-    // 解析顶层协议，尺寸单位均为 DIP。
+    // 解析窗口布局协议并构建具有自有存储的布局树。
+    // 入参：document：完整布局 JSON，所有尺寸按 DIP 解释。
+    // 返回：完整 Layout 值；协议、字段或节点无效时抛出 RendererResult，不返回部分树。
     Layout Parse(const nlohmann::json& document)
     {
         this->Keys(document, {"schemaVersion", "window", "pages", "content", "footer"}, "");
@@ -74,12 +78,16 @@ class Parser
     std::set<std::string> ids_;
     std::size_t count_ = 0;
 
-    // 使用结构化错误中止当前候选树，不输出用户数据。
+    // 中止无效布局的解析并携带可定位的结构化错误。
+    // 入参：code：稳定错误码；path：出错字段的 JSON 路径；id：可选页面或控件 ID。
+    // 返回：不返回；抛出包含 code、path、id 的 RendererResult。
     [[noreturn]] void Fail(std::string code, std::string path, std::string id = {}) const
     {
         throw RendererResult{std::move(code), std::move(path), std::move(id)};
     }
-    // 拒绝未知属性，避免拼写错误被静默忽略。
+    // 检查布局对象只包含当前节点类型允许的属性。
+    // 入参：object：待检查的 JSON 对象；allowed：允许的属性名称集合；path：对象的 JSON 路径。
+    // 返回：无返回值；非对象或出现未知字段时抛出定位错误。
     void Keys(const nlohmann::json& object, std::initializer_list<std::string_view> allowed,
               const std::string& path) const
     {
@@ -91,14 +99,18 @@ class Parser
                 this->Fail("unknown_property", path + "/" + iterator.key());
         }
     }
-    // 获取必需字段并在缺失时返回定位错误。
+    // 读取布局对象中的必填属性。
+    // 入参：object：待读取的 JSON 对象；key：必填字段名；path：对象的 JSON 路径。
+    // 返回：字段值的借用 const JSON 引用；字段缺失时抛出定位错误。
     const nlohmann::json& Required(const nlohmann::json& object, const char* key, const std::string& path) const
     {
         if (!object.contains(key))
             this->Fail("missing_property", path + "/" + key);
         return object[key];
     }
-    // 文本键和 ID 必须是非空且不含空字符的 UTF-8 字符串。
+    // 读取适合作为文本键或节点 ID 的有效 UTF-8 字符串。
+    // 入参：object：含字段的 JSON 对象；key：字符串字段名；path：对象的 JSON 路径。
+    // 返回：字符串值副本；缺失、类型错误、空值、超过 4096 字节、含空字符或非法 UTF-8 时抛出定位错误。
     std::string String(const nlohmann::json& object, const char* key, const std::string& path) const
     {
         const nlohmann::json& value = this->Required(object, key, path);
@@ -111,7 +123,9 @@ class Parser
             this->Fail("invalid_string", path + "/" + key);
         return text;
     }
-    // 全局登记页面和控件 ID，并限制布局节点总数。
+    // 校验并登记页面或控件的全局唯一 ID。
+    // 入参：object：包含 id 的 JSON 节点；path：该节点的 JSON 路径。
+    // 返回：已登记的 ID 副本；ID 无效、重复或总登记数量超过 2048 时抛出定位错误。
     std::string Id(const nlohmann::json& object, const std::string& path)
     {
         const std::string id = this->String(object, "id", path);
@@ -121,14 +135,18 @@ class Parser
             this->Fail("duplicate_id", path + "/id", id);
         return id;
     }
-    // 有界整数先检查范围再转换，避免溢出。
+    // 读取限定范围内的布局整数，避免尺寸转换溢出。
+    // 入参：value：待转换的 JSON 数值；path：值的 JSON 路径；minimum：允许的最小整数。
+    // 返回：范围 minimum 至 32767 内的整数；类型或范围不合法时抛出定位错误。
     int Integer(const nlohmann::json& value, const std::string& path, int minimum) const
     {
         if (!value.is_number_integer() || value < minimum || value > 32767)
             this->Fail("invalid_dimension", path);
         return value.get<int>();
     }
-    // 读取可选的客户区宽高。
+    // 读取可选的窗口客户区尺寸配置。
+    // 入参：window：窗口配置 JSON；key：initialSize 或 minSize 字段名；width、height：输入输出 DIP 尺寸。
+    // 返回：无返回值；字段缺失保留尺寸，存在时写入正整数宽高，格式无效抛出定位错误。
     void Size(const nlohmann::json& window, const char* key, int& width, int& height) const
     {
         if (!window.contains(key))
@@ -140,7 +158,9 @@ class Parser
         width = this->Integer(pair[0], path + "/0", 1);
         height = this->Integer(pair[1], path + "/1", 1);
     }
-    // 解析已支持节点，递归深度在进入子树前检查。
+    // 递归构建列容器或已支持的叶控件节点。
+    // 入参：source：节点 JSON；path：节点的 JSON 路径；depth：当前递归层级，从 1 开始。
+    // 返回：自有 Node 值；超过 32 层、未知类型或属性无效时抛出定位错误。
     Node ParseNode(const nlohmann::json& source, const std::string& path, int depth)
     {
         if (depth > 32)
@@ -191,7 +211,9 @@ class Parser
         }
         return node;
     }
-    // 底部区域只允许按钮，布局位置由 leading/trailing 决定。
+    // 解析窗口底部 leading 或 trailing 区域的按钮列表。
+    // 入参：footer：底部区域 JSON；key：待解析的区域名称；output：输出参数，依序追加自有按钮节点。
+    // 返回：无返回值；区域缺失不追加，非数组或包含非按钮节点时抛出定位错误。
     void Footer(const nlohmann::json& footer, const char* key, std::vector<Node>& output)
     {
         if (!footer.contains(key))
@@ -210,7 +232,9 @@ class Parser
     }
 };
 } // namespace
-// 仅在完整解析成功后替换输出树，不保留文档引用。
+// 校验并解析 JSON 布局为可独立持有的窗口布局树。
+// 入参：document：调用期间借用的完整布局 JSON；output：输出参数，成功时接收解析后的布局。
+// 返回：错误码为空表示成功；失败提供错误码、JSON 路径及控件 ID，保留 output 原值。
 RendererResult ParseLayout(const nlohmann::json& document, Layout& output)
 {
     try

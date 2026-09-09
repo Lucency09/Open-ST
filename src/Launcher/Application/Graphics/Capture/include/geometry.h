@@ -1,3 +1,5 @@
+// 文件职责：定义虚拟桌面物理像素矩形和矩形并集接口，统一捕获几何的半开边界语义。
+
 #pragma once
 
 #include <span>
@@ -14,25 +16,33 @@ struct RectI final
     int right{};  // 右边界，不包含
     int bottom{}; // 下边界，不包含
 
-    // 返回半开矩形的水平物理像素数。
+    // 查询矩形或图像的水平物理像素尺寸。
+    // 入参：无。
+    // 返回：right 减 left 的有符号宽度，空或反向边界可能为零或负数。
     [[nodiscard]] constexpr int Width() const noexcept
     {
         return this->right - this->left;
     }
 
-    // 返回半开矩形的垂直物理像素数。
+    // 查询矩形或图像的垂直物理像素尺寸。
+    // 入参：无。
+    // 返回：bottom 减 top 的有符号高度，空或反向边界可能为零或负数。
     [[nodiscard]] constexpr int Height() const noexcept
     {
         return this->bottom - this->top;
     }
 
-    // 判断矩形是否为空：宽度或高度为零或负数时认为空。
+    // 判断半开矩形是否具有正面积。
+    // 入参：无。
+    // 返回：宽度或高度不大于零时为 true，否则为 false。
     [[nodiscard]] constexpr bool IsEmpty() const noexcept
     {
         return this->right <= this->left || this->bottom <= this->top;
     }
 };
 
-// 计算一组矩形的最小外接矩形。空输入或全部为空时返回零矩形。
+// 合并显示矩形，求出容纳所有有效矩形的最小虚拟桌面边界。
+// 入参：rectangles：虚拟桌面物理像素半开矩形集合，允许负坐标和空矩形。
+// 返回：非空矩形的最小外接矩形；输入为空或全部矩形为空时返回零矩形。
 [[nodiscard]] RectI UnionRectangles(std::span<const RectI> rectangles) noexcept;
 } // namespace open_st

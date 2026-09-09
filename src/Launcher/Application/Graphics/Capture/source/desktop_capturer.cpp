@@ -1,3 +1,5 @@
+// 文件职责：枚举显示适配器与输出并聚合原生冻结帧，确保任一屏捕获失败时不发布残缺桌面。
+
 #include <desktop_capturer.h>
 
 #include "output_capture.h"
@@ -20,7 +22,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-// 把失败阶段和 HRESULT 格式化为供上层诊断使用的宽字符串。
+// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
+// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
+// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
 std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
 {
     std::wostringstream stream;
@@ -28,7 +32,9 @@ std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
     return stream.str();
 }
 
-// 为指定显示适配器创建同属该适配器的 D3D11 设备和立即上下文。
+// 为指定显示适配器建立桌面捕获所需的 D3D11 设备和立即上下文。
+// 入参：adapter：借用的目标适配器；device、context：输出参数，分别接收 D3D11 设备和立即上下文；errorMessage：输出参数，失败时写入诊断。
+// 返回：设备创建成功时为 true；D3D11 初始化失败时为 false 并写入 HRESULT 诊断。
 bool CreateDeviceForAdapter(IDXGIAdapter1* adapter, ComPtr<ID3D11Device>& device,
                             ComPtr<ID3D11DeviceContext>& context, std::wstring& errorMessage)
 {
@@ -46,14 +52,18 @@ bool CreateDeviceForAdapter(IDXGIAdapter1* adapter, ComPtr<ID3D11Device>& device
     return true;
 }
 
-// 判断两个虚拟桌面半开矩形是否完全相同，用于跳过镜像输出的重复坐标。
+// 比较两个显示输出的全部矩形边界以识别相同桌面区域。
+// 入参：first、second：虚拟桌面物理像素半开矩形。
+// 返回：四条边界均相等时为 true，否则为 false。
 bool EqualBounds(open_st::RectI first, open_st::RectI second) noexcept
 {
     return first.left == second.left && first.top == second.top && first.right == second.right &&
            first.bottom == second.bottom;
 }
 
-// 判断当前输出边界是否已被先前镜像输出捕获，保证重叠坐标具有确定来源。
+// 判断输出是否与已捕获显示区域完全相同，以跳过镜像输出。
+// 入参：capturedBounds：已经捕获的物理像素矩形集合；candidate：待捕获输出的物理像素矩形。
+// 返回：集合中存在边界完全相同的矩形时为 true，否则为 false。
 bool ContainsCapturedBounds(const std::vector<open_st::RectI>& capturedBounds, open_st::RectI candidate) noexcept
 {
     for (const open_st::RectI current : capturedBounds)
@@ -69,7 +79,9 @@ bool ContainsCapturedBounds(const std::vector<open_st::RectI>& capturedBounds, o
 
 namespace open_st
 {
-// 枚举全部适配器和已附着输出，只有全部原生 plane 成功后才发布完整冻结桌面。
+// 冻结当前虚拟桌面的全部真实显示输出，供一次截图会话重复读取。
+// 入参：frame：输出参数，接收拥有全部原生 plane 的冻结桌面；errorMessage：输出参数，接收捕获失败原因。
+// 返回：全部输出捕获并验证成功时为 true；任一阶段失败时为 false，frame 被清空且提供诊断。
 bool DesktopCapturer::Capture(FrozenDesktopFrame& frame, std::wstring& errorMessage) const
 {
     frame.Clear();

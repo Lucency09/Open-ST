@@ -1,3 +1,5 @@
+// 文件职责：验证虚拟桌面矩形并集及 BGRA 帧的尺寸、行跨度和清理行为。
+
 #include <gtest/gtest.h>
 
 #include <bgra_frame.h>
@@ -5,8 +7,9 @@
 
 #include <array>
 
-// 验证虚拟桌面矩形合并：支持负坐标和跨显示器范围，并忽略宽度为零的空矩形。
-// 同时确认合并结果的左右上下边界以及最终宽高均符合半开区间语义。
+// 验证虚拟桌面矩形合并：支持负坐标和跨显示器范围，并忽略宽度为零的空矩形；同时确认合并结果的左右上下边界以及最终宽高均符合半开区间语义。
+// 入参：无运行时形参；宏参数 GeometryTest 为测试套件，union_rectangles 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(GeometryTest, union_rectangles)
 {
     constexpr std::array rectangles{
@@ -25,8 +28,9 @@ TEST(GeometryTest, union_rectangles)
     EXPECT_EQ(combined.Height(), 1440);
 }
 
-// 验证 BGRA 帧的基础内存布局：根据带负坐标的边界正确计算宽、高、stride 和缓冲区大小。
-// 同时验证 Clear() 会释放像素缓冲区，并将帧恢复为无效状态。
+// 验证 BGRA 帧的基础内存布局：根据带负坐标的边界正确计算宽、高、stride 和缓冲区大小；同时验证 Clear() 会释放像素缓冲区，并将帧恢复为无效状态。
+// 入参：无运行时形参；宏参数 BgraFrameTest 为测试套件，constructs_and_clears 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(BgraFrameTest, constructs_and_clears)
 {
     open_st::BgraFrame frame(open_st::RectI{-10, -20, 90, 30});

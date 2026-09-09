@@ -1,3 +1,5 @@
+# 构建 Open-ST 可执行程序，链接应用库并配置图标、清单与运行资源复制。
+
 # launcher 没有公开接口，只有生成 Windows GUI 程序入口的私有源文件。
 add_subdirectory(Application)
 

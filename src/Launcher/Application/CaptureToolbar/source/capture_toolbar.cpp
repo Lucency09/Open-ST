@@ -1,3 +1,5 @@
+// 实现无激活截图工具栏、自绘按钮与提示窗口，并向宿主投递命令。
+
 #include "toolbar_layout.h"
 #include <capture_toolbar.h>
 
@@ -36,13 +38,17 @@ struct CaptureToolbar::Impl
     bool placed{};
     bool shown{};
 
-    // DIP 转换统一使用 App 指定的目标屏幕 DPI。
+    // 将工具栏图标尺寸从 DIP 换算为目标屏幕物理像素。
+    // 入参：value：以 96 DPI 为基准的 DIP 长度。
+    // 返回：按宿主指定 DPI 四舍五入后的物理像素长度。
     int Scale(int value) const noexcept
     {
         return MulDiv(value, static_cast<int>(this->dpi), 96);
     }
 
-    // 清除按下、悬停、捕获和提示，防止旧交互跨过保存模态窗口。
+    // 撤销工具栏的当前鼠标交互，阻止模态操作前的旧输入继续生效。
+    // 入参：无。
+    // 返回：无返回值；清除按下和悬停状态、收起提示并释放自身按钮的鼠标捕获。
     void ResetInteraction() noexcept
     {
         this->inputBarrier = GetTickCount();
@@ -61,7 +67,9 @@ struct CaptureToolbar::Impl
         }
     }
 
-    // 同步原生控件可用性，保留 App 下发的独立业务禁用状态。
+    // 把业务按钮状态和工具栏忙状态同步到原生控件。
+    // 入参：无。
+    // 返回：无返回值；按可见性显示按钮，仅在业务允许且无忙或待处理请求时启用。
     void ApplyStates() noexcept
     {
         for (std::size_t index = 0; index < this->buttons.size(); ++index)
@@ -73,7 +81,9 @@ struct CaptureToolbar::Impl
         }
     }
 
-    // 命令投递前锁定；投递失败或异常立即恢复，绝不执行业务函数。
+    // 提交被点击按钮的稳定命令 ID 和当前选区代次。
+    // 入参：index：按钮在工具栏内部列表中的索引。
+    // 返回：无返回值；非法或禁用点击被忽略，提交失败或回调异常时解除待处理锁。
     void Invoke(std::size_t index)
     {
         if (index >= this->buttons.size() || !this->shown || this->busy || this->pending ||
@@ -100,7 +110,9 @@ struct CaptureToolbar::Impl
         }
     }
 
-    // 绘制本地矢量图标，不依赖字符字体或外部图片。
+    // 绘制截图工具栏按钮的背景、交互反馈和矢量图标。
+    // 入参：draw：系统自绘消息提供的按钮 ID、绘制矩形和借用设备上下文。
+    // 返回：无返回值；未知按钮 ID 不绘制，不持有设备上下文。
     void DrawButton(const DRAWITEMSTRUCT& draw)
     {
         const std::size_t index = static_cast<std::size_t>(draw.CtlID - 1U);
@@ -124,7 +136,13 @@ struct CaptureToolbar::Impl
         const HGDIOBJ oldBrush = SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
         const int left = (draw.rcItem.right - this->Scale(16)) / 2;
         const int top = (draw.rcItem.bottom - this->Scale(16)) / 2;
+        // 把图标局部点映射到按钮绘制坐标。
+        // 入参：x、y：图标局部 DIP 坐标；捕获的 left、top 为物理像素原点。
+        // 返回：经当前 DPI 缩放并加上原点的物理像素 POINT。
         const auto point = [&](int x, int y) { return POINT{left + this->Scale(x), top + this->Scale(y)}; };
+        // 在按钮上绘制一段矢量图标直线。
+        // 入参：x1、y1、x2、y2：线段两端的局部 DIP 坐标；借用当前绘制上下文。
+        // 返回：无返回值；向设备上下文绘制缩放后的线段。
         const auto line = [&](int x1, int y1, int x2, int y2)
         {
             const POINT first = point(x1, y1);
@@ -132,6 +150,9 @@ struct CaptureToolbar::Impl
             MoveToEx(draw.hDC, first.x, first.y, nullptr);
             LineTo(draw.hDC, last.x, last.y);
         };
+        // 在按钮上绘制矩形图标轮廓。
+        // 入参：x1、y1、x2、y2：矩形两角的局部 DIP 坐标；借用当前绘制上下文。
+        // 返回：无返回值；向设备上下文绘制缩放后的矩形。
         const auto rectangle = [&](int x1, int y1, int x2, int y2)
         {
             const POINT first = point(x1, y1);
@@ -159,13 +180,19 @@ struct CaptureToolbar::Impl
         DeleteObject(pen);
     }
 
-    // 顶层原生窗口消息入口。
+    // 分派工具栏窗口的绘制、命令和 DPI 消息。
+    // 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
+    // 返回：已处理消息的 Win32 结果；其他消息交给 DefWindowProcW。
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    // 拦截原生按钮鼠标行为，保证点击不会抢占截图键盘焦点。
+    // 处理工具栏按钮的鼠标交互并防止点击抢走截图键盘焦点。
+    // 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
+    // 返回：已处理消息的结果；未拦截消息交给 DefSubclassProc。
     static LRESULT CALLBACK ButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId,
                                        DWORD_PTR reference);
 };
-// 原生 BUTTON 保留可访问名称；鼠标路径由子类处理，避免默认按钮过程 SetFocus。
+// 处理工具栏按钮的鼠标交互并防止点击抢走截图键盘焦点。
+// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
+// 返回：已处理消息的结果；未拦截消息交给 DefSubclassProc。
 LRESULT CALLBACK CaptureToolbar::Impl::ButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
                                                   UINT_PTR subclassId, DWORD_PTR reference)
 {
@@ -245,7 +272,9 @@ LRESULT CALLBACK CaptureToolbar::Impl::ButtonProc(HWND window, UINT message, WPA
     return DefSubclassProc(window, message, wParam, lParam);
 }
 
-// 顶层窗口只处理呈现、原生命令和 DPI，不向 App 转发显示拓扑变化。
+// 分派工具栏窗口的绘制、命令和 DPI 消息。
+// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
+// 返回：已处理消息的 Win32 结果；其他消息交给 DefWindowProcW。
 LRESULT CALLBACK CaptureToolbar::Impl::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     Impl* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -314,15 +343,21 @@ LRESULT CALLBACK CaptureToolbar::Impl::WindowProc(HWND window, UINT message, WPA
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
-// 实例只持有自身窗口资源，不依赖应用或截图模块。
+// 创建尚未绑定窗口的工具栏对象。
+// 入参：无。
+// 返回：构造函数无返回值；分配内部状态，后续由 Create 注入按钮和回调。
 CaptureToolbar::CaptureToolbar() : impl_(std::make_unique<Impl>()) {}
-// 析构和显式关闭共享幂等资源释放路径。
+// 销毁工具栏并解除回调及窗口资源。
+// 入参：无。
+// 返回：析构函数无返回值；执行幂等 Close 清理。
 CaptureToolbar::~CaptureToolbar()
 {
     this->Close();
 }
 
-// 创建无激活 owned popup、可访问原生按钮及独立 tooltip。
+// 创建不抢焦点的截图工具栏及按钮、提示窗口。
+// 入参：instance：借用的进程模块句柄；owner：工具栏所属覆盖窗口；buttons：按显示顺序移入的按钮描述；textResolver：文本键查询回调；onCommand：接收命令及代次的提交回调。
+// 返回：ToolbarResult：成功时 success 为 true；失败时为 false，error 仅用于日志诊断。
 ToolbarResult CaptureToolbar::Create(HINSTANCE instance, HWND owner, std::vector<ToolbarButtonSpec> buttons,
                                      TextResolver textResolver, CommandHandler onCommand)
 {
@@ -404,7 +439,9 @@ ToolbarResult CaptureToolbar::Create(HINSTANCE instance, HWND owner, std::vector
     return texts;
 }
 
-// 按显式工作区和 DPI 应用布局，不激活或抢占其他窗口焦点。
+// 按选区和目标显示器工作区定位工具栏。
+// 入参：selection、workArea：虚拟桌面物理像素矩形；dpi：目标显示器 DPI。
+// 返回：布局及窗口定位成功时 success 为 true；无有效窗口或布局失败时为 false 并附诊断。
 ToolbarResult CaptureToolbar::UpdatePlacement(RECT selection, RECT workArea, UINT dpi)
 {
     Impl& data = *this->impl_;
@@ -446,7 +483,9 @@ ToolbarResult CaptureToolbar::UpdatePlacement(RECT selection, RECT workArea, UIN
     return {true, {}};
 }
 
-// 新选区代次解除旧请求锁，并把工具栏提升到所有覆盖窗口之上。
+// 以指定选区代次显示工具栏并使其位于覆盖窗口上方。
+// 入参：sessionToken：非零的当前选区代次；新代次解除旧提交锁。
+// 返回：显示成功或全部按钮隐藏时 success 为 true；窗口、代次或布局无效时为 false 并附诊断。
 ToolbarResult CaptureToolbar::Show(std::uint64_t sessionToken)
 {
     Impl& data = *this->impl_;
@@ -464,6 +503,9 @@ ToolbarResult CaptureToolbar::Show(std::uint64_t sessionToken)
         data.token = sessionToken;
     }
     if (std::none_of(data.states.begin(), data.states.end(),
+                     // 检查按钮是否参与当前工具栏显示。
+                     // 入参：state：待检查的按钮状态。
+                     // 返回：state.visible；为 true 表示该按钮可见。
                      [](const ToolbarButtonState& state) { return state.visible; }))
     {
         this->Hide();
@@ -479,7 +521,9 @@ ToolbarResult CaptureToolbar::Show(std::uint64_t sessionToken)
     return {true, {}};
 }
 
-// 临时隐藏同时撤销鼠标捕获和当前 tooltip。
+// 暂时隐藏工具栏及提示并撤销当前鼠标交互。
+// 入参：无。
+// 返回：无返回值；保留窗口资源和业务忙状态，供后续再次显示。
 void CaptureToolbar::Hide() noexcept
 {
     this->impl_->ResetInteraction();
@@ -490,7 +534,9 @@ void CaptureToolbar::Hide() noexcept
     }
 }
 
-// 业务完成后由 App 明确解锁，丢弃忙状态前积压的鼠标按下消息。
+// 同步截图完成流程的忙状态并刷新按钮可用性。
+// 入参：busy：true 表示业务处理中；false 表示解除忙状态和本次提交锁。
+// 返回：无返回值；清理积压鼠标交互后重新应用按钮状态。
 void CaptureToolbar::SetBusy(bool busy) noexcept
 {
     if (this->impl_->busy != busy || (!busy && this->impl_->pending))
@@ -505,7 +551,9 @@ void CaptureToolbar::SetBusy(bool busy) noexcept
     this->impl_->ApplyStates();
 }
 
-// 更新部分按钮状态前校验所有 ID，失败时保留旧状态。
+// 校验并应用按稳定命令 ID 指定的部分按钮状态更新。
+// 入参：states：本次要更新的可见、启用及选中状态列表，仅在调用期间借用。
+// 返回：成功时 success 为 true，已经定位过的工具栏会重新布局；校验、定位或显示失败时为 false 并附诊断。
 ToolbarResult CaptureToolbar::UpdateButtonStates(std::span<const ToolbarButtonState> states)
 {
     Impl& data = *this->impl_;
@@ -523,6 +571,9 @@ ToolbarResult CaptureToolbar::UpdateButtonStates(std::span<const ToolbarButtonSt
                 return {false, L"工具栏状态包含重复 ID。"};
             }
         }
+        // 定位需要合并新状态的已有工具栏按钮。
+        // 入参：state：候选已有按钮状态；捕获的 states[update] 是当前更新项。
+        // 返回：命令 ID 与更新项一致时为 true，否则 false。
         const auto found = std::find_if(next.begin(), next.end(), [&](const ToolbarButtonState& state)
                                         { return state.command == states[update].command; });
         if (found == next.end())
@@ -551,7 +602,9 @@ ToolbarResult CaptureToolbar::UpdateButtonStates(std::span<const ToolbarButtonSt
     return {true, {}};
 }
 
-// 先解析全部自有字符串，再更新窗口名称与 tooltip，避免借用临时 c_str。
+// 重新查询当前语言的工具栏名称和按钮提示文本。
+// 入参：无。
+// 返回：文本解析成功并提交窗口更新请求时 success 为 true；窗口或解析器缺失、解析异常时 false 并附诊断。
 ToolbarResult CaptureToolbar::RefreshTexts()
 {
     Impl& data = *this->impl_;
@@ -589,7 +642,9 @@ ToolbarResult CaptureToolbar::RefreshTexts()
     return {true, {}};
 }
 
-// 首先解除业务回调，再销毁 tooltip 和工具栏；允许所有者提前销毁和重复关闭。
+// 关闭工具栏并撤销与宿主之间的回调连接。
+// 入参：无。
+// 返回：无返回值；先解除回调再释放提示和按钮窗口，可重复调用。
 void CaptureToolbar::Close() noexcept
 {
     this->impl_->onCommand = {};
@@ -609,7 +664,9 @@ void CaptureToolbar::Close() noexcept
     this->impl_->placed = false;
 }
 
-// 返回借用句柄，仅供所有者协调或测试查询，不转移所有权。
+// 向宿主提供工具栏原生窗口以便协调或测试。
+// 入参：无。
+// 返回：工具栏窗口的借用 HWND；尚未创建或已关闭时为 nullptr，不转移所有权。
 HWND CaptureToolbar::NativeHandle() const noexcept
 {
     return this->impl_->window;

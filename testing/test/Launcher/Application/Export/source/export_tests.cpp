@@ -1,3 +1,5 @@
+// 验证 SDR 图像编码、导出参数校验及模拟系统边界下的写入与清理行为。
+
 #include "export_system_fake.h"
 #include "image_encoder.h"
 #include <array>
@@ -15,17 +17,23 @@ using testing::ExportSystemFake;
 constexpr std::array<std::uint8_t, 20> PIXELS{10, 20, 30, 0,  40, 50,  60,  127, 99,  99,
                                               99, 99, 70, 80, 90, 255, 100, 110, 120, 3};
 // 构造最后一行不含尾部 padding 的两行 BGRX 输入。
+// 入参：无显式入参。
+// 返回：借用静态 PIXELS 的 2×2 BGRX 视图，行距为 12 字节。
 SdrImageView Image()
 {
     return {2U, 2U, 12U, PIXELS};
 }
 // 统计边界调用以检验释放、关闭与有限重试。
+// 入参：fake 为保存系统调用轨迹的导出替身；operation 为要统计的操作名称。
+// 返回：fake.calls 中 operation 的出现次数。
 std::size_t Count(const ExportSystemFake& fake, const std::string& operation)
 {
     return static_cast<std::size_t>(std::count(fake.calls.begin(), fake.calls.end(), operation));
 }
 
 // 验证 padding 不计入像素、行序翻转和 X 字节不进入 CF_DIB 透明度语义。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ClipboardTest, bottom_up_opaque_dib)
 {
     std::vector<std::uint8_t> dib;
@@ -43,6 +51,8 @@ TEST(ClipboardTest, bottom_up_opaque_dib)
 }
 
 // 验证非法尺寸、短跨度、短缓冲区和整数上界均在访问像素前拒绝，并保留调用方输出。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ImageValidationTest, rejects_invalid_layout_without_changing_output)
 {
     const std::array<SdrImageView, 5> invalid{{{0, 2, 12, PIXELS},
@@ -61,6 +71,8 @@ TEST(ImageValidationTest, rejects_invalid_layout_without_changing_output)
 }
 
 // 验证发布成功后系统接管内存，且 FALSE/ERROR_SUCCESS 解锁不被误判。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ClipboardTest, success_transfers_memory_and_closes_session)
 {
     ExportSystemFake fake;
@@ -73,7 +85,9 @@ TEST(ClipboardTest, success_transfers_memory_and_closes_session)
                                                     "clipboardClose"}));
 }
 
-// 分别注入每个发布阶段的故障，验证只释放仍属于本地的内存和已打开的会话。
+// 验证分别注入每个发布阶段的故障，验证只释放仍属于本地的内存和已打开的会话。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ClipboardTest, failures_release_only_owned_resources)
 {
     const std::array<std::string, 7> stages{"owner", "allocate", "lock", "unlock", "open", "empty", "set"};
@@ -96,6 +110,8 @@ TEST(ClipboardTest, failures_release_only_owned_resources)
 }
 
 // 验证无窗口或无效像素直接失败，不分配或打开剪贴板。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ClipboardTest, invalid_input_does_not_touch_clipboard)
 {
     ExportSystemFake fake;
@@ -107,6 +123,8 @@ TEST(ClipboardTest, invalid_input_does_not_touch_clipboard)
 }
 
 // 验证短写继续推进偏移，完整交付后只刷新和关闭一次。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(FileWriterTest, short_writes_complete_in_order)
 {
     ExportSystemFake fake;
@@ -122,6 +140,8 @@ TEST(FileWriterTest, short_writes_complete_in_order)
 }
 
 // 验证新建与覆盖目标在写入及刷新失败时采用不同清理策略。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(FileWriterTest, failure_deletes_only_newly_created_file)
 {
     for (const bool existing : {false, true})
@@ -145,6 +165,8 @@ TEST(FileWriterTest, failure_deletes_only_newly_created_file)
 }
 
 // 验证零写不会无限循环，且清理失败保留诊断信息。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(FileWriterTest, zero_write_and_cleanup_failure_are_reported)
 {
     ExportSystemFake fake;
@@ -158,6 +180,8 @@ TEST(FileWriterTest, zero_write_and_cleanup_failure_are_reported)
 }
 
 // 验证空参数不创建文件，创建拒绝不尝试覆盖或关闭无效句柄。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(FileWriterTest, rejects_empty_input_and_create_failure)
 {
     ExportSystemFake fake;
@@ -176,12 +200,16 @@ class ImageEncoderTest : public ::testing::Test
 {
   protected:
     // 为 WIC 创建当前线程 COM 环境。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         this->result_ = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
         ASSERT_TRUE(SUCCEEDED(this->result_));
     }
     // 配对释放初始化计数。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         if (SUCCEEDED(this->result_))
@@ -193,6 +221,8 @@ class ImageEncoderTest : public ::testing::Test
 };
 
 // 验证 PNG 无损 RGB 往返、JPEG 可解码尺寸，以及两种格式的 sRGB 元数据。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(ImageEncoderTest, round_trip_rgb_and_srgb_metadata)
 {
     using Microsoft::WRL::ComPtr;
@@ -245,6 +275,8 @@ TEST_F(ImageEncoderTest, round_trip_rgb_and_srgb_metadata)
 }
 
 // 验证未知格式在编码前拒绝并保持上次输出，不返回伪成功。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(ImageEncoderTest, invalid_format_preserves_output)
 {
     std::vector<std::uint8_t> encoded{42};
@@ -255,6 +287,8 @@ TEST_F(ImageEncoderTest, invalid_format_preserves_output)
 }
 
 // 验证真实编码失败后完全不进入文件 API，已有目标不会被截断。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(ImageEncoderTest, encoding_failure_never_opens_destination)
 {
     ExportSystemFake fake;

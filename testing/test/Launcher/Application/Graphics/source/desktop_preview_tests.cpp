@@ -1,3 +1,5 @@
+// 文件职责：验证 SDR/HDR 冻结像素到预览帧的格式、亮度转换、颜色元数据和输入校验。
+
 #include <gtest/gtest.h>
 
 #include <color_conversion.h>
@@ -13,7 +15,9 @@
 
 namespace
 {
-// 把 RGBA16F 通道序列打包为一行原生像素，支持灰阶及超范围颜色测试。
+// 将预设 FP16 通道位模式打包为原生像素字节，避免测试构造时发生颜色转换。
+// 入参：channels：按 RGBA 顺序排列的 binary16 通道位模式。
+// 返回：逐字节保留全部输入通道的自有缓冲区。
 std::vector<std::uint8_t> MakeHalfPixels(const std::vector<std::uint16_t>& channels)
 {
     std::vector<std::uint8_t> pixels(channels.size() * sizeof(std::uint16_t));
@@ -21,7 +25,9 @@ std::vector<std::uint8_t> MakeHalfPixels(const std::vector<std::uint16_t>& chann
     return pixels;
 }
 
-// 把 RGB10A2 位模式写成原生四字节像素。
+// 构造单个 RGB10A2 原始像素的字节缓冲区，用于预览解码测试。
+// 入参：packed：已经打包的 32 位 RGB10A2 位模式。
+// 返回：包含该原始位模式的四字节自有缓冲区。
 std::vector<std::uint8_t> MakeRgb10Pixel(std::uint32_t packed)
 {
     std::vector<std::uint8_t> pixels(sizeof(packed));
@@ -29,7 +35,9 @@ std::vector<std::uint8_t> MakeRgb10Pixel(std::uint32_t packed)
     return pixels;
 }
 
-// 从呈现像素中解码指定 FP16 通道，避免未对齐的指针类型转换。
+// 从预览缓冲区读取并解码指定 FP16 通道，以验证实际预览亮度。
+// 入参：preview：包含 FP16 像素的预览帧；channel：从缓冲区起点计数的 16 位通道索引。
+// 返回：指定通道解码后的单精度值，调用方须保证索引有效。
 float ReadHalfChannel(const open_st::OutputPreviewFrame& preview, std::size_t channel)
 {
     std::uint16_t half{};
@@ -37,7 +45,9 @@ float ReadHalfChannel(const open_st::OutputPreviewFrame& preview, std::size_t ch
     return open_st::DecodeFloat16(half);
 }
 
-// 创建具有明确 SDR 白值的 HDR 输出元数据，峰值与参考白故意不同。
+// 构造具备有效 SDR 参考白的 HDR 输出元数据，供预览测试使用。
+// 入参：whiteNits：模拟的 SDR 参考白亮度，单位 nit，默认 160。
+// 返回：声明 HDR 显示颜色空间及有效参考白的颜色元数据。
 open_st::OutputColorMetadata HdrMetadata(float whiteNits = 160.0F)
 {
     open_st::OutputColorMetadata metadata{};
@@ -51,6 +61,8 @@ open_st::OutputColorMetadata HdrMetadata(float whiteNits = 160.0F)
 } // namespace
 
 // 验证 SDR BGRA 保留所有像素字节与负坐标，不因 HDR 预览改造改变普通截图亮度。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，preserves_sdr_bgra_bytes_and_output_coordinates 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, preserves_sdr_bgra_bytes_and_output_coordinates)
 {
     const std::vector<std::uint8_t> original{10U, 20U, 30U, 0U, 40U, 50U, 60U, 255U};
@@ -70,6 +82,9 @@ TEST(DesktopPreviewTest, preserves_sdr_bgra_bytes_and_output_coordinates)
 }
 
 // 验证 FP16 原生 RGB 位模式逐位保留，灰阶、负分量及高光不经过 ACES 或 SDR 白重复缩放。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，preserves_native_half_rgb_bits_without_tone_mapping_or_white_scaling
+// 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, preserves_native_half_rgb_bits_without_tone_mapping_or_white_scaling)
 {
     const std::vector<std::uint16_t> channels{
@@ -99,6 +114,8 @@ TEST(DesktopPreviewTest, preserves_native_half_rgb_bits_without_tone_mapping_or_
 }
 
 // 验证 HDR10 PQ/BT.2020 红色进入 FP16 时保留负色域分量与高光，且不乘 SDR 白比例。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，converts_hdr10_to_extended_linear_half_without_clipping 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, converts_hdr10_to_extended_linear_half_without_clipping)
 {
     open_st::CapturedOutputPlane plane({0, 0, 1, 1}, open_st::CapturedPixelFormat::Rgb10A2Unorm,
@@ -117,6 +134,8 @@ TEST(DesktopPreviewTest, converts_hdr10_to_extended_linear_half_without_clipping
 }
 
 // 验证 HDR 屏幕的 BGRA 兼容数据只进行一次 sRGB 解码及 SDR 白缩放，并明确标记降级。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，marks_hdr_bgra_compatibility_and_scales_sdr_white_once 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, marks_hdr_bgra_compatibility_and_scales_sdr_white_once)
 {
     open_st::CapturedOutputPlane plane({0, 0, 1, 1}, open_st::CapturedPixelFormat::Bgra8Unorm,
@@ -133,6 +152,8 @@ TEST(DesktopPreviewTest, marks_hdr_bgra_compatibility_and_scales_sdr_white_once)
 }
 
 // 验证 SDR RGB10 的正确通道量化，以及 SDR 屏幕上 FP16 数据不依赖 HDR 白值查询。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，supports_sdr_rgb10_and_half_outputs_independently 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, supports_sdr_rgb10_and_half_outputs_independently)
 {
     open_st::CapturedOutputPlane rgb10({0, 0, 1, 1}, open_st::CapturedPixelFormat::Rgb10A2Unorm,
@@ -153,6 +174,8 @@ TEST(DesktopPreviewTest, supports_sdr_rgb10_and_half_outputs_independently)
 }
 
 // 验证 HDR 白值缺失、零、负数和非有限值均显式失败，旧结果不会泄漏到后续会话。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，rejects_missing_or_invalid_hdr_white_metadata 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, rejects_missing_or_invalid_hdr_white_metadata)
 {
     const std::array<float, 4U> invalidValues{0.0F, -80.0F, std::numeric_limits<float>::infinity(),
@@ -179,6 +202,8 @@ TEST(DesktopPreviewTest, rejects_missing_or_invalid_hdr_white_metadata)
 }
 
 // 验证未知 RGB10 颜色空间不被猜测为 HDR10/SDR，且无效 plane 明确清空输出。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，rejects_unknown_rgb10_and_invalid_planes 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, rejects_unknown_rgb10_and_invalid_planes)
 {
     open_st::CapturedOutputPlane plane({0, 0, 1, 1}, open_st::CapturedPixelFormat::Rgb10A2Unorm,

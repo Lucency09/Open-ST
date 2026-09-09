@@ -1,3 +1,5 @@
+// 验证截图工具栏的物理像素布局、工作区避让与 DPI 缩放边界。
+
 #include "toolbar_layout.h"
 
 #include <array>
@@ -8,6 +10,8 @@ namespace open_st::toolbar_detail
 namespace
 {
 // 创建真实首版按钮顺序，验证布局使用稳定命令而非假定连续索引。
+// 入参：无显式入参。
+// 返回：按取消、保存、复制排列的三个按钮描述，保存和复制属于同组。
 std::array<ToolbarButtonSpec, 3> Buttons()
 {
     return {{{CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "capture.toolbar.cancel", 0},
@@ -16,6 +20,8 @@ std::array<ToolbarButtonSpec, 3> Buttons()
 }
 
 // 返回全部可用状态，个别测试再模拟业务隐藏、禁用和选中。
+// 入参：无显式入参。
+// 返回：取消、保存、复制三个按钮均可见、可用且未选中的状态数组。
 std::array<ToolbarButtonState, 3> States()
 {
     return {{{CaptureToolbarCommand::Cancel, true, true, false},
@@ -23,7 +29,9 @@ std::array<ToolbarButtonState, 3> States()
              {CaptureToolbarCommand::Copy, true, true, false}}};
 }
 
-// 描述必须有有效且唯一的命令、有效图标和非空文本键。
+// 验证描述必须有有效且唯一的命令、有效图标和非空文本键。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, validates_stable_identity_and_required_description)
 {
     std::array<ToolbarButtonSpec, 3> specs = Buttons();
@@ -42,7 +50,9 @@ TEST(ToolbarGeometryTest, validates_stable_identity_and_required_description)
     EXPECT_FALSE(ValidateButtons(specs).success);
 }
 
-// 下方默认位置须靠右对齐且留出选区控制点距离，首版有一个有效分隔线。
+// 验证下方默认位置须靠右对齐且留出选区控制点距离，首版有一个有效分隔线。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, places_below_selection_with_control_handle_clearance)
 {
     ToolbarLayout layout;
@@ -56,7 +66,9 @@ TEST(ToolbarGeometryTest, places_below_selection_with_control_handle_clearance)
     EXPECT_EQ(layout.buttons[1].right, layout.buttons[2].left);
 }
 
-// 底部没有空间时转到选区上方，而不是压住底部控制点。
+// 验证底部没有空间时转到选区上方，而不是压住底部控制点。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, bottom_edge_moves_toolbar_above_selection)
 {
     ToolbarLayout layout;
@@ -65,7 +77,9 @@ TEST(ToolbarGeometryTest, bottom_edge_moves_toolbar_above_selection)
     EXPECT_GE(layout.bounds.top, 0);
 }
 
-// 负坐标屏幕和满屏选区仍将全部按钮约束在指定工作区。
+// 验证负坐标屏幕和满屏选区仍将全部按钮约束在指定工作区。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, full_screen_negative_origin_stays_inside_work_area)
 {
     ToolbarLayout layout;
@@ -77,7 +91,9 @@ TEST(ToolbarGeometryTest, full_screen_negative_origin_stays_inside_work_area)
     EXPECT_LE(layout.bounds.bottom, work.bottom);
 }
 
-// 很窄且偏左的选区不能把工具栏挤出目标屏幕。
+// 验证很窄且偏左的选区不能把工具栏挤出目标屏幕。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, narrow_selection_clamps_horizontal_position)
 {
     ToolbarLayout layout;
@@ -86,7 +102,9 @@ TEST(ToolbarGeometryTest, narrow_selection_clamps_horizontal_position)
     EXPECT_GT(layout.bounds.right, 1);
 }
 
-// 隐藏整组会收缩宽度并移除悬空分隔线，禁用和选中状态不改变按钮几何。
+// 验证隐藏整组会收缩宽度并移除悬空分隔线，禁用和选中状态不改变按钮几何。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, hidden_group_collapses_without_extra_separator)
 {
     ToolbarLayout full;
@@ -103,7 +121,9 @@ TEST(ToolbarGeometryTest, hidden_group_collapses_without_extra_separator)
     EXPECT_EQ(hidden.buttons[1].right - hidden.buttons[1].left, full.buttons[1].right - full.buttons[1].left);
 }
 
-// 中间按钮隐藏后，同组关系仍依据相邻可见项，不能产生两个分隔线。
+// 验证中间按钮隐藏后，同组关系仍依据相邻可见项，不能产生两个分隔线。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, hidden_middle_button_preserves_one_group_boundary)
 {
     ToolbarLayout layout;
@@ -114,7 +134,9 @@ TEST(ToolbarGeometryTest, hidden_middle_button_preserves_one_group_boundary)
     EXPECT_EQ(layout.separators.size(), 1u);
 }
 
-// 100%、150%、200% 缩放应保持物理尺寸与 DIP 一致，按钮位于工具栏内部。
+// 验证100%、150%、200% 缩放应保持物理尺寸与 DIP 一致，按钮位于工具栏内部。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, scales_buttons_for_common_monitor_dpi)
 {
     for (UINT dpi : {96u, 144u, 192u})
@@ -131,7 +153,9 @@ TEST(ToolbarGeometryTest, scales_buttons_for_common_monitor_dpi)
     }
 }
 
-// 无效输入和无法容纳的工作区返回错误，不发布半成品位置覆盖旧布局。
+// 验证无效输入和无法容纳的工作区返回错误，不发布半成品位置覆盖旧布局。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarGeometryTest, invalid_or_too_small_geometry_keeps_previous_layout)
 {
     ToolbarLayout layout;

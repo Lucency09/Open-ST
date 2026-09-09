@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Graphics 的镜像测试目标、链接依赖及用例发现。
+
 # 选区状态模型使用纯几何测试；覆盖渲染器另以隐藏窗口验证实际 GPU 往返像素。
 add_subdirectory(Capture)
 add_subdirectory(HDR)

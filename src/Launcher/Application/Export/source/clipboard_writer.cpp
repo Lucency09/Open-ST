@@ -1,3 +1,5 @@
+// 将 SDR 图像转换为 DIB 并发布到系统剪贴板，管理内存与会话所有权。
+
 #include "clipboard_api.h"
 #include "image_encoder.h"
 
@@ -12,9 +14,13 @@ namespace
 class ClipboardMemory final
 {
   public:
-    // 绑定分配结果和对应释放函数。
+    // 接管尚未发布的剪贴板全局内存，确保失败路径释放分配结果。
+    // 入参：memory：由全局内存接口分配的 HGLOBAL，可为空；api：在守卫存活期间保持有效的借用剪贴板接口表。
+    // 返回：无返回值；在调用 Release 前，本对象负责释放非空 memory。
     ClipboardMemory(HGLOBAL memory, const ClipboardApi& api) : memory_(memory), api_(api) {}
-    // 释放所有仍属于本地的全局内存。
+    // 释放仍由本地拥有的剪贴板全局内存，避免发布失败后泄漏。
+    // 入参：无。
+    // 返回：无返回值；已通过 Release 转交系统的内存不会再次释放。
     ~ClipboardMemory()
     {
         if (this->memory_ != nullptr)
@@ -22,11 +28,17 @@ class ClipboardMemory final
             this->api_.free(this->memory_);
         }
     }
-    // 禁止复制以避免重复释放。
+    // 禁止复制全局内存的管理职责，避免重复释放或关闭。
+    // 入参：未命名 const ClipboardMemory 引用：拟复制的源对象。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     ClipboardMemory(const ClipboardMemory&) = delete;
-    // 禁止赋值以避免覆盖现有所有权。
+    // 禁止复制全局内存的管理职责，避免重复释放或关闭。
+    // 入参：未命名 const ClipboardMemory 引用：拟复制的源对象。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     ClipboardMemory& operator=(const ClipboardMemory&) = delete;
-    // 发布成功后解除本地所有权。
+    // 在剪贴板发布成功后撤销本地内存释放职责。
+    // 入参：无。
+    // 返回：无返回值；仅清除本地句柄，已发布的内存由系统继续持有。
     void Release() noexcept
     {
         this->memory_ = nullptr;
@@ -41,23 +53,33 @@ class ClipboardMemory final
 class ClipboardSession final
 {
   public:
-    // 接管已经打开的剪贴板会话。
+    // 接管已经打开的剪贴板会话的关闭职责。
+    // 入参：api：在会话存活期间保持有效的借用剪贴板接口表，调用方须已成功打开剪贴板。
+    // 返回：无返回值；析构时通过 api.close 关闭会话。
     explicit ClipboardSession(const ClipboardApi& api) : api_(api) {}
-    // 关闭剪贴板但不影响已发布数据的系统所有权。
+    // 结束已打开的剪贴板访问会话，解除本进程对剪贴板的访问占用。
+    // 入参：无。
+    // 返回：无返回值；关闭会话，已发布数据仍归系统所有。
     ~ClipboardSession()
     {
         this->api_.close();
     }
-    // 会话不能复制。
+    // 禁止复制剪贴板会话的管理职责，避免重复释放或关闭。
+    // 入参：未命名 const ClipboardSession 引用：拟复制的源对象。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     ClipboardSession(const ClipboardSession&) = delete;
-    // 会话不能赋值。
+    // 禁止复制剪贴板会话的管理职责，避免重复释放或关闭。
+    // 入参：未命名 const ClipboardSession 引用：拟复制的源对象。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     ClipboardSession& operator=(const ClipboardSession&) = delete;
 
   private:
     const ClipboardApi& api_;
 };
 
-// 记录当前 Win32 错误，不包含截图内容。
+// 记录剪贴板操作刚产生的 Win32 错误，供调用方结束失败流程。
+// 入参：operation：失败操作的宽字符名称；error：输出参数，接收操作名称及当前 GetLastError 错误码。
+// 返回：始终返回 false，使调用方可直接返回同一失败结果。
 bool ClipboardFailure(const wchar_t* operation, std::wstring& error)
 {
     const DWORD code = GetLastError();
@@ -66,7 +88,10 @@ bool ClipboardFailure(const wchar_t* operation, std::wstring& error)
 }
 } // namespace
 
-// 反转行序生成兼容性更好的正高度 BI_RGB；保留 RGB 并清零保留字节。
+// 把 SDR 图像转换为可发布到剪贴板的底向上 32 位 BI_RGB DIB。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；dib：输出参数，成功时接收位图头及紧凑像素字节；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 返回：构建完成时为 true；校验或分配失败时为 false 且不修改 dib；DIB 保留 RGB 并把保留字节清零。
 bool BuildClipboardDib(const SdrImageView& image, std::vector<std::uint8_t>& dib, std::wstring& error)
 {
     if (!ValidateSdrImage(image, error))
@@ -108,7 +133,10 @@ bool BuildClipboardDib(const SdrImageView& image, std::vector<std::uint8_t>& dib
     }
 }
 
-// 在清空剪贴板前完成图像构造、分配和填充；失败不进行无界重试。
+// 通过注入的系统接口将完整 SDR 图像发布为 CF_DIB，并转交全局内存所有权。
+// 入参：owner：有效的剪贴板所有者窗口；image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；api：调用期间有效的剪贴板系统接口表；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 返回：成功发布时为 true；准备或系统调用失败时为 false，并释放尚未移交的本地内存；清空剪贴板之后的失败无法恢复旧内容。
 bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi& api, std::wstring& error)
 {
     error.clear();
@@ -156,7 +184,10 @@ bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi&
     return true;
 }
 
-// 产品调用使用默认系统函数表，测试通过私有入口替换边界。
+// 将 SDR 图像复制到系统剪贴板，供其他应用按不透明 CF_DIB 粘贴。
+// 入参：owner：有效的剪贴板所有者窗口；image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 返回：成功发布时为 true，失败时为 false；成功后图像内存归系统，发布阶段失败可能已清空旧剪贴板。
 bool CopyImageToClipboard(HWND owner, const SdrImageView& image, std::wstring& error)
 {
     return CopyImageWithApi(owner, image, ClipboardApi{}, error);

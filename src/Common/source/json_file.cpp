@@ -1,3 +1,5 @@
+// 实现 JSON 文件懒加载、变更检测、串行编辑及原子替换写入。
+
 #include <json_file.h>
 
 #include <log.h>
@@ -25,9 +27,13 @@ struct FileFailure final
 class FileHandle final
 {
   public:
-    // 接管一个已打开的句柄，INVALID_HANDLE_VALUE 表示没有资源。
+    // 接管 Win32 文件句柄以便退出作用域时自动关闭。
+    // 入参：value：已打开的文件句柄，INVALID_HANDLE_VALUE 表示无资源。
+    // 返回：构造函数无返回值；非无效句柄的关闭职责归当前对象。
     explicit FileHandle(HANDLE value) noexcept : value_(value) {}
-    // 自动关闭尚未释放的文件句柄。
+    // 关闭仍由当前守卫拥有的文件句柄。
+    // 入参：无。
+    // 返回：析构函数无返回值；关闭错误不向外传播。
     ~FileHandle()
     {
         if (this->value_ != INVALID_HANDLE_VALUE)
@@ -35,16 +41,24 @@ class FileHandle final
             (void)CloseHandle(this->value_);
         }
     }
-    // 禁止复制文件资源所有权。
+    // 禁止复制文件句柄关闭职责，避免重复清理。
+    // 入参：未命名 const FileHandle 引用：拟复制的源守卫。
+    // 返回：无；函数已删除，调用会导致编译错误。
     FileHandle(const FileHandle&) = delete;
-    // 禁止复制赋值，避免重复关闭。
+    // 禁止复制文件句柄关闭职责，避免重复清理。
+    // 入参：未命名 const FileHandle 引用：拟复制的源守卫。
+    // 返回：无；函数已删除，调用会导致编译错误。
     FileHandle& operator=(const FileHandle&) = delete;
-    // 借用底层句柄调用 Windows API。
+    // 借出当前文件句柄供同步调用 Windows 文件接口。
+    // 入参：无。
+    // 返回：当前 HANDLE，不转移所有权；未持有资源时为 INVALID_HANDLE_VALUE。
     [[nodiscard]] HANDLE Get() const noexcept
     {
         return this->value_;
     }
-    // 显式关闭并报告失败，不让析构再次关闭同一资源。
+    // 显式关闭文件并在关闭失败时报告所处阶段。
+    // 入参：无。
+    // 返回：无返回值；系统关闭失败时抛出 FileFailure，内部句柄始终先复位以避免再次关闭。
     void Close()
     {
         const HANDLE value = std::exchange(this->value_, INVALID_HANDLE_VALUE);
@@ -67,7 +81,9 @@ struct FileSignature final
     DWORD fileSizeLow{};
     FILETIME lastWriteTime{};
 
-    // 比较文件身份、长度与最后写入时间，用于缓存验证及外部变更复核。
+    // 比较两次文件查询是否代表同一身份和版本。
+    // 入参：other：另一份文件身份、长度及最后写入时间签名。
+    // 返回：卷、文件索引、字节数及写入时间均相同时为 true，否则为 false。
     [[nodiscard]] bool operator==(const FileSignature& other) const noexcept
     {
         return this->volumeSerialNumber == other.volumeSerialNumber && this->fileIndexHigh == other.fileIndexHigh &&
@@ -84,13 +100,17 @@ enum class FileQueryStatus
     Missing
 };
 
-// 规范化业务提供的路径，不在 Common 内选择业务目录。
+// 把业务路径转换为可用于绑定比较的规范化绝对路径。
+// 入参：path：业务提供的文件路径，可为相对路径。
+// 返回：绝对且消除词法冗余的路径值；解析路径失败时抛出文件系统异常，不解析符号链接身份。
 std::filesystem::path NormalizePath(const std::filesystem::path& path)
 {
     return std::filesystem::absolute(path).lexically_normal();
 }
 
-// 按 Windows 路径大小写规则比较规范化后的路径文本。
+// 按 Windows 不区分大小写的文本规则比较规范化路径。
+// 入参：left、right：待比较的规范化文件路径。
+// 返回：路径文本按序数忽略大小写后相等时为 true，否则为 false，不检查磁盘文件身份。
 bool PathsEqual(const std::filesystem::path& left, const std::filesystem::path& right) noexcept
 {
     const std::wstring& leftText = left.native();
@@ -99,7 +119,9 @@ bool PathsEqual(const std::filesystem::path& left, const std::filesystem::path& 
                                 static_cast<int>(rightText.size()), TRUE) == CSTR_EQUAL;
 }
 
-// 读取文件元数据；只将真正缺失视为 Missing，其他失败中止当前操作。
+// 查询磁盘文件身份及版本，区分真实缺失与访问故障。
+// 入参：path：目标路径；signature：输出参数，成功时写入文件身份、字节数及写入时间。
+// 返回：文件存在时为 Present；文件或父路径不存在时为 Missing 且保留 signature；其他系统错误或目录目标抛出 FileFailure。
 FileQueryStatus QueryFileSignature(const std::filesystem::path& path, FileSignature& signature)
 {
     const HANDLE opened =
@@ -130,7 +152,9 @@ FileQueryStatus QueryFileSignature(const std::filesystem::path& path, FileSignat
     return FileQueryStatus::Present;
 }
 
-// 把双 DWORD 长度转换为无符号字节数。
+// 从文件签名还原完整字节长度。
+// 入参：signature：含高低 DWORD 长度的文件签名。
+// 返回：合并后的无符号文件字节数。
 std::uintmax_t FileSize(const FileSignature& signature) noexcept
 {
     ULARGE_INTEGER size{};
@@ -139,7 +163,9 @@ std::uintmax_t FileSize(const FileSignature& signature) noexcept
     return size.QuadPart;
 }
 
-// 有界读取完整文件并确认读取期间未变化；格式解析由文件状态对象完成。
+// 读取完整 JSON 文件字节并检查读取期间文件未变化。
+// 入参：path：目标文件路径；beforeRead：读取前已取得的文件签名。
+// 返回：自有原始字节字符串；文件为空、超过 1 MiB、短读、访问失败或签名变化时抛出 FileFailure。
 std::string ReadStableBytes(const std::filesystem::path& path, const FileSignature& beforeRead)
 {
     const std::uintmax_t size = FileSize(beforeRead);
@@ -172,7 +198,9 @@ std::string ReadStableBytes(const std::filesystem::path& path, const FileSignatu
     return bytes;
 }
 
-// 在目标同目录生成进程、线程和序列组合的临时文件名。
+// 生成与目标同目录的写入临时文件候选路径。
+// 入参：path：最终目标文件路径。
+// 返回：附带进程 ID、线程 ID 和递增序号的路径值；不创建文件，实际创建仍须独占检查。
 std::filesystem::path TemporaryPath(const std::filesystem::path& path)
 {
     static std::atomic<std::uint64_t> sequence{};
@@ -187,9 +215,13 @@ std::filesystem::path TemporaryPath(const std::filesystem::path& path)
 class TemporaryPathGuard final
 {
   public:
-    // 借用本次操作栈上的稳定路径。
+    // 登记本次原子写入临时文件的失败清理职责。
+    // 入参：path：借用的临时路径对象，必须比守卫存活更久。
+    // 返回：构造函数无返回值；析构前若未 Dismiss 则尝试删除该路径。
     explicit TemporaryPathGuard(const std::filesystem::path& path) noexcept : path_(path) {}
-    // 清理尚未移动的临时文件；清理失败只记录系统错误，不遮蔽原失败。
+    // 清理本次写入尚未成功移走的临时文件。
+    // 入参：无。
+    // 返回：析构函数无返回值；不存在视为已清理，其余删除失败仅写诊断，不遮蔽原错误。
     ~TemporaryPathGuard()
     {
         if (this->active_ && DeleteFileW(this->path_.c_str()) == FALSE)
@@ -201,11 +233,17 @@ class TemporaryPathGuard final
             }
         }
     }
-    // 禁止复制临时文件清理职责。
+    // 禁止复制临时路径删除职责，避免重复清理。
+    // 入参：未命名 const TemporaryPathGuard 引用：拟复制的源守卫。
+    // 返回：无；函数已删除，调用会导致编译错误。
     TemporaryPathGuard(const TemporaryPathGuard&) = delete;
-    // 禁止复制赋值临时文件清理职责。
+    // 禁止复制临时路径删除职责，避免重复清理。
+    // 入参：未命名 const TemporaryPathGuard 引用：拟复制的源守卫。
+    // 返回：无；函数已删除，调用会导致编译错误。
     TemporaryPathGuard& operator=(const TemporaryPathGuard&) = delete;
-    // 移动成功后立即解除旧路径清理职责，不再触碰可能被外部重新创建的同名文件。
+    // 在临时文件成功移动后撤销旧路径的删除职责。
+    // 入参：无。
+    // 返回：无返回值；后续析构不再访问该路径，避免删除外部后来创建的同名文件。
     void Dismiss() noexcept
     {
         this->active_ = false;
@@ -216,7 +254,9 @@ class TemporaryPathGuard final
     bool active_{true};
 };
 
-// 保留原有权限预检：已有文件可替换，父目录能创建自动删除的零字节临时文件。
+// 检查已有 JSON 文件可替换且父目录允许建立临时文件。
+// 入参：path：已经存在的目标文件路径。
+// 返回：无返回值；属性、替换权限、临时创建或关闭失败时抛出 FileFailure，探测文件按关闭删除。
 void CheckWritableExistingFile(const std::filesystem::path& path)
 {
     const DWORD attributes = GetFileAttributesW(path.c_str());
@@ -245,7 +285,9 @@ void CheckWritableExistingFile(const std::filesystem::path& path)
     probe.Close();
 }
 
-// 在同目录写入并刷盘后移动；缺失创建不使用覆盖标志，提交成功后不再做可能失败的分配。
+// 通过同目录临时文件写入并刷新后替换目标，避免发布半份 JSON。
+// 入参：path：最终路径；bytes：完整序列化字节，长度已由调用方限制；replaceExisting：是否替换已有目标；baseline：替换前签名；writtenSignature：输出参数，接收已写临时文件签名。
+// 返回：无返回值；写入、刷新、基线复核或移动失败时抛出 FileFailure，未移动的临时文件由守卫清理；失败时 writtenSignature 可能已写入。
 void WriteBytesAtomically(const std::filesystem::path& path, std::string_view bytes, bool replaceExisting,
                           const FileSignature& baseline, FileSignature& writtenSignature)
 {
@@ -300,17 +342,23 @@ namespace open_st
 class JsonFileState final
 {
   public:
-    // 绑定业务提供的名称与路径，不进行磁盘访问。
+    // 为一份业务 JSON 文件建立共享状态及同步边界。
+    // 入参：cardName：转入状态的业务标识；path：转入状态的规范化文件路径。
+    // 返回：构造函数无返回值；只建立内存状态，不访问磁盘。
     JsonFileState(std::string cardName, std::filesystem::path path)
         : cardName_(std::move(cardName)), path_(std::move(path))
     {
     }
-    // 借用绑定路径，供管理器检查标识冲突。
+    // 提供已绑定路径供管理器检查名称和路径冲突。
+    // 入参：无。
+    // 返回：状态持有的文件路径只读引用，借用生命周期不超过当前共享状态。
     [[nodiscard]] const std::filesystem::path& Path() const noexcept
     {
         return this->path_;
     }
-    // 串行读取并在成功复制后一次性交换输出，任何失败均保留调用者原值。
+    // 读取当前磁盘 JSON 文档并向调用方提供独立副本。
+    // 入参：document：输出参数，成功时接收完整 JSON 文档。
+    // 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
     bool Read(nlohmann::json& document) noexcept
     {
         try
@@ -346,12 +394,16 @@ class JsonFileState final
         }
         return false;
     }
-    // 对完整目标文档使用同一锁内编辑与提交路径，不另建一套写入规则。
+    // 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
+    // 入参：document：调用期间借用的完整替换文档。
+    // 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
     bool Write(const nlohmann::json& document) noexcept
     {
         try
         {
-            // 完整替换是调用方明确提供的业务意图，不进行隐式字段合并。
+            // 把整份替换文档写入通用编辑候选，复用文件锁和提交规则。
+            // 入参：current：输入输出 optional 文档；捕获的 document 为调用方明确提供的完整替换值。
+            // 返回：始终返回 true 接受替换；JSON 复制分配异常由外层写入流程处理。
             const JsonDocumentEditor editor = [&document](std::optional<nlohmann::json>& current)
             {
                 current = document;
@@ -365,7 +417,9 @@ class JsonFileState final
             return false;
         }
     }
-    // 同文件锁覆盖读取、唯一一次业务编辑及提交；正常线程竞争只等待，不因旧基线失败。
+    // 在同一文件锁内编辑当前 JSON 文档并原子提交。
+    // 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
+    // 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
     bool Write(const JsonDocumentEditor& editor) noexcept
     {
         try
@@ -421,7 +475,9 @@ class JsonFileState final
         DWORD code{};
     };
 
-    // 按读写操作分别去重连续同原因失败，成功后恢复下一次诊断；不影响文件重试。
+    // 对连续重复的 JSON 读写故障去重并记录诊断。
+    // 入参：writing：true 表示写故障，false 表示读故障；stage：具有稳定生命周期的阶段名；code：对应系统或解析错误码；调用方须持有文件锁。
+    // 返回：无返回值；同操作连续同阶段同错误码不重复记录，不阻止下一次文件重试。
     void ReportFailureLocked(bool writing, const char* stage, DWORD code) noexcept
     {
         FailureRecord& previous = writing ? this->writeFailure_ : this->readFailure_;
@@ -434,7 +490,9 @@ class JsonFileState final
                             " stage=", stage, " error=", code);
     }
 
-    // 按请求核对磁盘版本；失败保留旧快照，但不把它作为本次成功结果。
+    // 核对当前磁盘版本并在变化时刷新已解析 JSON 快照。
+    // 入参：无；调用方须持有当前文件锁。
+    // 返回：目标缺失为 Missing，有效且已缓存或重新解析成功为 Present；访问、稳定性或解析失败抛出异常，不把旧缓存当作本次成功。
     FileQueryStatus RefreshLocked()
     {
         FileSignature signature{};
@@ -476,7 +534,9 @@ class JsonFileState final
         return FileQueryStatus::Present;
     }
 
-    // 复核目标仍符合写入开始时的磁盘状态；外部变化只取消本次操作，不自动重放编辑。
+    // 在提交前确认目标仍符合本次编辑开始时的磁盘状态。
+    // 入参：existed：编辑开始时文件是否存在；baseline：编辑前签名；调用方须持有文件锁。
+    // 返回：无返回值；存在性或签名变化时抛出 FileFailure，外部变化不会自动重放业务编辑。
     void VerifyBaselineLocked(bool existed, const FileSignature& baseline)
     {
         FileSignature current{};
@@ -488,7 +548,9 @@ class JsonFileState final
         }
     }
 
-    // 先准备序列化和快照，再检查权限及基线；提交完成后只执行不抛出的状态发布。
+    // 校验完整候选文档并提交文件及对应缓存版本。
+    // 入参：document：本次编辑后的完整 JSON；existed：编辑前文件是否存在；baseline：编辑前文件签名；调用方须持有文件锁。
+    // 返回：内容不变且可写或新内容提交成功时为 true；其他失败抛出异常，由上层转换为 false；提交成功后发布相同语义的缓存快照。
     bool CommitLocked(const nlohmann::json& document, bool existed, const FileSignature& baseline)
     {
         std::string serialized = document.dump(2);
@@ -548,16 +610,22 @@ class JsonFileManager::Impl final
     std::unordered_map<std::string, std::shared_ptr<JsonFileState>> files;
 };
 
-// 只由管理器建立文件入口，不执行文件访问。
+// 建立共享文件状态的业务访问句柄。
+// 入参：state：与其他句柄共享的文件状态，转入当前句柄。
+// 返回：构造函数无返回值；当前句柄延长共享状态的存活时间。
 JsonFileHandle::JsonFileHandle(std::shared_ptr<JsonFileState> state) noexcept : state_(std::move(state)) {}
 
-// 无效句柄仅表示获取入口失败，不代表特定磁盘错误。
+// 判断 JSON 文件句柄是否关联有效的管理状态。
+// 入参：无。
+// 返回：已关联文件状态时为 true；空句柄为 false，不检查磁盘文件是否存在或可访问。
 bool JsonFileHandle::IsValid() const noexcept
 {
     return this->state_ != nullptr;
 }
 
-// 将读取交给内部文件状态；无效入口不修改输出。
+// 读取当前磁盘 JSON 文档并向调用方提供独立副本。
+// 入参：document：输出参数，成功时接收完整 JSON 文档。
+// 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
 bool JsonFileHandle::Read(nlohmann::json& document) const noexcept
 {
     if (this->state_ == nullptr)
@@ -568,7 +636,9 @@ bool JsonFileHandle::Read(nlohmann::json& document) const noexcept
     return this->state_->Read(document);
 }
 
-// 明确整份写入，具体内容由业务提供。
+// 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
+// 入参：document：调用期间借用的完整替换文档。
+// 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
 bool JsonFileHandle::Write(const nlohmann::json& document) const noexcept
 {
     if (this->state_ == nullptr)
@@ -579,7 +649,9 @@ bool JsonFileHandle::Write(const nlohmann::json& document) const noexcept
     return this->state_->Write(document);
 }
 
-// 将业务编辑交给受同步保护的文件状态执行。
+// 在同一文件锁内编辑当前 JSON 文档并原子提交。
+// 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
+// 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
 bool JsonFileHandle::Write(const JsonDocumentEditor& editor) const noexcept
 {
     if (this->state_ == nullptr)
@@ -590,20 +662,28 @@ bool JsonFileHandle::Write(const JsonDocumentEditor& editor) const noexcept
     return this->state_->Write(editor);
 }
 
-// 创建唯一绑定表，不进行业务文件访问。
+// 创建进程 JSON 文件管理器的内部绑定表。
+// 入参：无。
+// 返回：构造函数无返回值；由 Instance 创建，分配失败可抛出异常。
 JsonFileManager::JsonFileManager() : impl_(std::make_unique<Impl>()) {}
 
-// 进程退出时释放强持有的全部文件状态。
+// 释放管理器持有的文件绑定和共享状态引用。
+// 入参：无。
+// 返回：析构函数无返回值；仍被外部句柄共享的状态由共享所有权决定生命周期。
 JsonFileManager::~JsonFileManager() = default;
 
-// 获取进程内单例，所有句柄通过同一张绑定表建立。
+// 取得供各业务模块复用的进程 JSON 文件管理器。
+// 入参：无。
+// 返回：唯一管理器的借用引用，调用方不得销毁该实例。
 JsonFileManager& JsonFileManager::Instance() noexcept
 {
     static JsonFileManager manager;
     return manager;
 }
 
-// 懒建立标识与路径绑定，复用已有状态并拒绝不一致的别名。
+// 建立或复用业务卡名与规范化文件路径的唯一绑定。
+// 入参：cardName：非空业务文件标识；filePath：拟绑定的 JSON 文件路径。
+// 返回：成功返回共享文件句柄；参数非法、绑定冲突或资源失败返回无效句柄，本调用不读取文件。
 JsonFileHandle JsonFileManager::GetFile(std::string_view cardName, const std::filesystem::path& filePath) noexcept
 {
     try
@@ -650,7 +730,9 @@ JsonFileHandle JsonFileManager::GetFile(std::string_view cardName, const std::fi
     return {};
 }
 
-// 测试私有清理入口，拒绝释放仍有外部使用者的文件。
+// 为隔离测试释放指定业务文件的管理器绑定。
+// 入参：cardName：要解除的业务文件标识。
+// 返回：无绑定或成功移除时为 true；仍有外部句柄持有状态或内部失败时为 false。
 bool JsonFileManager::ReleaseFile(std::string_view cardName) noexcept
 {
     try

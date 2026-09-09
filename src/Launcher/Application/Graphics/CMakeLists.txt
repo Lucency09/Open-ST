@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Graphics 模块的源码、公开头及构建依赖。
+
 # graphics 负责从原生冻结桌面派生 BGRA8 预览，并管理截图选区与覆盖窗口呈现。
 add_subdirectory(Capture)
 add_subdirectory(HDR)

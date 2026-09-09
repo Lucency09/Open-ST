@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Localization 的镜像测试目标、链接依赖及用例发现。
+
 add_executable(open_st_localization_tests source/ui_text_tests.cpp)
 
 target_link_libraries(open_st_localization_tests

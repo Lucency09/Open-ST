@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/CaptureToolbar 的镜像测试目标、链接依赖及用例发现。
+
 # 工具栏测试独立链接自身模块，防止借 Application 引入隐藏产品依赖。
 add_executable(open_st_capture_toolbar_tests
     source/toolbar_geometry_tests.cpp

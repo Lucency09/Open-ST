@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Settings 的镜像测试目标、链接依赖及用例发现。
+
 add_executable(open_st_settings_tests)
 
 # 真实窗口测试使用与产品一致的系统视觉样式。

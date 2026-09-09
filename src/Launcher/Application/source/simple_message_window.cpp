@@ -1,3 +1,5 @@
+// 用通用 Renderer 显示简单模态提示，并在退出时撤销活动窗口借用。
+
 #include "simple_message_window.h"
 
 #include <log.h>
@@ -5,7 +7,10 @@
 
 namespace open_st
 {
-// 文本已由 Application 本地化，布局不读取文件，也不引入设置字段或保存行为。
+// 显示带标题、正文和确认按钮的简单模态窗口。
+// 入参：owner、icon：借用的所属窗口及图标；title、message、confirmText：文本查询回调；activeRenderer：输出当前活动 Renderer
+// 的借用指针；processThreadMessage：可选线程消息处理回调。
+// 返回：正常关闭或 WM_QUIT 时 true；创建、运行或异常失败时 false；发布局部 Renderer 借用后，退出时撤销该借用。
 bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::function<std::wstring()>& title,
                                 const std::function<std::wstring()>& message,
                                 const std::function<std::wstring()>& confirmText, WindowRenderer*& activeRenderer,
@@ -24,7 +29,9 @@ bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::function<std:
         struct ActiveGuard
         {
             WindowRenderer*& active;
-            // 模态退出前清空借用指针，避免语言通知访问已析构的窗口。
+            // 在简单提示退出时撤销外部对局部 Renderer 的借用。
+            // 入参：无。
+            // 返回：析构函数无返回值；将 active 引用指向的指针置空。
             ~ActiveGuard()
             {
                 this->active = nullptr;
@@ -33,11 +40,20 @@ bool TryShowSimpleMessageWindow(HWND owner, HICON icon, const std::function<std:
         activeRenderer = &renderer;
         if (!renderer.LoadLayout(layout) ||
             !renderer.SetTextResolver(
+                // 为简单消息布局查询标题、正文或确认按钮文字。
+                // 入参：key：布局文本键；借用 title、message、confirmText 三个查询回调。
+                // 返回：title 或 message 键调用相应提供器；其他键返回确认按钮文字。
                 [&title, &message, &confirmText](std::string_view key)
                 { return key == "title"     ? title()
                          : key == "message" ? message()
                                             : confirmText(); }) ||
+            // 把确认或系统关闭动作转为简单提示窗口的延迟关闭请求。
+            // 入参：无显式入参；借用当前 renderer。
+            // 返回：无返回值；请求关闭，让当前回调先安全返回。
             !renderer.BindAction("confirm", [&renderer]() { (void)renderer.RequestClose(); }) ||
+            // 把确认或系统关闭动作转为简单提示窗口的延迟关闭请求。
+            // 入参：无显式入参；借用当前 renderer。
+            // 返回：无返回值；请求关闭，让当前回调先安全返回。
             !renderer.SetCloseHandler([&renderer]() { (void)renderer.RequestClose(); }) ||
             !renderer.SetDefaultAction("confirm"))
         {

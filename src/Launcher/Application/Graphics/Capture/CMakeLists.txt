@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Graphics/Capture 模块的源码、公开头及构建依赖。
+
 # capture 负责在任何遮罩窗口出现前按显示输出保留不可变 SDR/HDR 原生 plane。
 add_library(open_st_capture STATIC)
 add_library(OpenST::Capture ALIAS open_st_capture)

@@ -1,17 +1,23 @@
+// 文件职责：按冻结帧与选区边界计算互不重叠的外部变暗矩形，处理空选区和裁切边界。
+
 #include "outside_mask_layout.h"
 
 #include <algorithm>
 
 namespace
 {
-// 计算两个半开整数矩形的交集；不相交时返回空矩形。
+// 计算选区与帧边界重叠部分以生成外部遮罩。
+// 入参：first、second：虚拟桌面物理像素半开矩形。
+// 返回：两矩形的交集；无交集时返回空矩形。
 open_st::RectI IntersectRectangles(open_st::RectI first, open_st::RectI second) noexcept
 {
     return {std::max(first.left, second.left), std::max(first.top, second.top),
             std::min(first.right, second.right), std::min(first.bottom, second.bottom)};
 }
 
-// 只把非空遮罩条带追加到固定容量布局，避免绘制无效矩形。
+// 将有效遮罩矩形追加到固定容量布局中，跳过零面积条带。
+// 入参：layout：输入输出参数，保存遮罩矩形及数量；rectangle：待追加的物理像素半开矩形。
+// 返回：无返回值；矩形非空时写入布局并递增数量，空矩形不改变布局。
 void AppendIfNotEmpty(open_st::OutsideMaskLayout& layout, open_st::RectI rectangle) noexcept
 {
     if (!rectangle.IsEmpty() && layout.count < layout.rectangles.size())
@@ -24,7 +30,9 @@ void AppendIfNotEmpty(open_st::OutsideMaskLayout& layout, open_st::RectI rectang
 
 namespace open_st
 {
-// 将帧减去有效选区交集，按上、下、左、右顺序生成互不重叠的遮罩条带。
+// 将冻结帧中选区外区域拆成互不重叠的变暗矩形。
+// 入参：frameBounds：冻结帧物理像素边界；hasSelection：是否存在有效选区；selectionRectangle：选区的物理像素半开矩形。
+// 返回：最多四个外部遮罩矩形；无有效交集时覆盖全帧，选区覆盖全帧时布局为空。
 OutsideMaskLayout BuildOutsideMaskLayout(RectI frameBounds, bool hasSelection,
                                          RectI selectionRectangle) noexcept
 {

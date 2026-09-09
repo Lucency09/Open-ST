@@ -1,3 +1,5 @@
+// 声明业务 JSON 文件的共享句柄、原子编辑接口和命名绑定管理器。
+
 #pragma once
 
 #include <filesystem>
@@ -21,25 +23,36 @@ struct JsonFileTestAccess;
 class JsonFileHandle final
 {
   public:
-    // 创建无效句柄，可在取得实际文件入口后赋值。
+    // 创建暂未绑定文件状态的空句柄。
+    // 入参：无。
+    // 返回：构造函数无返回值；初始 IsValid() 为 false。
     JsonFileHandle() noexcept = default;
 
-    // 只检查入口有效性，不检查文件是否存在或可访问。
+    // 判断 JSON 文件句柄是否关联有效的管理状态。
+    // 入参：无。
+    // 返回：已关联文件状态时为 true；空句柄为 false，不检查磁盘文件是否存在或可访问。
     [[nodiscard]] bool IsValid() const noexcept;
-    // 返回当前有效 JSON 的独立副本；失败不改变输出，也不返回旧缓存冒充成功。
+    // 读取当前磁盘 JSON 文档并向调用方提供独立副本。
+    // 入参：document：输出参数，成功时接收完整 JSON 文档。
+    // 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
     [[nodiscard]] bool Read(nlohmann::json& document) const noexcept;
 
-    // 明确整份替换文档；缺失则安全创建，损坏或不可访问的已有文件不覆盖。
+    // 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
+    // 入参：document：调用期间借用的完整替换文档。
+    // 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
     [[nodiscard]] bool Write(const nlohmann::json& document) const noexcept;
 
-    // 在同文件锁内执行一次编辑并提交；编辑后空 optional 不是删除请求，而是取消。
-    // 同内容也检查当前写入条件，但不重写目标 JSON；成功不保证未来操作仍成功。
+    // 在同一文件锁内编辑当前 JSON 文档并原子提交。
+    // 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
+    // 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
     [[nodiscard]] bool Write(const JsonDocumentEditor& editor) const noexcept;
 
   private:
     friend class JsonFileManager;
 
-    // 由管理器创建指向其内部文件状态的入口。
+    // 建立共享文件状态的业务访问句柄。
+    // 入参：state：与其他句柄共享的文件状态，转入当前句柄。
+    // 返回：构造函数无返回值；当前句柄延长共享状态的存活时间。
     explicit JsonFileHandle(std::shared_ptr<JsonFileState> state) noexcept;
 
     std::shared_ptr<JsonFileState> state_;
@@ -49,25 +62,39 @@ class JsonFileHandle final
 class JsonFileManager final
 {
   public:
-    // 禁止复制进程内管理器。
+    // 禁止复制 JSON 文件管理器，保持进程中的文件绑定表唯一。
+    // 入参：未命名的 const JsonFileManager 引用：拟复制的源管理器。
+    // 返回：无；函数已删除，调用会导致编译错误。
     JsonFileManager(const JsonFileManager&) = delete;
-    // 禁止复制赋值，保持文件绑定唯一。
+    // 禁止复制 JSON 文件管理器，保持进程中的文件绑定表唯一。
+    // 入参：未命名的 const JsonFileManager 引用：拟复制的源管理器。
+    // 返回：无；函数已删除，调用会导致编译错误。
     JsonFileManager& operator=(const JsonFileManager&) = delete;
-    // 进程退出时释放管理器持有的文件状态。
+    // 释放管理器持有的文件绑定和共享状态引用。
+    // 入参：无。
+    // 返回：析构函数无返回值；仍被外部句柄共享的状态由共享所有权决定生命周期。
     ~JsonFileManager();
 
-    // 获取进程内唯一实例。
+    // 取得供各业务模块复用的进程 JSON 文件管理器。
+    // 入参：无。
+    // 返回：唯一管理器的借用引用，调用方不得销毁该实例。
     [[nodiscard]] static JsonFileManager& Instance() noexcept;
 
-    // 只建立或复用标识与路径绑定，不读盘；绑定冲突或参数无效时返回无效句柄。
+    // 建立或复用业务卡名与规范化文件路径的唯一绑定。
+    // 入参：cardName：非空业务文件标识；filePath：拟绑定的 JSON 文件路径。
+    // 返回：成功返回共享文件句柄；参数非法、绑定冲突或资源失败返回无效句柄，本调用不读取文件。
     [[nodiscard]] JsonFileHandle GetFile(std::string_view cardName, const std::filesystem::path& filePath) noexcept;
 
   private:
     friend struct JsonFileTestAccess;
     class Impl;
-    // 创建内部绑定表；只由 Instance 调用。
+    // 创建进程 JSON 文件管理器的内部绑定表。
+    // 入参：无。
+    // 返回：构造函数无返回值；由 Instance 创建，分配失败可抛出异常。
     JsonFileManager();
-    // 仅供隔离测试在没有外部句柄时解除绑定，正常业务不管理缓存生命周期。
+    // 为隔离测试释放指定业务文件的管理器绑定。
+    // 入参：cardName：要解除的业务文件标识。
+    // 返回：无绑定或成功移除时为 true；仍有外部句柄持有状态或内部失败时为 false。
     [[nodiscard]] bool ReleaseFile(std::string_view cardName) noexcept;
 
     std::unique_ptr<Impl> impl_;

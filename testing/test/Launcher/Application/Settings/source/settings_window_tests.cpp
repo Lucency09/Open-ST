@@ -1,3 +1,5 @@
+// 验证设置和欢迎窗口的实际控件交互、提交顺序、回调重入与失败重试。
+
 #include "json_file_test_access.h"
 #include "settings_internal.h"
 #include "settings_window_test_access.h"
@@ -24,6 +26,8 @@ struct ControlSearch
 };
 
 // 通过真实控件类型和文本定位，不依赖 Renderer 的内部数字 ID。
+// 入参：control 为当前枚举到的子控件句柄；parameter 为借用的查找条件及结果结构指针。
+// 返回：找到目标控件时返回 FALSE 停止枚举；未匹配时返回 TRUE 继续枚举。
 BOOL CALLBACK FindControl(HWND control, LPARAM parameter)
 {
     ControlSearch& search = *reinterpret_cast<ControlSearch*>(parameter);
@@ -40,6 +44,8 @@ BOOL CALLBACK FindControl(HWND control, LPARAM parameter)
 }
 
 // 只搜索当前测试线程的欢迎窗口，避免并行测试干扰其他进程。
+// 入参：无显式入参。
+// 返回：匹配控件或窗口的借用句柄；未找到时为 nullptr，调用方不取得销毁责任。
 HWND FindWelcomeWindow()
 {
     ControlSearch search{L"OpenST.WindowRenderer", L"welcome.title", nullptr};
@@ -51,6 +57,8 @@ class SettingsWindowTest : public testing::Test
 {
   protected:
     // 隔离文件绑定和磁盘目录，复制正式布局但不读取真实用户设置。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         open_st::ShutdownSettings();
@@ -72,6 +80,9 @@ class SettingsWindowTest : public testing::Test
             R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
         ASSERT_TRUE(open_st::InitializeSettings(this->root_));
         open_st::SettingsWindowTestAccess::SetConfirmation(this->window_,
+                                                           // 记录恢复默认确认次数，并返回用例指定的确认结果。
+                                                           // 入参：无显式入参。
+                                                           // 返回：confirm_，表示本用例模拟的恢复默认确认选择。
                                                            [this]()
                                                            {
                                                                ++this->confirmationCount_;
@@ -80,6 +91,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 在捕获对象销毁前关闭窗口，恢复属性并释放测试卡名。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         this->window_.Close();
@@ -95,6 +108,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 模拟外部编辑器修改隔离文件。
+    // 入参：relative 为相对隔离测试根目录的文件路径；content 为写入的原始文本。
+    // 返回：无返回值。
     void Write(const std::filesystem::path& relative, std::string_view content)
     {
         std::ofstream output(this->root_ / relative, std::ios::binary | std::ios::trunc);
@@ -104,13 +119,30 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 提供窄回调并记录真实持久化顺序，可模拟查询失败与生效失败。
+    // 入参：无显式入参。
+    // 返回：绑定测试夹具状态的设置窗口回调集合；夹具必须在窗口关闭前保持存活。
     open_st::SettingsWindowCallbacks Callbacks()
     {
         open_st::SettingsWindowCallbacks callbacks;
+        // 从测试文本入口取得随模拟语言变化的界面文本。
+        // 入参：key 为待查询的测试界面文本键。
+        // 返回：测试键对应的宽字符串；标题附加当前已生效语言以便断言刷新。
         callbacks.text = [this](std::string_view key) { return this->Text(key); };
+        // 模拟自启操作成功，不接触真实启动项。
+        // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+        // 返回：固定为 true，表示模拟自启设置成功。
         callbacks.startupApplied = [](bool) { return true; };
+        // 返回固定的模拟自启状态说明。
+        // 入参：无显式入参。
+        // 返回：固定的模拟自启状态文本 startup status。
         callbacks.startupStatus = []() { return L"startup status"; };
+        // 查询当前模拟已生效语言，区别于尚未保存的草稿。
+        // 入参：无显式入参。
+        // 返回：appliedLanguage_，表示模拟的已生效语言代码。
         callbacks.currentLanguage = [this]() { return this->appliedLanguage_; };
+        // 返回可用语言列表，或按开关注入查询异常。
+        // 入参：无显式入参。
+        // 返回：模拟的可用语言列表；启用异常开关时抛出异常。
         callbacks.availableLanguages = [this]()
         {
             if (this->queryThrows_)
@@ -119,6 +151,9 @@ class SettingsWindowTest : public testing::Test
             }
             return this->availableLanguages_;
         };
+        // 记录保存后的语言通知，模拟生效失败及回调内关闭重入。
+        // 入参：language 为保存完成后请求在运行期应用的语言代码。
+        // 返回：applySucceeds_，表示模拟运行期语言应用结果。
         callbacks.languageApplied = [this](std::string_view language)
         {
             ++this->appliedCount_;
@@ -136,7 +171,9 @@ class SettingsWindowTest : public testing::Test
         return callbacks;
     }
 
-    // 标题带运行语言，以观察成功后是否重新取文本。
+    // 解析设置窗口测试文案，以标题中的语言代码观察刷新是否生效。
+    // 入参：key 为待查询的测试界面文本键。
+    // 返回：测试键对应的宽字符串；标题附加当前已生效语言以便断言刷新。
     std::wstring Text(std::string_view key) const
     {
         const std::string value =
@@ -145,6 +182,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 创建真实窗口并立即隐藏，只通过本线程消息进行自动交互。
+    // 入参：无显式入参。
+    // 返回：成功创建的借用设置窗口句柄；创建失败为 nullptr。
     HWND Open()
     {
         if (!this->window_.Show(GetModuleHandleW(nullptr), this->Callbacks()))
@@ -157,6 +196,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 从借用父窗递归查询控件，避免全局窗口搜索。
+    // 入参：className 为要匹配的原生控件类名；text 为可选匹配文字，空值表示不限文字。
+    // 返回：匹配控件或窗口的借用句柄；未找到时为 nullptr，调用方不取得销毁责任。
     HWND Control(std::wstring className, std::wstring text = {}) const
     {
         ControlSearch search{std::move(className), std::move(text), nullptr};
@@ -166,6 +207,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 限量派发延迟关闭，避免自动测试无限等待消息。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Pump()
     {
         MSG message{};
@@ -180,6 +223,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 选择项目后向实际父容器发送通知；CB_SETCURSEL 本身不能模拟用户编辑。
+    // 入参：language 为要选中的语言项文本，必须存在于当前下拉列表。
+    // 返回：无返回值。
     void Select(const wchar_t* language)
     {
         const HWND combo = this->Control(L"ComboBox");
@@ -194,6 +239,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 真实按钮点击后派发可能产生的延迟关闭。
+    // 入参：key 为要点击按钮的测试文本键。
+    // 返回：无返回值。
     void Click(std::string_view key)
     {
         const HWND button = this->Control(L"Button", this->Text(key));
@@ -204,6 +251,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 展开通知刷新选项，不实际弹出下拉窗口。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void RefreshOptions()
     {
         const HWND combo = this->Control(L"ComboBox");
@@ -214,6 +263,8 @@ class SettingsWindowTest : public testing::Test
     }
 
     // 在独立 CTest 进程中显式建立线程消息队列后投递自动交互。
+    // 入参：message 为向本线程投递的自动交互消息编号。
+    // 返回：线程消息投递成功时为 true，否则为 false。
     bool QueueWelcomeMessage(UINT message)
     {
         MSG existing{};
@@ -234,7 +285,9 @@ class SettingsWindowTest : public testing::Test
     open_st::SettingsWindow window_;
 };
 
-// 选择只改草稿，取消不写入也不切换运行语言。
+// 验证选择只改草稿，取消不写入也不切换运行语言。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, cancel_does_not_save_or_notify)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -245,7 +298,9 @@ TEST_F(SettingsWindowTest, cancel_does_not_save_or_notify)
     EXPECT_EQ(this->appliedCount_, 0);
 }
 
-// 应用先保存后通知并保持窗口，无新修改的确定只关闭。
+// 验证应用先保存后通知并保持窗口，无新修改的确定只关闭。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, apply_keeps_window_and_accept_does_not_notify_twice)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -259,7 +314,9 @@ TEST_F(SettingsWindowTest, apply_keeps_window_and_accept_does_not_notify_twice)
     EXPECT_EQ(this->appliedCount_, 1);
 }
 
-// 确定带草稿时使用统一提交入口，生效成功后关闭。
+// 验证确定带草稿时使用统一提交入口，生效成功后关闭。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, accept_saves_before_notifying_and_closes)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -270,7 +327,9 @@ TEST_F(SettingsWindowTest, accept_saves_before_notifying_and_closes)
     EXPECT_EQ(this->appliedCount_, 1);
 }
 
-// 选项消失不能替用户改选，重新出现后应仍能提交原草稿。
+// 验证选项消失不能替用户改选，重新出现后应仍能提交原草稿。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, disappearing_option_preserves_intent)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -287,7 +346,9 @@ TEST_F(SettingsWindowTest, disappearing_option_preserves_intent)
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
 }
 
-// 写入失败保留窗口，不能提前调用生效回调。
+// 验证写入失败保留窗口，不能提前调用生效回调。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, save_failure_never_notifies)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -300,7 +361,9 @@ TEST_F(SettingsWindowTest, save_failure_never_notifies)
     EXPECT_NE(this->Control(L"Static", L"settings.save_failed"), nullptr);
 }
 
-// 生效失败后文件改只读仍可重试成功，证明没有再次写盘。
+// 验证生效失败后文件改只读仍可重试成功，证明没有再次写盘。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, application_retry_does_not_write_again)
 {
     this->applySucceeds_ = false;
@@ -317,7 +380,9 @@ TEST_F(SettingsWindowTest, application_retry_does_not_write_again)
     EXPECT_EQ(this->appliedLanguage_, "zh-CN");
 }
 
-// 重试前外部修改必须阻止旧目标生效。
+// 验证重试前外部修改必须阻止旧目标生效。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, retry_detects_external_change)
 {
     this->applySucceeds_ = false;
@@ -331,7 +396,9 @@ TEST_F(SettingsWindowTest, retry_detects_external_change)
     EXPECT_NE(this->Control(L"Static", L"settings.conflict"), nullptr);
 }
 
-// 冲突重载需确认，拒绝保留草稿，接受读取最新基线。
+// 验证冲突重载需确认，拒绝保留草稿，接受读取最新基线。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, conflict_reload_requires_confirmation)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -350,7 +417,9 @@ TEST_F(SettingsWindowTest, conflict_reload_requires_confirmation)
     EXPECT_EQ(this->appliedCount_, 0);
 }
 
-// 默认恢复仅改草稿，取消不能覆盖已存用户值。
+// 验证默认恢复仅改草稿，取消不能覆盖已存用户值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, restore_defaults_only_changes_draft)
 {
     ASSERT_TRUE(open_st::SetStringSetting("ui.language", "zh-CN"));
@@ -363,7 +432,9 @@ TEST_F(SettingsWindowTest, restore_defaults_only_changes_draft)
     EXPECT_EQ(open_st::GetStringSetting("ui.language"), "zh-CN");
 }
 
-// 损坏读取允许打开可恢复窗口，修复后重载不必重建窗口。
+// 验证损坏读取允许打开可恢复窗口，修复后重载不必重建窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, damaged_user_can_reload_without_recreating_window)
 {
     this->Write("data/settings.json", "{broken");
@@ -380,7 +451,9 @@ TEST_F(SettingsWindowTest, damaged_user_can_reload_without_recreating_window)
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
 }
 
-// 重复打开保留草稿，应用成功重新取文本而不重建界面。
+// 验证重复打开保留草稿，应用成功重新取文本而不重建界面。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, repeated_show_preserves_draft_and_refreshes_text)
 {
     const HWND window = this->Open();
@@ -394,7 +467,9 @@ TEST_F(SettingsWindowTest, repeated_show_preserves_draft_and_refreshes_text)
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
 }
 
-// 查询异常转成可见错误，不越过窗口边界且不能保存。
+// 验证查询异常转成可见错误，不越过窗口边界且不能保存。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, query_exception_prevents_save)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -407,7 +482,9 @@ TEST_F(SettingsWindowTest, query_exception_prevents_save)
     EXPECT_NE(this->Control(L"Static", L"settings.language.query_failed"), nullptr);
 }
 
-// 页面改名后恢复默认仍按实际字段所属页执行，不硬编码 general。
+// 验证页面改名后恢复默认仍按实际字段所属页执行，不硬编码 general。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, renamed_page_still_restores_bound_field)
 {
     nlohmann::json layout;
@@ -424,7 +501,9 @@ TEST_F(SettingsWindowTest, renamed_page_still_restores_bound_field)
     EXPECT_EQ(SendMessageW(this->Control(L"ComboBox"), CB_GETCURSEL, 0, 0), 0);
 }
 
-// 默认语言不可用时恢复失败保持现有草稿，不能显示并接受无效默认值。
+// 验证默认语言不可用时恢复失败保持现有草稿，不能显示并接受无效默认值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, unavailable_default_preserves_current_draft)
 {
     ASSERT_NE(this->Open(), nullptr);
@@ -436,7 +515,9 @@ TEST_F(SettingsWindowTest, unavailable_default_preserves_current_draft)
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
 }
 
-// 生效回调重入 Close 必须延迟销毁，返回后正常完成且不访问释放内存。
+// 验证生效回调重入 Close 必须延迟销毁，返回后正常完成且不访问释放内存。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, close_inside_application_callback_is_deferred)
 {
     this->closeInCallback_ = true;
@@ -447,11 +528,16 @@ TEST_F(SettingsWindowTest, close_inside_application_callback_is_deferred)
     EXPECT_EQ(this->savedAtNotification_, "zh-CN");
     EXPECT_FALSE(this->window_.IsOpen());
 }
-// 自启失败留下重试目标，语言成功后不重复调用，重试拒绝覆盖外部改变。
+// 验证自启失败留下重试目标，语言成功后不重复调用，重试拒绝覆盖外部改变。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, startup_failure_retries_without_reapplying_language)
 {
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
     int startupCalls = 0;
+    // 核对自启意图已保存，首次模拟失败、后续调用成功。
+    // 入参：enabled 为已保存的自启启用意图，用于核验持久化先于系统回调。
+    // 返回：首次调用为 false，后续调用为 true，模拟失败后重试成功。
     callbacks.startupApplied = [&startupCalls](bool enabled)
     {
         EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), enabled);
@@ -472,11 +558,16 @@ TEST_F(SettingsWindowTest, startup_failure_retries_without_reapplying_language)
     EXPECT_FALSE(this->window_.IsOpen());
 }
 
-// 显式修复不需要制造草稿变化，也不保存其他待编辑字段。
+// 验证显式修复不需要制造草稿变化，也不保存其他待编辑字段。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, repair_applies_saved_startup_without_committing_language_draft)
 {
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
     int startupCalls = 0;
+    // 核对修复请求使用已保存的启用意图，并累计系统调用次数。
+    // 入参：enabled 为已保存的自启启用意图，用于核验持久化先于系统回调。
+    // 返回：固定为 true，表示模拟自启设置成功。
     callbacks.startupApplied = [&startupCalls](bool enabled)
     {
         EXPECT_TRUE(enabled);
@@ -491,12 +582,17 @@ TEST_F(SettingsWindowTest, repair_applies_saved_startup_without_committing_langu
     EXPECT_EQ(this->appliedCount_, 0);
 }
 
-// 欢迎关闭完全不保存，自动用例通过线程消息驱动真实模态窗口。
+// 验证欢迎关闭完全不保存，自动用例通过线程消息驱动真实模态窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, welcome_cancel_leaves_saved_intent_unchanged)
 {
     open_st::WelcomeWindow welcome;
     int startupCalls = 0;
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 记录模拟自启调用，供断言取消欢迎窗口不会触发系统副作用。
+    // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+    // 返回：固定为 true，表示模拟自启设置成功。
     callbacks.startupApplied = [&startupCalls](bool)
     {
         ++startupCalls;
@@ -504,6 +600,9 @@ TEST_F(SettingsWindowTest, welcome_cancel_leaves_saved_intent_unchanged)
     };
     ASSERT_TRUE(this->QueueWelcomeMessage(WM_APP + 91));
     const bool completed = welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                                             // 消费测试线程消息并关闭欢迎窗口，模拟用户取消。
+                                             // 入参：message 为模态循环当前取得的线程消息，按测试消息编号决定是否消费。
+                                             // 返回：测试消息已消费时为 true；其他消息为 false，交由模态循环继续处理。
                                              [](MSG& message)
                                              {
                                                  if (message.message != WM_APP + 91)
@@ -522,12 +621,17 @@ TEST_F(SettingsWindowTest, welcome_cancel_leaves_saved_intent_unchanged)
     EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), false);
 }
 
-// 欢迎先保存确认标记和意图，系统失败后再次确认只重试系统。
+// 验证欢迎先保存确认标记和意图，系统失败后再次确认只重试系统。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, welcome_saves_before_system_effect_and_retries)
 {
     open_st::WelcomeWindow welcome;
     int startupCalls = 0;
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 核对欢迎标记和自启意图先落盘，第二次系统调用才成功。
+    // 入参：enabled 为已保存的自启启用意图，用于核验持久化先于系统回调。
+    // 返回：仅第二次调用为 true，模拟欢迎确认后的系统操作重试。
     callbacks.startupApplied = [&startupCalls](bool enabled)
     {
         EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), true);
@@ -538,6 +642,9 @@ TEST_F(SettingsWindowTest, welcome_saves_before_system_effect_and_retries)
     int clicks = 0;
     const bool completed =
         welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                          // 按测试线程消息连续触发欢迎确认，验证系统失败后的重试。
+                          // 入参：message 为模态循环当前取得的线程消息，按测试消息编号决定是否消费。
+                          // 返回：测试消息已消费时为 true；其他消息为 false，交由模态循环继续处理。
                           [&clicks](MSG& message)
                           {
                               if (message.message != WM_APP + 92)
@@ -559,11 +666,16 @@ TEST_F(SettingsWindowTest, welcome_saves_before_system_effect_and_retries)
     EXPECT_TRUE(completed);
     EXPECT_EQ(startupCalls, 2);
 }
-// 外部改写已保存意图后，旧窗口的待生效目标不能覆盖新值。
+// 验证外部改写已保存意图后，旧窗口的待生效目标不能覆盖新值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, startup_retry_rejects_external_saved_choice)
 {
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
     int calls = 0;
+    // 累计并拒绝模拟自启请求，保留待重试状态。
+    // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+    // 返回：固定为 false，模拟自启系统操作失败。
     callbacks.startupApplied = [&calls](bool)
     {
         ++calls;
@@ -579,10 +691,15 @@ TEST_F(SettingsWindowTest, startup_retry_rejects_external_saved_choice)
     EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
 }
 
-// 已显示状态保存为本地化键，外部切换语言后不保留旧译文。
+// 验证已显示状态保存为本地化键，外部切换语言后不保留旧译文。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, refresh_texts_relocalizes_existing_status)
 {
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 为已保存状态附带模拟运行语言，验证刷新时重新解析文本。
+    // 入参：key 为待查询的测试界面文本键。
+    // 返回：保存状态键附加模拟语言的文本；其他键使用夹具的常规文本。
     callbacks.text = [this](std::string_view key)
     {
         if (key == "settings.saved")
@@ -601,7 +718,9 @@ TEST_F(SettingsWindowTest, refresh_texts_relocalizes_existing_status)
     EXPECT_NE(this->Control(L"Static", L"settings.saved:ja-JP"), nullptr);
     EXPECT_EQ(this->Control(L"Static", L"settings.saved:zh-CN"), nullptr);
 }
-// 无效创建参数属于故障，不能当作正常取消静默忽略。
+// 验证无效创建参数属于故障，不能当作正常取消静默忽略。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, welcome_reports_creation_failure)
 {
     open_st::WelcomeWindow welcome;
@@ -609,14 +728,22 @@ TEST_F(SettingsWindowTest, welcome_reports_creation_failure)
     EXPECT_TRUE(welcome.Failed());
     EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), false);
 }
-// 系统操作失败后的退出保留已确认标记，下次启动不会再次首次欢迎。
+// 验证系统操作失败后的退出保留已确认标记，下次启动不会再次首次欢迎。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, welcome_system_failure_exit_preserves_completion)
 {
     open_st::WelcomeWindow welcome;
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 模拟自启操作失败，保留欢迎确认后等待处理的状态。
+    // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+    // 返回：固定为 false，模拟自启系统操作失败。
     callbacks.startupApplied = [](bool) { return false; };
     ASSERT_TRUE(this->QueueWelcomeMessage(WM_APP + 93));
     EXPECT_FALSE(welcome.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks),
+                                   // 按测试线程消息先确认欢迎再退出，验证系统失败不撤销确认标记。
+                                   // 入参：message 为模态循环当前取得的线程消息，按测试消息编号决定是否消费。
+                                   // 返回：测试消息已消费时为 true；其他消息为 false，交由模态循环继续处理。
                                    [](MSG& message)
                                    {
                                        if (message.message != WM_APP + 93)
@@ -638,16 +765,24 @@ TEST_F(SettingsWindowTest, welcome_system_failure_exit_preserves_completion)
     EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), true);
     EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
 }
-// 忙状态通知即使抛出异常仍成对恢复，副作用失败后窗口可继续交互。
+// 验证忙状态通知即使抛出异常仍成对恢复，副作用失败后窗口可继续交互。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsWindowTest, busy_notifications_are_paired_after_failure)
 {
     open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
     std::vector<bool> states;
+    // 记录成对忙状态通知并抛出异常，验证通知失败仍恢复交互。
+    // 入参：busy 为窗口通知的忙状态，true 表示进入操作，false 表示退出操作。
+    // 返回：无返回值。
     callbacks.busyChanged = [&states](bool busy)
     {
         states.push_back(busy);
         throw std::runtime_error("notification failure");
     };
+    // 模拟系统副作用抛出异常，检查窗口失败处理与忙状态恢复。
+    // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+    // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
     callbacks.startupApplied = [](bool) -> bool { throw std::runtime_error("system failure"); };
     ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
     this->Click("settings.startup.label");

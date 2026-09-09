@@ -1,3 +1,5 @@
+// 文件职责：验证原生 HDR 色调映射的输出、行跨度、输入拒绝和重复调用，并识别图形环境限制。
+
 #include <gtest/gtest.h>
 
 #include <color_conversion.h>
@@ -18,7 +20,9 @@
 
 namespace
 {
-// 生成紧凑、不透明的 FP16 灰阶，亮度单位为 scRGB（1.0 等于 80 nit）。
+// 把给定灰阶亮度编码为 FP16 RGBA 图像，用于验证色调映射顺序与高光分离。
+// 入参：levels：逐像素线性 scRGB 灰阶，1.0 对应 80 nit。
+// 返回：紧凑 FP16 RGBA 字节缓冲区，每像素 RGB 等于对应灰阶且 alpha 为 1.0。
 std::vector<std::uint8_t> MakeGrayPixels(std::span<const float> levels)
 {
     std::vector<std::uint8_t> pixels(levels.size() * 8U);
@@ -35,7 +39,9 @@ std::vector<std::uint8_t> MakeGrayPixels(std::span<const float> levels)
 class NativeToneMapperIntegrationTest : public testing::Test
 {
   protected:
-    // 检查独立于被测转换器的硬件平台前提，避免把产品初始化失败误作跳过。
+    // 在每个图形集成用例运行前验证独立于被测函数的 Windows 图形平台前提。
+    // 入参：无。
+    // 返回：无返回值；平台前提不满足时标记跳过，平台查询错误按断言报告失败。
     void SetUp() override
     {
         Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
@@ -61,6 +67,8 @@ class NativeToneMapperIntegrationTest : public testing::Test
 } // namespace
 
 // 验证零尺寸、未知格式、短 stride、短缓冲和溢出尺寸明确失败并清空旧输出。
+// 入参：无运行时形参；宏参数 NativeToneMapperValidationTest 为测试套件，rejects_invalid_views_and_clears_output 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(NativeToneMapperValidationTest, rejects_invalid_views_and_clears_output)
 {
     open_st::NativeToneMapper mapper;
@@ -86,6 +94,8 @@ TEST(NativeToneMapperValidationTest, rejects_invalid_views_and_clears_output)
 }
 
 // 验证 FP16 各颜色通道的 NaN 和正负无穷不进入原生效果，失败后不返回旧像素。
+// 入参：无运行时形参；宏参数 NativeToneMapperValidationTest 为测试套件，rejects_nonfinite_color_channels 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(NativeToneMapperValidationTest, rejects_nonfinite_color_channels)
 {
     open_st::NativeToneMapper mapper;
@@ -107,6 +117,8 @@ TEST(NativeToneMapperValidationTest, rejects_nonfinite_color_channels)
 }
 
 // 验证黑位、灰阶单调、260 nit 桌面白和更亮高光；只约束可用范围，不锁定驱动曲线。
+// 入参：无运行时形参；宏参数 NativeToneMapperIntegrationTest 为测试套件，preserves_black_gray_order_and_highlight_separation 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(NativeToneMapperIntegrationTest, preserves_black_gray_order_and_highlight_separation)
 {
     const std::array<float, 7> levels{0.0F, 0.18F, 1.0F, 2.0F, 3.25F, 5.0F, 12.5F};
@@ -140,6 +152,8 @@ TEST_F(NativeToneMapperIntegrationTest, preserves_black_gray_order_and_highlight
 }
 
 // 验证负 scRGB 色域分量可处理且 alpha 被统一为不透明，不把合法负值作为输入错误。
+// 入参：无运行时形参；宏参数 NativeToneMapperIntegrationTest 为测试套件，accepts_negative_gamut_components 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(NativeToneMapperIntegrationTest, accepts_negative_gamut_components)
 {
     const std::array<std::uint16_t, 4> rgba{open_st::EncodeFloat16(3.0F), open_st::EncodeFloat16(-0.2F),
@@ -156,6 +170,8 @@ TEST_F(NativeToneMapperIntegrationTest, accepts_negative_gamut_components)
 }
 
 // 验证带行尾填充的 FP16 输入不把 padding 当像素，并在不同尺寸间复用同一转换器。
+// 入参：无运行时形参；宏参数 NativeToneMapperIntegrationTest 为测试套件，respects_padded_stride_and_changes_dimensions 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(NativeToneMapperIntegrationTest, respects_padded_stride_and_changes_dimensions)
 {
     const std::array<float, 4> levels{0.0F, 1.0F, 3.25F, 12.5F};
@@ -173,6 +189,8 @@ TEST_F(NativeToneMapperIntegrationTest, respects_padded_stride_and_changes_dimen
 }
 
 // 记录同一进程 4K 首次与热运行的真实耗时及显式释放前后内存，不把硬件性能设为固定门槛。
+// 入参：无运行时形参；宏参数 NativeToneMapperIntegrationTest 为测试套件，reports_4k_conversion_timing_and_resource_release 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(NativeToneMapperIntegrationTest, reports_4k_conversion_timing_and_resource_release)
 {
     constexpr std::uint32_t WIDTH = 3840U;
@@ -222,6 +240,8 @@ TEST_F(NativeToneMapperIntegrationTest, reports_4k_conversion_timing_and_resourc
 }
 
 // 验证 RGB10A2 解码后与等价 FP16 输入逐字节一致；黑位质量由独立 1000 nit 灰阶测试约束。
+// 入参：无运行时形参；宏参数 NativeToneMapperIntegrationTest 为测试套件，converts_rgb10_scrgb_and_hdr10 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST_F(NativeToneMapperIntegrationTest, converts_rgb10_scrgb_and_hdr10)
 {
     const std::array<std::uint32_t, 2> packed{0U, 0x3FFFFFFFU};

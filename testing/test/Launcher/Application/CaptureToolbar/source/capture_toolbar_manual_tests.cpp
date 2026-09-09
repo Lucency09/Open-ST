@@ -1,3 +1,5 @@
+// 提供截图工具栏的独立人工交互宿主，使用模拟命令等待真人验收。
+
 #include <capture_toolbar.h>
 
 #include <array>
@@ -13,9 +15,13 @@ constexpr UINT COMMAND_MESSAGE = WM_APP + 17;
 class DpiScope final
 {
   public:
-    // 采用与产品一致的 Per-Monitor V2 坐标语义。
+    // 为人工工具栏测试临时启用 Per-Monitor V2 DPI 坐标语义。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     DpiScope() : previous_(SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {}
-    // 避免同进程的后续测试继承本用例设置。
+    // 恢复人工工具栏测试前的线程 DPI 上下文。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~DpiScope()
     {
         if (this->previous_ != nullptr)
@@ -36,6 +42,8 @@ struct ManualWindow final
     bool failed{};
 
     // 提前断开工具栏回调，再清理可能因断言失败而遗留的宿主。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~ManualWindow()
     {
         this->toolbar.Close();
@@ -46,7 +54,9 @@ struct ManualWindow final
         }
     }
 
-    // 示意选区保留固定 DIP 边距，随宿主大小与 DPI 变化。
+    // 计算人工测试宿主中的示意选区，使边距随当前 DPI 缩放。
+    // 入参：无显式入参。
+    // 返回：宿主客户区内示意选区的物理像素矩形，边距按当前 DPI 从 DIP 换算。
     RECT Selection() const noexcept
     {
         RECT client{};
@@ -59,6 +69,8 @@ struct ManualWindow final
     }
 
     // 将示意选区适配为物理屏幕坐标，不借用真实截图模块。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Place()
     {
         if (this->toolbar.NativeHandle() == nullptr || IsIconic(this->window))
@@ -84,6 +96,8 @@ struct ManualWindow final
     }
 
     // 用系统借用画刷绘制背景和选区，不捕获桌面也不创建输出文件。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Paint() const noexcept
     {
         PAINTSTRUCT paint{};
@@ -111,6 +125,8 @@ struct ManualWindow final
     }
 
     // 窗口过程负责假命令和移动通知；按钮回调只投递消息，避免同步销毁。
+    // 入参：window 为接收消息的测试宿主窗口；message 为消息编号；wParam、lParam 为消息专属附加数据。
+    // 返回：已处理消息对应的 Win32 结果；其余消息返回 DefWindowProcW 的处理结果。
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
     {
         ManualWindow* state = reinterpret_cast<ManualWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -183,7 +199,9 @@ struct ManualWindow final
     }
 };
 
-// 显式开启后主动显示真实工具栏并无限等待人工关闭；复制、保存使用无输出假命令。
+// 验证显式开启后主动显示真实工具栏并无限等待人工关闭；复制、保存使用无输出假命令。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(ToolbarManualTest, waits_for_user_close)
 {
     std::array<wchar_t, 8> enabled{};
@@ -210,6 +228,9 @@ TEST(ToolbarManualTest, waits_for_user_close)
         {{open_st::CaptureToolbarCommand::Cancel, open_st::ToolbarIcon::Cancel, "cancel", 0},
          {open_st::CaptureToolbarCommand::Save, open_st::ToolbarIcon::Save, "save", 1},
          {open_st::CaptureToolbarCommand::Copy, open_st::ToolbarIcon::Copy, "copy", 1}},
+        // 提供人工工具栏标题和按钮提示文本，未知键原样显示。
+        // 入参：key 为待查询的测试界面文本键。
+        // 返回：人工工具栏标题或按键对应的取消、保存、复制提示文字。
         [](std::string_view key)
         {
             if (key == "capture.toolbar.title")
@@ -220,6 +241,9 @@ TEST(ToolbarManualTest, waits_for_user_close)
                    : key == "save" ? std::wstring(L"保存（Ctrl+S）")
                                    : std::wstring(L"复制（Ctrl+C / Enter）");
         },
+        // 将工具栏命令和代次异步投递给测试宿主，不执行真实业务输出。
+        // 入参：command 为人工工具栏提交的命令；token 为工具栏携带的代次，按原值投递给宿主。
+        // 返回：成功向测试宿主投递命令消息时为 true，否则为 false。
         [&state](open_st::CaptureToolbarCommand command, std::uint64_t token)
         {
             return PostMessageW(state.window, COMMAND_MESSAGE, static_cast<WPARAM>(command),

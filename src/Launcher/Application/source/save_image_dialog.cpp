@@ -1,3 +1,5 @@
+// 配置并显示系统图片保存对话框，返回用户选择的路径与编码格式。
+
 #include "save_image_dialog.h"
 #include <format>
 #include <memory>
@@ -10,7 +12,9 @@ namespace
 // 释放 Shell 以 COM task allocator 返回的路径字符串。
 struct TaskMemoryDeleter final
 {
-    // 接管 GetDisplayName 返回值的唯一释放职责。
+    // 释放 Shell 返回的 COM 任务分配字符串。
+    // 入参：value：GetDisplayName 返回的字符串指针，可为 nullptr。
+    // 返回：无返回值；调用 CoTaskMemFree，释放后不能继续使用 value。
     void operator()(wchar_t* value) const noexcept
     {
         CoTaskMemFree(value);
@@ -19,7 +23,9 @@ struct TaskMemoryDeleter final
 } // namespace
 namespace open_st
 {
-// 配置系统过滤器、扩展名、默认文件名与覆盖确认，不创建任何临时截图文件。
+// 让用户选择截图保存路径及 PNG 或 JPEG 编码格式。
+// 入参：owner：借用的所属窗口；lastDirectory：上次目录，空或失效时使用系统默认；target：成功时输出目标；errorMessage：失败诊断输出；调用线程须初始化 STA COM。
+// 返回：确认返回 Accepted；取消返回 Cancelled 且保留 target；系统失败返回 Failed 并写诊断。
 SaveChoice ShowSaveImageDialog(HWND owner, const std::filesystem::path& lastDirectory, SaveImageTarget& target,
                                std::wstring& errorMessage)
 {

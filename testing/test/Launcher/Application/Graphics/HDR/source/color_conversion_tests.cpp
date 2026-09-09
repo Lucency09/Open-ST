@@ -1,3 +1,5 @@
+// 文件职责：验证颜色传递函数、HDR10 色域转换与浮点编解码的数值和边界行为。
+
 #include <gtest/gtest.h>
 
 #include <color_conversion.h>
@@ -7,6 +9,8 @@
 #include <limits>
 
 // 验证 binary16 的零、次正规数、普通数和非有限位模式被正确展开。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，decodes_binary16_special_and_finite_values 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, decodes_binary16_special_and_finite_values)
 {
     EXPECT_FLOAT_EQ(open_st::DecodeFloat16(0x0000U), 0.0F);
@@ -20,6 +24,8 @@ TEST(HdrToneMapperTest, decodes_binary16_special_and_finite_values)
 }
 
 // 验证全部有限 binary16 值经 binary32 编码往返不损失符号、次正规数、负值和高光。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，round_trips_all_finite_half_values_without_clipping 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, round_trips_all_finite_half_values_without_clipping)
 {
     for (std::uint32_t bits = 0U; bits <= 0xFFFFU; ++bits)
@@ -34,6 +40,8 @@ TEST(HdrToneMapperTest, round_trips_all_finite_half_values_without_clipping)
 }
 
 // 验证编码采用最近偶数舍入，并明确处理 binary16 的上溢和非有限值。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，encodes_half_rounding_and_special_values 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, encodes_half_rounding_and_special_values)
 {
     EXPECT_EQ(open_st::EncodeFloat16(1.00048828125F), 0x3C00U);
@@ -45,6 +53,8 @@ TEST(HdrToneMapperTest, encodes_half_rounding_and_special_values)
 }
 
 // 验证 sRGB 界面颜色采用分段解码而不是 gamma2.2 近似，函数自身不乘 SDR 白比例。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，decodes_srgb_ui_color_without_white_scaling 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, decodes_srgb_ui_color_without_white_scaling)
 {
     EXPECT_FLOAT_EQ(open_st::SrgbToLinear(0.0F), 0.0F);
@@ -54,6 +64,8 @@ TEST(HdrToneMapperTest, decodes_srgb_ui_color_without_white_scaling)
 }
 
 // 验证 RGB10A2 的通道位域顺序和 10 位到 8 位量化边界。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，decodes_rgb10_channel_order 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, decodes_rgb10_channel_order)
 {
     constexpr std::uint32_t redMaximum = 0x000003FFU;
@@ -74,6 +86,8 @@ TEST(HdrToneMapperTest, decodes_rgb10_channel_order)
 }
 
 // 验证 HDR10 的 PQ 峰值转换为高于 SDR 参考白的中性 scRGB，不执行色调映射或提前截断。
+// 入参：无运行时形参；宏参数 HdrToneMapperTest 为测试套件，decodes_hdr10_peak_white_to_extended_sc_rgb 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(HdrToneMapperTest, decodes_hdr10_peak_white_to_extended_sc_rgb)
 {
     constexpr std::uint32_t rgbMaximum = 0x3FFFFFFFU;

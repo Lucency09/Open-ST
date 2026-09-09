@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Graphics/HDR 模块的源码、公开头及构建依赖。
+
 # HDR 独立拥有颜色解码与 Windows 原生色调映射，不反向依赖 Graphics 或兄弟 Capture。
 add_library(open_st_hdr STATIC)
 add_library(OpenST::HDR ALIAS open_st_hdr)

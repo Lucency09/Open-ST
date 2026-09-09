@@ -1,6 +1,8 @@
-# 创建一个只传播编译要求、不产生 .lib 或 .dll 的 INTERFACE 目标。
-# 各源码模块只要链接 open_st_project_options，就能获得完全一致的基础编译设置，
-# 避免在每个模块中重复维护 C++ 标准、宏定义和警告参数。
+# 定义统一项目编译规则函数，集中配置 C++ 标准、Windows 宏与 MSVC 警告。
+
+# 创建统一传播 C++ 标准、Windows 宏和 MSVC 警告规则的 INTERFACE 目标。
+# 入参：无显式参数；读取 OPEN_ST_ALLOW_WARNINGS 决定是否启用 /WX。
+# 返回：无返回值；创建 open_st_project_options 供模块链接，本目标不产生库文件。
 function(open_st_create_project_options)
     add_library(open_st_project_options INTERFACE)
 

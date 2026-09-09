@@ -1,3 +1,5 @@
+// 定义应用托盘菜单等原生资源命令标识，供消息分派使用。
+
 #pragma once
 
 // TrackPopupMenu 选中后通过 WM_COMMAND 返回这些 ID；只在 application 模块内部使用。

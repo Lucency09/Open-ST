@@ -1,3 +1,5 @@
+# 配置 Launcher/Application 的镜像测试目标、链接依赖及用例发现。
+
 # application 会话测试使用隐藏 HWND 验证逐输出登记与同步销毁边界，不显示桌面遮罩。
 add_subdirectory(CaptureToolbar)
 add_subdirectory(Localization)

@@ -1,3 +1,5 @@
+# 配置 Common/WindowRenderer 模块的源码、公开头及构建依赖。
+
 add_library(open_st_window_renderer STATIC)
 add_library(OpenST::WindowRenderer ALIAS open_st_window_renderer)
 target_sources(open_st_window_renderer

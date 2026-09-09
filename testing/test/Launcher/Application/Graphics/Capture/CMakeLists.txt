@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Graphics/Capture 的镜像测试目标、链接依赖及用例发现。
+
 # capture 模型测试覆盖虚拟桌面几何、帧内存布局、原生 plane 所有权和旋转复制。
 add_executable(
     open_st_capture_model_tests

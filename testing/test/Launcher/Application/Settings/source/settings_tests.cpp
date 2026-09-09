@@ -1,3 +1,5 @@
+// 验证动态设置的类型访问、默认值合并、持久化与外部文件故障处理。
+
 #include <settings.h>
 
 #include "json_file_test_access.h"
@@ -18,6 +20,8 @@ class SettingsTest : public testing::Test
 {
   protected:
     // 隔离具名文件绑定和测试目录，避免单例缓存污染不同测试。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         open_st::ShutdownSettings();
@@ -34,6 +38,8 @@ class SettingsTest : public testing::Test
     }
 
     // 先关闭业务并释放测试绑定，再恢复文件属性和删除测试数据。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         open_st::ShutdownSettings();
@@ -50,6 +56,8 @@ class SettingsTest : public testing::Test
     }
 
     // 直接构造磁盘内容，以模拟外部程序更新和损坏文件。
+    // 入参：path 为测试文件路径；contents 为写入的原始字节文本。
+    // 返回：无返回值。
     static void WriteRaw(const std::filesystem::path& path, std::string_view contents)
     {
         std::filesystem::create_directories(path.parent_path());
@@ -60,6 +68,8 @@ class SettingsTest : public testing::Test
     }
 
     // 独立读取真实文件，确认业务写入或损坏保护的磁盘结果。
+    // 入参：path 为测试文件路径。
+    // 返回：文件的原始字节字符串，供磁盘内容断言使用。
     static std::string ReadRaw(const std::filesystem::path& path)
     {
         std::ifstream input(path, std::ios::binary);
@@ -67,6 +77,8 @@ class SettingsTest : public testing::Test
     }
 
     // 写入指定默认语言的合法设置资源。
+    // 入参：language 为写入测试默认资源的语言代码，默认为 en-US。
+    // 返回：无返回值。
     void WriteDefault(std::string_view language = "en-US")
     {
         const nlohmann::json document{{"schemaVersion", 1}, {"settings", {{"ui.language", language}}}};
@@ -77,6 +89,8 @@ class SettingsTest : public testing::Test
 };
 
 // 验证启动时仅在用户配置缺失时从默认资源自动生成 settings.json。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, initialization_creates_missing_user_file)
 {
     this->WriteDefault("ja-JP");
@@ -90,6 +104,8 @@ TEST_F(SettingsTest, initialization_creates_missing_user_file)
 }
 
 // 验证损坏的现有用户配置不会被默认配置覆盖，读取时仍可使用默认值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, invalid_user_file_is_preserved_and_defaults_are_read)
 {
     this->WriteDefault();
@@ -107,6 +123,8 @@ TEST_F(SettingsTest, invalid_user_file_is_preserved_and_defaults_are_read)
 }
 
 // 验证已有但只读的用户配置仍可读取，同时启动状态会准确报告不可持久化且拒绝写入。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, read_only_user_file_is_reported_as_not_persistable)
 {
     this->WriteDefault();
@@ -122,6 +140,8 @@ TEST_F(SettingsTest, read_only_user_file_is_reported_as_not_persistable)
 }
 
 // 验证每次设置读取都会通过 Common 检查磁盘，并取得外部修改后的最新值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, getter_observes_external_file_changes)
 {
     this->WriteDefault();
@@ -134,6 +154,8 @@ TEST_F(SettingsTest, getter_observes_external_file_changes)
 }
 
 // 验证动态 key 的类型化读写不会删除用户文档中的未知字段。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, typed_setters_preserve_unknown_keys)
 {
     this->WriteDefault();
@@ -153,6 +175,8 @@ TEST_F(SettingsTest, typed_setters_preserve_unknown_keys)
 }
 
 // 验证用户值缺失或类型错误时，类型化 getter 会读取默认配置中的同名动态 key。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, getters_fall_back_to_default_values)
 {
     const nlohmann::json defaults{{"schemaVersion", 1},
@@ -169,6 +193,8 @@ TEST_F(SettingsTest, getters_fall_back_to_default_values)
 }
 
 // 验证启动检查已有配置的写入条件时不会重新序列化或覆盖原始排版。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, initialization_preserves_existing_file_bytes)
 {
     this->WriteDefault();
@@ -182,6 +208,8 @@ TEST_F(SettingsTest, initialization_preserves_existing_file_bytes)
 }
 
 // 验证外层协议错误不会被默认配置修复或被设置修改覆盖。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, invalid_business_schema_is_preserved)
 {
     this->WriteDefault();
@@ -197,6 +225,8 @@ TEST_F(SettingsTest, invalid_business_schema_is_preserved)
 }
 
 // 验证已读配置损坏后不把 Common 旧缓存冒充本次成功，Settings 自行读取默认值且能恢复。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, failed_user_read_uses_defaults_and_recovers)
 {
     this->WriteDefault();
@@ -213,6 +243,8 @@ TEST_F(SettingsTest, failed_user_read_uses_defaults_and_recovers)
 }
 
 // 验证同进程重启设置业务不会清理 Common 绑定，也不会复用损坏默认资源的旧缓存。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, reinitialization_rejects_damaged_default_resource)
 {
     this->WriteDefault();
@@ -226,6 +258,8 @@ TEST_F(SettingsTest, reinitialization_rejects_damaged_default_resource)
     EXPECT_TRUE(open_st::InitializeSettings(this->root_));
 }
 // 验证用户文件读取告警只消费一次，默认值读取成功不重置用户故障，恢复后可再次告警。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, user_read_warning_is_deduplicated_and_rearmed_after_recovery)
 {
     this->WriteDefault();
@@ -249,6 +283,8 @@ TEST_F(SettingsTest, user_read_warning_is_deduplicated_and_rearmed_after_recover
 }
 
 // 验证默认文件故障单独去重，缺失字段或类型回退不误报文件错误，关闭后无新告警。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, default_read_warning_tracks_file_failure_not_missing_keys)
 {
     this->WriteDefault();
@@ -272,7 +308,9 @@ TEST_F(SettingsTest, default_read_warning_tracks_file_failure_not_missing_keys)
     EXPECT_FALSE(open_st::GetStringSetting("missing").has_value());
     EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
 }
-// 第二实例的早期提示读取用户语言，完全不初始化或创建文件。
+// 验证第二实例的早期提示读取用户语言，完全不初始化或创建文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(SettingsTest, startup_language_reads_without_initialization_or_writes)
 {
     this->WriteDefault("en-US");

@@ -1,3 +1,5 @@
+// 文件职责：验证原生映射表面的旋转、行填充移除、逐字节保真和无效输入拒绝。
+
 #include <gtest/gtest.h>
 
 #include "captured_plane_writer.h"
@@ -11,7 +13,9 @@
 
 namespace
 {
-// 构造带两字节驱动行填充的 3×2 BGRA 表面，每个像素首字节保存唯一编号。
+// 构造含驱动行填充且每像素带唯一编号的表面，用于验证旋转复制。
+// 入参：无。
+// 返回：3×2 BGRA 测试缓冲区，每行 14 字节，行末填充为 0xEE，像素首字节为编号。
 std::vector<std::uint8_t> MakePaddedBgraSurface()
 {
     constexpr std::size_t rowPitch = 14U;
@@ -25,7 +29,9 @@ std::vector<std::uint8_t> MakePaddedBgraSurface()
     return pixels;
 }
 
-// 按目标行列验证 plane 的像素编号矩阵，确保旋转映射没有错行或错列。
+// 逐像素比对目标 plane 中的编号，验证旋转映射没有错行错列。
+// 入参：plane：待检查的冻结 plane；expected：按目标行序排列的预期像素编号。
+// 返回：无返回值；通过 GoogleTest 断言报告 plane 有效性、尺寸和每个像素编号是否符合预期。
 void ExpectPixelIds(const open_st::CapturedOutputPlane& plane, std::span<const std::uint8_t> expected)
 {
     ASSERT_TRUE(plane.IsValid());
@@ -36,7 +42,9 @@ void ExpectPixelIds(const open_st::CapturedOutputPlane& plane, std::span<const s
     }
 }
 
-// 构造指定旋转的 plane 并断言复制成功，减少四向矩阵测试重复代码。
+// 调用实际 plane 构建逻辑生成指定旋转的带编号测试图像。
+// 入参：rotation：要求验证的表面旋转；bounds：目标桌面方向物理像素边界。
+// 返回：生成的自有冻结 plane；同时通过断言报告构建失败或非空诊断。
 open_st::CapturedOutputPlane BuildBgraPlane(open_st::CapturedSurfaceRotation rotation, open_st::RectI bounds)
 {
     const std::vector<std::uint8_t> source = MakePaddedBgraSurface();
@@ -54,6 +62,8 @@ open_st::CapturedOutputPlane BuildBgraPlane(open_st::CapturedSurfaceRotation rot
 } // namespace
 
 // 验证 identity、90、180、270 度旋转都生成桌面方向紧凑像素，且丢弃 RowPitch padding。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，normalizes_all_rotations_and_discards_row_padding 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, normalizes_all_rotations_and_discards_row_padding)
 {
     const open_st::CapturedOutputPlane identity =
@@ -79,6 +89,8 @@ TEST(CapturedPlaneWriterTest, normalizes_all_rotations_and_discards_row_padding)
 }
 
 // 验证 FP16 原始八字节像素逐字节保留，且无效 RowPitch 不发布部分 plane。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_fp16_bits_and_rejects_short_row_pitch 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, preserves_fp16_bits_and_rejects_short_row_pitch)
 {
     constexpr std::array<std::uint8_t, 10> source{1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 0xEEU, 0xEEU};
@@ -108,6 +120,8 @@ TEST(CapturedPlaneWriterTest, preserves_fp16_bits_and_rejects_short_row_pitch)
 }
 
 // 验证 RGB10A2 的四字节位模式在去除 RowPitch padding 后保持逐字节一致。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_rgb10_bits_while_discarding_padding 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, preserves_rgb10_bits_while_discarding_padding)
 {
     constexpr std::array<std::uint8_t, 12> source{
@@ -125,6 +139,8 @@ TEST(CapturedPlaneWriterTest, preserves_rgb10_bits_while_discarding_padding)
 }
 
 // 验证 FP16 的 8 Bpp 偏移在 90 度旋转时仍按完整像素搬运，不发生四字节错位。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，rotates_fp16_pixels_using_eight_byte_offsets 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, rotates_fp16_pixels_using_eight_byte_offsets)
 {
     constexpr std::size_t rowPitch = 26U;
@@ -150,6 +166,8 @@ TEST(CapturedPlaneWriterTest, rotates_fp16_pixels_using_eight_byte_offsets)
 }
 
 // 验证尺寸与旋转不匹配、未知旋转和未知格式均清空旧 output 并返回诊断。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，rejects_invalid_dimensions_rotation_and_format_atomically 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, rejects_invalid_dimensions_rotation_and_format_atomically)
 {
     const std::vector<std::uint8_t> source = MakePaddedBgraSurface();

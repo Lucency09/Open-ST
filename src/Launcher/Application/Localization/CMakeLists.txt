@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Localization 模块的源码、公开头及构建依赖。
+
 # localization 通过 Common 的懒加载 JSON 句柄读取动态多语言资源。
 add_library(open_st_localization STATIC)
 add_library(OpenST::Localization ALIAS open_st_localization)

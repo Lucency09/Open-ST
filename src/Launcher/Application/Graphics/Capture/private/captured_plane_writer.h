@@ -1,3 +1,5 @@
+// 文件职责：声明借用映射表面到自有冻结 plane 的转换接口，隔离旋转、行填充与像素格式。
+
 #pragma once
 
 #include <frozen_desktop_frame.h>
@@ -27,7 +29,10 @@ struct MappedCaptureSurface final
     CapturedPixelFormat format{CapturedPixelFormat::Bgra8Unorm};
 };
 
-// 把带驱动 RowPitch 的未旋转表面复制为桌面方向紧凑 plane；失败时 output 保持无效。
+// 去除映射表面的行填充并校正旋转，生成独立持有像素的冻结 plane。
+// 入参：surface：借用的驱动映射表面；desktopBounds：输出物理像素半开边界；rotation：表面旋转方式；pixelColorSpace：原生像素颜色空间；metadata：显示颜色元数据；output
+// ：输出参数，接收冻结 plane；errorMessage：输出参数，接收失败诊断。
+// 返回：完整复制并通过合法性检查时为 true；输入无效、旋转越界或分配失败为 false，output 保持无效且写入诊断。
 [[nodiscard]] bool BuildCapturedOutputPlane(const MappedCaptureSurface& surface, RectI desktopBounds,
                                             CapturedSurfaceRotation rotation,
                                             CapturedColorSpace pixelColorSpace,

@@ -1,3 +1,5 @@
+// 文件职责：实现传递函数、色域矩阵及浮点编码转换，为预览和 HDR 色调映射提供数值基础。
+
 #include <color_conversion.h>
 
 #include <algorithm>
@@ -7,13 +9,17 @@
 
 namespace
 {
-// 把 DXGI G22/P709 非线性通道按 2.2 gamma 解码为 BT.709 线性强度。
+// 解码 SDR Gamma 2.2 通道，供 RGB10 兼容颜色转换使用。
+// 入参：value：归一化 Gamma 2.2 编码通道。
+// 返回：先限制在 0 至 1 后按 2.2 次幂转换的线性通道。
 float Gamma22P709ToLinear(float value) noexcept
 {
     return std::pow(std::clamp(value, 0.0F, 1.0F), 2.2F);
 }
 
-// 把 ST.2084 PQ 码值解码为绝对亮度 nit。
+// 按 PQ 传递函数把 HDR10 编码通道还原为绝对亮度。
+// 入参：value：归一化 PQ 编码通道。
+// 返回：对应的绝对亮度，单位 nit。
 float PqToNits(float value) noexcept
 {
     constexpr float M1 = 2610.0F / 16384.0F;
@@ -27,7 +33,9 @@ float PqToNits(float value) noexcept
     return 10000.0F * std::pow(numerator / denominator, 1.0F / M1);
 }
 
-// 把线性 BT.2020 绝对亮度转换为线性 BT.709/scRGB，并以 80 nit 归一。
+// 把 BT.2020 绝对亮度 RGB 转换为线性 scRGB，统一 HDR10 预览和映射输入。
+// 入参：red、green、blue：BT.2020 各通道的绝对亮度，单位 nit。
+// 返回：转换后的线性 scRGB RGB；1.0 对应 80 nit，保留负色域分量和超白值。
 open_st::LinearScRgb Bt2020NitsToScRgb(float red, float green, float blue) noexcept
 {
     constexpr float SDR_WHITE_NITS = 80.0F;
@@ -42,7 +50,9 @@ open_st::LinearScRgb Bt2020NitsToScRgb(float red, float green, float blue) noexc
 
 namespace open_st
 {
-// 按 IEEE 754 规则展开 binary16 的符号、指数和尾数位。
+// 将 binary16 原始位模式解码为单精度浮点，保留 HDR 值域。
+// 入参：value：IEEE 754 binary16 的 16 位编码。
+// 返回：对应 binary32 数值，包括符号、次正规数、无穷和 NaN。
 float DecodeFloat16(std::uint16_t value) noexcept
 {
     const std::uint32_t sign = static_cast<std::uint32_t>(value & 0x8000U) << 16U;
@@ -79,7 +89,9 @@ float DecodeFloat16(std::uint16_t value) noexcept
     return std::bit_cast<float>(bits);
 }
 
-// 采用最近偶数舍入编码 binary16，原生 FP16 的直接复制不经过本函数。
+// 将单精度浮点编码为半精度像素通道，供 FP16 图像存储。
+// 入参：value：待编码的 binary32 数值。
+// 返回：舍入后的 binary16 位模式，保留符号和特殊值，不将颜色限制在 0 至 1。
 std::uint16_t EncodeFloat16(float value) noexcept
 {
     const std::uint32_t bits = std::bit_cast<std::uint32_t>(value);
@@ -110,14 +122,18 @@ std::uint16_t EncodeFloat16(float value) noexcept
     return static_cast<std::uint16_t>(sign | ((static_cast<std::uint32_t>(exponent) << 10U) + roundedMantissa));
 }
 
-// 按 IEC sRGB 分段传递函数解码界面颜色，保留黑色附近的线性段。
+// 将 sRGB 编码颜色解码为线性通道，作为 SDR UI 的 HDR 合成基础。
+// 入参：value：归一化 sRGB 编码通道。
+// 返回：按 sRGB 分段传递函数计算的线性值，不附加参考白缩放。
 float SrgbToLinear(float value) noexcept
 {
     const float clamped = std::clamp(value, 0.0F, 1.0F);
     return clamped <= 0.04045F ? clamped / 12.92F : std::pow((clamped + 0.055F) / 1.055F, 2.4F);
 }
 
-// 按 RGB10A2 的 R/G/B 位域解码；HDR10 先执行 PQ 和 BT.2020→BT.709，其他格式按 P709 解释。
+// 解包 RGB10A2 像素并按指定颜色空间转换到统一线性 scRGB。
+// 入参：pixel：打包的 RGB10A2 原始像素；colorSpace：RGB 通道所采用的 SDR、scRGB 或 HDR10 语义。
+// 返回：线性 scRGB RGB 三通道，忽略 alpha；HDR10 经 PQ 和色域转换后以 80 nit 为 1.0。
 LinearScRgb DecodeRgb10A2ToScRgb(std::uint32_t pixel, Rgb10ColorSpace colorSpace) noexcept
 {
     constexpr float UNORM10_MAXIMUM = 1023.0F;
@@ -135,7 +151,9 @@ LinearScRgb DecodeRgb10A2ToScRgb(std::uint32_t pixel, Rgb10ColorSpace colorSpace
     return {Gamma22P709ToLinear(red), Gamma22P709ToLinear(green), Gamma22P709ToLinear(blue)};
 }
 
-// 把 0–1023 的 10 位 UNORM 值四舍五入到 0–255。
+// 将 10 位 UNORM 通道量化为兼容的 8 位 SDR 通道。
+// 入参：value：10 位 UNORM 通道整数。
+// 返回：范围 0 至 255 的四舍五入量化值，输入超范围时先限制到 1023。
 std::uint8_t Unorm10ToByte(std::uint32_t value) noexcept
 {
     constexpr std::uint32_t UNORM10_MAXIMUM = 1023U;

@@ -1,3 +1,5 @@
+// 文件职责：验证选区创建、移动、缩放、命中与取消状态机，包括负坐标和边界收敛。
+
 #include <gtest/gtest.h>
 
 #include <selection_model.h>
@@ -7,7 +9,9 @@
 
 namespace
 {
-// 逐边比较实际矩形与预期矩形，使失败信息明确指出发生偏差的边。
+// 逐边比较矩形实际值与预期值，精确定位选区或遮罩几何错误。
+// 入参：actual：实际物理像素半开矩形；expected：预期物理像素半开矩形。
+// 返回：无返回值；四条边界分别由 GoogleTest 断言报告是否一致。
 void ExpectRectangle(const open_st::RectI& actual, const open_st::RectI& expected)
 {
     EXPECT_EQ(actual.left, expected.left);
@@ -16,7 +20,9 @@ void ExpectRectangle(const open_st::RectI& actual, const open_st::RectI& expecte
     EXPECT_EQ(actual.bottom, expected.bottom);
 }
 
-// 在指定边界内完成一次创建拖动，并断言模型进入稳定 Selected 状态。
+// 通过模型真实输入步骤建立稳定选区，作为移动和缩放测试的前置状态。
+// 入参：selection：输入输出参数，待初始化的选区模型；bounds：允许选择的桌面物理像素边界；first、second：创建拖动的物理像素起点和终点。
+// 返回：无返回值；模型边界和稳定选区被建立，并通过断言检查创建流程是否成功。
 void CreateSelection(open_st::SelectionModel& selection, open_st::RectI bounds, open_st::PointI first,
                      open_st::PointI second)
 {
@@ -26,7 +32,9 @@ void CreateSelection(open_st::SelectionModel& selection, open_st::RectI bounds, 
     ASSERT_EQ(selection.Phase(), open_st::SelectionPhase::Selected);
 }
 
-// 从模型计算的八个控制点中查找指定控制点中心，找不到时记录测试失败。
+// 按指定控制点枚举查找模型计算出的中心位置，供后续鼠标交互测试使用。
+// 入参：selection：已有选区的只读模型；wanted：需要定位的控制点枚举。
+// 返回：匹配控制点的虚拟桌面物理像素中心；未找到时报告测试失败并返回零点。
 open_st::PointI CenterFor(const open_st::SelectionModel& selection, open_st::SelectionHandle wanted)
 {
     for (const open_st::SelectionHandlePosition& handle : selection.Handles())
@@ -42,6 +50,8 @@ open_st::PointI CenterFor(const open_st::SelectionModel& selection, open_st::Sel
 } // namespace
 
 // 验证从四个方向拖动都产生同一个规范化半开矩形，避免反向拖动出现负宽高。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，creates_a_normalized_rectangle_from_every_drag_direction 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, creates_a_normalized_rectangle_from_every_drag_direction)
 {
     constexpr std::array<open_st::PointI, 4> starts{
@@ -71,6 +81,8 @@ TEST(SelectionModelTest, creates_a_normalized_rectangle_from_every_drag_directio
 }
 
 // 验证创建点会限制在含负坐标的虚拟桌面内，并拒绝零面积的新选区。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，clamps_creation_to_virtual_desktop_bounds_and_rejects_zero_area 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, clamps_creation_to_virtual_desktop_bounds_and_rejects_zero_area)
 {
     open_st::SelectionModel selection;
@@ -88,6 +100,9 @@ TEST(SelectionModelTest, clamps_creation_to_virtual_desktop_bounds_and_rejects_z
 }
 
 // 验证使用光标真实可达的最右/最下像素创建选区时，会吸附到半开桌面边界并包含最后一行列。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，creation_reaches_exclusive_right_and_bottom_bounds_from_both_directions
+// 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, creation_reaches_exclusive_right_and_bottom_bounds_from_both_directions)
 {
     open_st::SelectionModel selection;
@@ -104,6 +119,8 @@ TEST(SelectionModelTest, creation_reaches_exclusive_right_and_bottom_bounds_from
 }
 
 // 验证已有选区后，选区外按下不会因边界钳制而误命中控制点，也不会创建第二个选区。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，ignores_input_outside_an_existing_selection 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, ignores_input_outside_an_existing_selection)
 {
     open_st::SelectionModel selection;
@@ -116,6 +133,8 @@ TEST(SelectionModelTest, ignores_input_outside_an_existing_selection)
 }
 
 // 验证从选区内部拖动会整体移动矩形，越界时保持宽高并把整体限制在桌面边界内。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，moves_from_the_interior_without_changing_size 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, moves_from_the_interior_without_changing_size)
 {
     open_st::SelectionModel selection;
@@ -131,6 +150,8 @@ TEST(SelectionModelTest, moves_from_the_interior_without_changing_size)
 }
 
 // 验证整体移动在含负坐标的桌面上分别钳制左、上、右、下边界，且各方向都不改变尺寸。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，clamps_whole_selection_at_all_four_virtual_desktop_edges 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, clamps_whole_selection_at_all_four_virtual_desktop_edges)
 {
     struct MoveCase final
@@ -158,6 +179,8 @@ TEST(SelectionModelTest, clamps_whole_selection_at_all_four_virtual_desktop_edge
 }
 
 // 验证选区内部单击但没有产生位移时，矩形及最终状态保持不变。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，an_interior_click_without_motion_has_no_effect 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, an_interior_click_without_motion_has_no_effect)
 {
     open_st::SelectionModel selection;
@@ -171,6 +194,8 @@ TEST(SelectionModelTest, an_interior_click_without_motion_has_no_effect)
 }
 
 // 验证选区包含判断采用半开矩形：左上边界属于内部，右下边界及其外侧不属于内部。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，contains_uses_half_open_rectangle_edges 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, contains_uses_half_open_rectangle_edges)
 {
     open_st::SelectionModel selection;
@@ -185,6 +210,8 @@ TEST(SelectionModelTest, contains_uses_half_open_rectangle_edges)
 }
 
 // 验证八个控制点的位置和 12×12 半开命中区，命中区正边界外的像素必须排除。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，exposes_and_hit_tests_all_eight_handles 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, exposes_and_hit_tests_all_eight_handles)
 {
     open_st::SelectionModel selection;
@@ -214,6 +241,8 @@ TEST(SelectionModelTest, exposes_and_hit_tests_all_eight_handles)
 }
 
 // 验证极小选区的控制点命中区域重叠时，等距情况下角控制点优先于边控制点。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，corner_wins_a_tied_hit_test_on_a_tiny_selection 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, corner_wins_a_tied_hit_test_on_a_tiny_selection)
 {
     open_st::SelectionModel selection;
@@ -223,6 +252,8 @@ TEST(SelectionModelTest, corner_wins_a_tied_hit_test_on_a_tiny_selection)
 }
 
 // 验证八个控制点只修改各自负责的边，并把越界目标限制在桌面矩形内。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，every_handle_resizes_its_owned_edges 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, every_handle_resizes_its_owned_edges)
 {
     struct ResizeCase final
@@ -255,6 +286,8 @@ TEST(SelectionModelTest, every_handle_resizes_its_owned_edges)
 }
 
 // 验证右侧和底部控制点拖到光标可达的最后一个像素时，选区仍扩展到 exclusive 桌面边界。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，resizing_reaches_exclusive_right_and_bottom_bounds 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, resizing_reaches_exclusive_right_and_bottom_bounds)
 {
     open_st::SelectionModel selection;
@@ -270,6 +303,8 @@ TEST(SelectionModelTest, resizing_reaches_exclusive_right_and_bottom_bounds)
 }
 
 // 验证调整边跨越固定对边后矩形仍然规范化，并把活动控制点翻转到对应方向。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，crossing_opposite_edges_flips_the_active_handle 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, crossing_opposite_edges_flips_the_active_handle)
 {
     open_st::SelectionModel selection;
@@ -284,6 +319,8 @@ TEST(SelectionModelTest, crossing_opposite_edges_flips_the_active_handle)
 }
 
 // 验证控制点恰好收拢到固定对边时，不接受零面积结果并恢复调整前的选区。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，zero_area_resize_restores_the_previous_selection 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, zero_area_resize_restores_the_previous_selection)
 {
     open_st::SelectionModel selection;
@@ -297,6 +334,8 @@ TEST(SelectionModelTest, zero_area_resize_restores_the_previous_selection)
 }
 
 // 验证取消创建会清空状态，而取消移动或缩放都会恢复操作开始前的矩形。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，cancelling_each_interaction_restores_the_expected_state 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, cancelling_each_interaction_restores_the_expected_state)
 {
     open_st::SelectionModel selection;
@@ -319,6 +358,8 @@ TEST(SelectionModelTest, cancelling_each_interaction_restores_the_expected_state
 }
 
 // 验证渲染快照完全按值保存，后续移动模型不会反向改变已经取得的旧快照。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，snapshot_is_an_immutable_value_copy 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, snapshot_is_an_immutable_value_copy)
 {
     open_st::SelectionModel selection;
@@ -334,6 +375,8 @@ TEST(SelectionModelTest, snapshot_is_an_immutable_value_copy)
 }
 
 // 验证边界缩小时优先保留原选区尺寸，仅在新边界容纳不下时收缩到完整边界。
+// 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，changed_bounds_preserve_size_when_possible 为用例名。
+// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionModelTest, changed_bounds_preserve_size_when_possible)
 {
     open_st::SelectionModel selection;

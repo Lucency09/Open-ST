@@ -1,3 +1,5 @@
+// 文件职责：实现每屏遮罩的 D3D/D2D 资源和绘制，保留选区原像素并检查显示配置失效。
+
 #include <overlay_renderer.h>
 #include <desktop_preview.h>
 #include <display_color_state.h>
@@ -28,7 +30,9 @@ namespace
 constexpr float SELECTION_BORDER_WIDTH = 1.0F;
 constexpr float HANDLE_VISUAL_HALF_SIZE = 4.0F;
 
-// 将设置中的 sRGB 分量解码为线性光；HDR 界面白单独按本屏 SDR 白亮度缩放。
+// 把 8 位界面颜色转换为当前 SDR 或 HDR 渲染目标所需的通道值。
+// 入参：channel：0 至 255 的界面颜色通道；hdr：是否为 HDR 目标；whiteScale：SDR 白相对于 80 nit scRGB 白的比例。
+// 返回：SDR 返回归一化通道，HDR 返回线性化并乘白比例的通道，可超过 1.0。
 float UiChannel(std::uint32_t channel, bool hdr, float whiteScale) noexcept
 {
     const float encoded = static_cast<float>(channel) / 255.0F;
@@ -40,7 +44,9 @@ float UiChannel(std::uint32_t channel, bool hdr, float whiteScale) noexcept
     return linear * whiteScale;
 }
 
-// 把 0xRRGGBB 设置颜色转换为目标交换链工作空间，不改变冻结图像像素。
+// 将配置的 24 位 RGB 颜色转换为适合当前输出的 D2D 画刷颜色。
+// 入参：color：0xRRGGBB 颜色；hdr：是否输出 HDR；whiteScale：SDR 白相对于 80 nit 的比例。
+// 返回：适配输出亮度语义的 D2D 颜色，alpha 为不透明。
 D2D1_COLOR_F ColorFromRgb(std::uint32_t color, bool hdr, float whiteScale) noexcept
 {
     return D2D1::ColorF(UiChannel((color >> 16U) & 0xFFU, hdr, whiteScale),
@@ -48,7 +54,9 @@ D2D1_COLOR_F ColorFromRgb(std::uint32_t color, bool hdr, float whiteScale) noexc
                         UiChannel(color & 0xFFU, hdr, whiteScale));
 }
 
-// 把虚拟桌面物理像素矩形平移为以冻结帧左上角为原点的客户区矩形。
+// 把全局选区或遮罩矩形换算为当前输出窗口的客户区坐标。
+// 入参：rectangle：虚拟桌面物理像素矩形；frameBounds：当前输出窗口对应的全局物理像素边界。
+// 返回：减去 frameBounds 左上原点后的 D2D 浮点矩形；渲染目标按 96 DPI 对应物理像素。
 D2D1_RECT_F ToClientRectangle(open_st::RectI rectangle, open_st::RectI frameBounds) noexcept
 {
     return D2D1::RectF(static_cast<float>(rectangle.left - frameBounds.left),
@@ -57,7 +65,9 @@ D2D1_RECT_F ToClientRectangle(open_st::RectI rectangle, open_st::RectI frameBoun
                        static_cast<float>(rectangle.bottom - frameBounds.top));
 }
 
-// 用四个轴对齐填充矩形绘制 1px 内轮廓，避免整数坐标描边落在半像素产生模糊。
+// 用四个填充条带绘制一像素内描边，避免描边采样改变选区内部。
+// 入参：context：借用的 D2D 设备上下文；rectangle：客户区矩形；brush：借用的描边画刷，坐标按当前目标的一像素单位解释。
+// 返回：无返回值；向当前 D2D 目标提交四边条带绘制，边长不足时由条带边界限制。
 void FillOnePixelOutline(ID2D1DeviceContext* context, D2D1_RECT_F rectangle, ID2D1Brush* brush) noexcept
 {
     const float horizontalEnd = std::min(rectangle.left + SELECTION_BORDER_WIDTH, rectangle.right);
@@ -70,7 +80,9 @@ void FillOnePixelOutline(ID2D1DeviceContext* context, D2D1_RECT_F rectangle, ID2
     context->FillRectangle(D2D1::RectF(horizontalStart, rectangle.top, rectangle.right, rectangle.bottom), brush);
 }
 
-// 把失败操作名和 HRESULT 格式化为供上层日志诊断使用的宽字符串。
+// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
+// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
+// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
 std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
 {
     std::wostringstream stream;
@@ -102,7 +114,9 @@ struct OverlayRenderer::Impl final
     ComPtr<ID2D1SolidColorBrush> selectionBrush;
     ComPtr<ID2D1SolidColorBrush> handleFillBrush;
 
-    // 从 D2D context 解绑并释放交换链 back buffer 对应的目标位图。
+    // 解除 D2D 对交换链后缓冲的绑定，允许安全调整或释放目标。
+    // 入参：无。
+    // 返回：无返回值；D2D 目标置空并释放目标位图引用。
     void ClearTarget() noexcept
     {
         // ResizeBuffers 前必须先从 D2D context 解绑并释放引用交换链 back buffer 的 target bitmap。
@@ -113,7 +127,9 @@ struct OverlayRenderer::Impl final
         this->targetBitmap.Reset();
     }
 
-    // 从当前交换链 back buffer 创建 D2D 呈现目标，失败时返回可诊断错误。
+    // 把交换链当前后缓冲绑定为 D2D 绘制目标。
+    // 入参：errorMessage：输出参数，获取后缓冲或创建目标位图失败时写入诊断。
+    // 返回：成功创建并绑定目标位图时为 true；DXGI 或 D2D 失败时为 false。
     bool CreateTargetBitmap(std::wstring& errorMessage)
     {
         ComPtr<IDXGISurface> surface;
@@ -142,13 +158,20 @@ struct OverlayRenderer::Impl final
     }
 };
 
-// 创建空的 PImpl 容器，图形设备和窗口资源由 Initialize 延迟建立。
+// 创建覆盖窗口渲染器的内部资源容器，延迟到首次初始化时建立图形设备。
+// 入参：无。
+// 返回：无返回值；构造后的对象尚未建立图形设备，内存分配失败可抛出异常。
 OverlayRenderer::OverlayRenderer() : impl_(std::make_unique<Impl>()) {}
 
-// 销毁 PImpl，并由 ComPtr 自动释放仍持有的全部图形资源。
+// 销毁覆盖渲染器并释放其拥有的图形资源。
+// 入参：无。
+// 返回：无返回值；析构完成对应资源清理。
 OverlayRenderer::~OverlayRenderer() = default;
 
-// 为覆盖窗口创建 D3D/D2D/交换链资源，并一次性上传不可变桌面帧。
+// 为指定截图覆盖窗口建立绘制资源并上传该屏不可变预览。
+// 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选 #RRGGBB
+// 边框色，缺失或非法用黑色；errorMessage：输出参数，接收失败诊断。
+// 返回：窗口、预览、显示身份和图形资源全部有效时为 true；输入校验或初始化失败时为 false。
 bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
                                  std::optional<std::string_view> configuredBorderColor,
                                  std::wstring& errorMessage)
@@ -411,7 +434,9 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     return true;
 }
 
-// 调整交换链缓冲区与客户区尺寸，同时保留设备和已上传的冻结帧位图。
+// 根据覆盖窗口客户区大小重建交换链绘制目标。
+// 入参：width、height：新的客户区物理像素宽高；errorMessage：输出参数，失败时写入诊断。
+// 返回：目标重建成功或无交换链/零尺寸无需操作时为 true；ResizeBuffers 或目标位图重建失败时为 false。
 bool OverlayRenderer::Resize(unsigned int width, unsigned int height, std::wstring& errorMessage)
 {
     if (!this->impl_->swapChain || width == 0 || height == 0)
@@ -430,13 +455,17 @@ bool OverlayRenderer::Resize(unsigned int width, unsigned int height, std::wstri
     return this->impl_->CreateTargetBitmap(errorMessage);
 }
 
-// 按冻结帧、选区外暗层、选区边框与控制点的顺序绘制并呈现一帧。
+// 将冻结桌面预览、选区外暗层、边框和控制点绘制到覆盖窗口并呈现。
+// 入参：snapshot：按值传入的虚拟桌面物理像素选区状态；errorMessage：输出参数，接收失效或绘制失败原因。
+// 返回：绘制并呈现成功时为 true；未初始化、显示状态过期或图形调用失败时为 false。
 bool OverlayRenderer::Render(SelectionSnapshot snapshot, std::wstring& errorMessage)
 {
     return this->DrawFrame(snapshot, true, errorMessage);
 }
 
-// 共用实际 D2D 绘制路径；集成测试可在交换链翻转前读取原生精度像素。
+// 绘制冻结预览、选区外暗层与控制点，并按调用方要求提交交换链。
+// 入参：snapshot：虚拟桌面物理像素选区快照；present：是否调用 Present；errorMessage：输出参数，接收失效或绘制错误原因。
+// 返回：完成绘制及所请求呈现时为 true；未初始化、显示配置过期、窗口或图形调用失败时为 false。
 bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::wstring& errorMessage)
 {
     errorMessage.clear();
@@ -534,7 +563,9 @@ bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::w
     return true;
 }
 
-// 从尚未翻转的后缓冲复制到 staging 纹理，验证 D2D 上传及绘制没有截断 HDR 数值。
+// 为集成测试读取当前 GPU 后缓冲，验证实际绘制像素。
+// 入参：frame：输出参数，接收回读的预览格式和像素；errorMessage：输出参数，接收图形回读失败原因。
+// 返回：后缓冲成功复制到 CPU 内存时为 true；资源获取、复制准备或映射失败时为 false。
 bool OverlayRenderer::ReadbackFrame(OutputPreviewFrame& frame, std::wstring& errorMessage)
 {
     frame = {};
@@ -588,7 +619,9 @@ bool OverlayRenderer::ReadbackFrame(OutputPreviewFrame& frame, std::wstring& err
     return true;
 }
 
-// 按依赖逆序释放画刷、位图、D2D、交换链和 D3D 资源，恢复未初始化状态。
+// 结束当前覆盖渲染会话并释放设备、交换链和绘制资源。
+// 入参：无。
+// 返回：无返回值；渲染器恢复未初始化状态。
 void OverlayRenderer::Reset() noexcept
 {
     if (!this->impl_)

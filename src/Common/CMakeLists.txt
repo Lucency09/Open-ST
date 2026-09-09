@@ -1,3 +1,5 @@
+# 配置 Common 模块的源码、公开头及构建依赖。
+
 # common 提供不依赖产品模块的公共能力，包括同步日志和按需加载的 JSON 文件缓存。
 add_subdirectory(WindowRenderer)
 

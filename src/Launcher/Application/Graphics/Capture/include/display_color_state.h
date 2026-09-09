@@ -1,10 +1,13 @@
+// 文件职责：声明冻结显示输出颜色状态的有效性检查，供截图会话发现 SDR 参考白变化。
+
 #pragma once
 
 #include <frozen_desktop_frame.h>
 
 namespace open_st
 {
-// 验证捕获时已知的 SDR 参考白仍未变化；查询失败返回 false，无参考白缓存时不作推断。
-// 仅查询已绑定的 DisplayConfig 目标；调用方仍需通过 DXGI 工厂状态判断拓扑和 HDR 模式失效。
+// 检查冻结时保存的 SDR 参考白是否仍与系统一致。
+// 入参：metadata：冻结 plane 保存的目标身份、参考白值及有效标记。
+// 返回：未缓存参考白时为 true；已缓存且查询值一致时为 true，元数据矛盾、查询失败或亮度变化时为 false。
 [[nodiscard]] bool IsCapturedOutputColorStateCurrent(const OutputColorMetadata& metadata) noexcept;
 } // namespace open_st

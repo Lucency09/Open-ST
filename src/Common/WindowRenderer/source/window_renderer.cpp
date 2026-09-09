@@ -1,3 +1,5 @@
+// 将布局树和宿主回调绑定到 Win32 控件，管理排版、输入及模态消息循环。
+
 #include "renderer_model.h"
 #include <algorithm>
 #include <array>
@@ -65,7 +67,9 @@ struct WindowRenderer::Impl
     std::wstring status;
     static constexpr UINT CLOSE_MESSAGE = WM_APP + 91;
 
-    // 事件没有同步返回值时交给宿主显示错误，错误回调本身不能穿过系统边界。
+    // 把无法同步返回的控件事件错误交给宿主处理。
+    // 入参：result：调用期间借用的结构化错误，不包含用户字段正文。
+    // 返回：无返回值；无错误接收器或接收器抛异常时写调试输出，不让错误回调异常穿过系统边界。
     void Report(const RendererResult& result) const noexcept
     {
         try
@@ -81,7 +85,9 @@ struct WindowRenderer::Impl
         }
     }
 
-    // 键盘导航到被裁剪的字段后滚动，保持焦点本身不变。
+    // 滚动当前页面使键盘导航到的控件进入可见区域。
+    // 入参：无。
+    // 返回：无返回值；焦点不在页面直接子控件或本就可见时不滚动，不改变焦点对象。
     void RevealFocus()
     {
         const HWND focused = GetFocus();
@@ -101,7 +107,9 @@ struct WindowRenderer::Impl
         this->Arrange();
     }
 
-    // 宿主线程检查，错误不包含用户字段内容。
+    // 检查操作是否在所属 UI 线程以及当前是否允许更改绑定。
+    // 入参：mutableBindings：true 要求尚未创建窗口，false 只检查线程。
+    // 返回：检查通过返回空错误码；跨线程返回 wrong_thread，窗口活动时改绑定返回 window_active。
     RendererResult Check(bool mutableBindings = false) const
     {
         if (GetCurrentThreadId() != this->thread)
@@ -111,13 +119,17 @@ struct WindowRenderer::Impl
         return {};
     }
 
-    // 将 DIP 集中换算为本窗口物理像素。
+    // 将布局 DIP 转换为当前窗口的物理像素。
+    // 入参：value：以 96 DPI 为基准的 DIP 长度。
+    // 返回：按当前 dpi 四舍五入后的物理像素长度。
     int Scale(int value) const
     {
         return MulDiv(value, static_cast<int>(this->dpi), 96);
     }
 
-    // 递归建立稳定索引，只有叶节点创建原生控件。
+    // 递归登记布局节点和叶控件，建立后续绑定的查找表。
+    // 入参：node：自有布局树内的节点，地址在索引使用期间须稳定；page：所属页面 ID，底部控件为空。
+    // 返回：无返回值；保存节点借用指针及叶控件状态，不创建 HWND。
     void Index(const Node& node, const std::string& page)
     {
         this->nodes.emplace(node.id, &node);
@@ -132,7 +144,9 @@ struct WindowRenderer::Impl
             this->Index(child, page);
     }
 
-    // 按类型检查绑定目标，不允许无效 ID 或跨控件类型注册。
+    // 查找可进行绑定的指定类型控件。
+    // 入参：id：目标布局控件 ID；type：要求的节点类型；output：输出参数，成功时接收内部控件借用指针。
+    // 返回：线程、窗口状态及类型均满足时返回空错误码；失败返回结构化错误且不修改 output。
     RendererResult Find(std::string_view id, NodeType type, Control*& output)
     {
         const RendererResult checked = this->Check(true);
@@ -147,7 +161,9 @@ struct WindowRenderer::Impl
         return {};
     }
 
-    // 检查所有交互节点均有对应业务回调。
+    // 检查显示窗口所需的布局、默认动作和控件回调是否完整。
+    // 入参：无。
+    // 返回：完整时返回空错误码；缺失布局、窗口绑定或某控件绑定时返回对应结构化错误。
     RendererResult Validate() const
     {
         const RendererResult checked = this->Check();
@@ -169,7 +185,9 @@ struct WindowRenderer::Impl
         return {};
     }
 
-    // 以系统字体测量单行宽度，调用方负责分配换行空间。
+    // 测量当前字体下单行文本的自然宽度。
+    // 入参：value：借用的宽字符文本。
+    // 返回：物理像素宽度；无法取得设备上下文时回退为 100 DIP 对应的像素值。
     int TextWidth(const std::wstring& value) const
     {
         HDC dc = GetDC(this->window);
@@ -183,7 +201,9 @@ struct WindowRenderer::Impl
         return size.cx;
     }
 
-    // 计算长文本换行高度，空文本不占空间。
+    // 测量指定宽度内文本换行所需的高度。
+    // 入参：value：借用的宽字符文本；width：可用宽度，单位物理像素。
+    // 返回：空文本返回 0；其余返回至少 20 DIP 的像素高度，设备上下文不可用时回退到 24 DIP。
     int TextHeight(const std::wstring& value, int width) const
     {
         if (value.empty())
@@ -199,7 +219,9 @@ struct WindowRenderer::Impl
         return std::max(this->Scale(20), static_cast<int>(bounds.bottom));
     }
 
-    // 字体更新后所有子控件统一使用同一系统字体。
+    // 按当前 DPI 获取系统消息字体并应用到窗口控件。
+    // 入参：无。
+    // 返回：无返回值；字体创建失败时用共享默认 GUI 字体，替换后释放原自有字体。
     void RefreshFont()
     {
         NONCLIENTMETRICSW metrics{sizeof(metrics)};
@@ -222,27 +244,47 @@ struct WindowRenderer::Impl
             DeleteObject(previous);
     }
 
-    // 定位一棵页面布局树，先测量后按滚动偏移放置。
+    // 测量或放置一棵页面节点树，统一处理文字、输入框与字段错误。
+    // 入参：node：待布局节点；x、y：未扣除滚动偏移的页面像素原点；width：可用物理像素宽度；place：true 放置控件，false 只测量。
+    // 返回：整棵节点占用的物理像素高度；放置时将 y 减去当前滚动偏移。
     int ArrangeNode(const Node& node, int x, int y, int width, bool place);
-    // 根据客户区重排固定按钮、标签和可滚动页面。
+    // 重排底部按钮、状态、标签页及当前页面，并更新滚动范围。
+    // 入参：无。
+    // 返回：无返回值；窗口不存在或正在排版时不操作，按钮可换行，页面内容在独立视口内裁剪。
     void Arrange();
-    // 创建原生控件，不读盘且不调用业务写入。
+    // 按照布局顺序创建原生控件并初始化显示草稿。
+    // 入参：无。
+    // 返回：窗口控件、初始值及布局建立成功时为 true；创建或初始读取失败时为 false，已建子窗口由所属窗口统一回收。
     bool CreateControls();
-    // 重新获取一个下拉框的选项与草稿，刷新不发送变更回调。
+    // 重读下拉框或复选框的草稿并刷新可选项及字段错误。
+    // 入参：control：输入输出内部控件状态，已绑定所需读取和选项查询回调。
+    // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
     RendererResult RefreshControl(Control& control);
-    // 执行按钮或下拉框事件，异常在窗口过程边界收敛。
+    // 将原生按钮、复选框和下拉框通知转换为宿主回调。
+    // 入参：wParam：WM_COMMAND 的控件编号及通知码；lParam：发出通知的 HWND。
+    // 返回：无返回值；忙或程序刷新时忽略，拒绝输入恢复已接受值，未在本层收敛的异常交由窗口过程处理。
     void Command(WPARAM wParam, LPARAM lParam);
-    // 执行指定动作，禁用和忙状态下不分派。
+    // 按稳定控件 ID 执行可用按钮的业务动作。
+    // 入参：id：拟触发按钮的布局 ID。
+    // 返回：无返回值；忙、禁用、未知 ID 或无动作时忽略；动作异常由外层消息边界处理。
     void Invoke(std::string_view id);
-    // 主窗口静态过程恢复实例后处理消息。
+    // 恢复 HWND 关联的渲染器并在异常边界内处理主窗口消息。
+    // 入参：window：目标窗口；message：Win32 消息编号；wParam、lParam：该消息的附加参数，创建时 lParam 提供借用 Impl 指针。
+    // 返回：返回实例或默认窗口过程的 LRESULT；处理异常时 WM_CREATE 返回 -1 取消创建，其余返回 0 并报告错误。
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    // 页面容器向所属窗口转发事件并处理滚动。
+    // 处理页面视口的控件通知、滚轮和滚动条消息。
+    // 入参：window：页面视口 HWND；message：Win32 消息编号；wParam、lParam：消息附加参数，创建时用于关联借用 Impl。
+    // 返回：已消费的通知或滚动返回 0；其他消息交给 DefWindowProcW，回调异常被捕获并报告。
     static LRESULT CALLBACK PageProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-    // 主窗口消息实现与系统默认行为衔接。
+    // 分派主窗口控件事件、布局变化和宿主关闭请求。
+    // 入参：target：接收消息的主窗口；message：Win32 消息编号；wParam、lParam：对应附加参数。
+    // 返回：已处理消息返回 Win32 约定结果；WM_CREATE 控件创建失败返回 -1，其余未处理消息返回默认窗口过程结果。
     LRESULT Message(HWND target, UINT message, WPARAM wParam, LPARAM lParam);
 };
 
-// 根据节点尺寸策略测量和排列，页面坐标均为像素。
+// 测量或放置一棵页面节点树，统一处理文字、输入框与字段错误。
+// 入参：node：待布局节点；x、y：未扣除滚动偏移的页面像素原点；width：可用物理像素宽度；place：true 放置控件，false 只测量。
+// 返回：整棵节点占用的物理像素高度；放置时将 y 减去当前滚动偏移。
 int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width, bool place)
 {
     int actualWidth = width;
@@ -288,7 +330,9 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     return height + errorHeight;
 }
 
-// 按钮空间不足时换行，页面内容在独立容器内裁剪及滚动。
+// 重排底部按钮、状态、标签页及当前页面，并更新滚动范围。
+// 入参：无。
+// 返回：无返回值；窗口不存在或正在排版时不操作，按钮可换行，页面内容在独立视口内裁剪。
 void WindowRenderer::Impl::Arrange()
 {
     if (this->window == nullptr || this->arranging)
@@ -383,7 +427,9 @@ void WindowRenderer::Impl::Arrange()
     this->arranging = false;
 }
 
-// 创建所有真实控件，页面内容放进可裁剪的对话框导航容器。
+// 按照布局顺序创建原生控件并初始化显示草稿。
+// 入参：无。
+// 返回：窗口控件、初始值及布局建立成功时为 true；创建或初始读取失败时为 false，已建子窗口由所属窗口统一回收。
 bool WindowRenderer::Impl::CreateControls()
 {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -410,8 +456,10 @@ bool WindowRenderer::Impl::CreateControls()
             return false;
     }
     int controlId = 100;
-    // 遍历布局顺序创建 HWND，使 Tab 顺序与 JSON 内容一致。
     const std::function<bool(const Node&, HWND)> create =
+        // 按布局顺序递归创建叶控件，使原生 Tab 顺序与页面一致。
+        // 入参：node：当前布局节点；parent：叶控件所属 HWND；捕获 Impl、模块句柄、递增 controlId 及递归函数引用。
+        // 返回：当前节点及其子树全部创建成功时为 true；任一 HWND 创建失败时为 false，控件由 parent 管理。
         [this, instance, &controlId, &create](const Node& node, HWND parent)
     {
         if (node.type == NodeType::Column)
@@ -482,7 +530,9 @@ bool WindowRenderer::Impl::CreateControls()
     return true;
 }
 
-// 重新填充下拉框时不改变草稿，无匹配值保持无选择并展示宿主错误。
+// 重读下拉框或复选框的草稿并刷新可选项及字段错误。
+// 入参：control：输入输出内部控件状态，已绑定所需读取和选项查询回调。
+// 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
     if (control.node->type == NodeType::Checkbox)
@@ -545,7 +595,9 @@ RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
     return {};
 }
 
-// 仅向可用按钮分派动作，JSON ID 不被解释为业务操作。
+// 按稳定控件 ID 执行可用按钮的业务动作。
+// 入参：id：拟触发按钮的布局 ID。
+// 返回：无返回值；忙、禁用、未知 ID 或无动作时忽略；动作异常由外层消息边界处理。
 void WindowRenderer::Impl::Invoke(std::string_view id)
 {
     const auto found = this->controls.find(id);
@@ -554,7 +606,9 @@ void WindowRenderer::Impl::Invoke(std::string_view id)
     found->second.action();
 }
 
-// 原生通知通过实际 HWND 对应到绑定，程序填充值不回写。
+// 将原生按钮、复选框和下拉框通知转换为宿主回调。
+// 入参：wParam：WM_COMMAND 的控件编号及通知码；lParam：发出通知的 HWND。
+// 返回：无返回值；忙或程序刷新时忽略，拒绝输入恢复已接受值，未在本层收敛的异常交由窗口过程处理。
 void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
 {
     if (this->busy || this->refreshing)
@@ -636,7 +690,9 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
     }
 }
 
-// 主窗口边界禁止异常传播到系统；创建异常明确取消创建。
+// 恢复 HWND 关联的渲染器并在异常边界内处理主窗口消息。
+// 入参：window：目标窗口；message：Win32 消息编号；wParam、lParam：该消息的附加参数，创建时 lParam 提供借用 Impl 指针。
+// 返回：返回实例或默认窗口过程的 LRESULT；处理异常时 WM_CREATE 返回 -1 取消创建，其余返回 0 并报告错误。
 LRESULT CALLBACK WindowRenderer::Impl::WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     Impl* impl = reinterpret_cast<Impl*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -659,7 +715,9 @@ LRESULT CALLBACK WindowRenderer::Impl::WindowProc(HWND window, UINT message, WPA
     }
 }
 
-// 容器独立裁剪页面，并将所有控件事件交回同一绑定表。
+// 处理页面视口的控件通知、滚轮和滚动条消息。
+// 入参：window：页面视口 HWND；message：Win32 消息编号；wParam、lParam：消息附加参数，创建时用于关联借用 Impl。
+// 返回：已消费的通知或滚动返回 0；其他消息交给 DefWindowProcW，回调异常被捕获并报告。
 LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
     Impl* impl = reinterpret_cast<Impl*>(GetWindowLongPtrW(window, GWLP_USERDATA));
@@ -729,7 +787,9 @@ LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARA
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-// 消息循环保留系统标题栏行为，业务关闭交由宿主。
+// 分派主窗口控件事件、布局变化和宿主关闭请求。
+// 入参：target：接收消息的主窗口；message：Win32 消息编号；wParam、lParam：对应附加参数。
+// 返回：已处理消息返回 Win32 约定结果；WM_CREATE 控件创建失败返回 -1，其余未处理消息返回默认窗口过程结果。
 LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message)
@@ -808,10 +868,14 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
     return DefWindowProcW(target, message, wParam, lParam);
 }
 
-// 构造对象固定 UI 线程，不创建窗口或读取文件。
+// 创建通用窗口渲染器并固定所属 UI 线程。
+// 入参：无。
+// 返回：构造函数无返回值；尚未创建窗口或加载布局，内部存储分配失败可抛出异常。
 WindowRenderer::WindowRenderer() : impl_(std::make_unique<Impl>()) {}
 
-// HWND 先销毁，随后释放字体和捕获回调。
+// 停止窗口分派并释放渲染器拥有的窗口、字体及注册回调。
+// 入参：无。
+// 返回：析构函数无返回值；宿主借用的 HWND 在销毁后失效。
 WindowRenderer::~WindowRenderer()
 {
     if (this->impl_->window != nullptr)
@@ -820,7 +884,9 @@ WindowRenderer::~WindowRenderer()
         DeleteObject(this->impl_->font);
 }
 
-// 候选文档完整解析后再发布并清空旧绑定，不保留外部 JSON 引用。
+// 解析并复制完整窗口布局，为控件绑定建立索引。
+// 入参：document：调用期间借用的布局 JSON。
+// 返回：成功返回空错误码并清空旧绑定；解析或状态检查失败返回结构化错误，保留之前布局。
 RendererResult WindowRenderer::LoadLayout(const nlohmann::json& document)
 {
     const RendererResult checked = this->impl_->Check(true);
@@ -843,7 +909,9 @@ RendererResult WindowRenderer::LoadLayout(const nlohmann::json& document)
     return {};
 }
 
-// 本地化只注册一个解析器，不维护文本键映射。
+// 注册窗口所有文本键使用的本地化查询器。
+// 入参：callback：接收文本键并返回宽字符文本的回调，移入渲染器；其捕获对象须保持存活。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；须在显示前注册，空回调或重复绑定被拒绝。
 RendererResult WindowRenderer::SetTextResolver(std::function<std::wstring(std::string_view)> callback)
 {
     const RendererResult checked = this->impl_->Check(true);
@@ -857,7 +925,9 @@ RendererResult WindowRenderer::SetTextResolver(std::function<std::wstring(std::s
     return {};
 }
 
-// 数据读取和修改成对绑定，选项绑定使用独立槽位。
+// 把下拉框连接到宿主字符串草稿的读取和变更操作。
+// 入参：id：布局中的下拉框 ID；read：返回当前字符串及读取结果的回调；change：接收拟选字符串并返回是否接受的回调；回调移入渲染器。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；非下拉框、空回调或重复绑定被拒绝，拒绝变更时恢复已接受值。
 RendererResult WindowRenderer::BindString(std::string_view id, std::function<RendererStringResult()> read,
                                           std::function<RendererChangeResult(std::string_view)> change)
 {
@@ -874,7 +944,9 @@ RendererResult WindowRenderer::BindString(std::string_view id, std::function<Ren
     return {};
 }
 
-// 布尔值绑定仅属于复选框，不需要选项查询回调。
+// 把复选框连接到宿主布尔草稿的读取和变更操作。
+// 入参：id：布局中的复选框 ID；read：读取当前布尔值的回调；change：接收新布尔值并返回是否接受的回调；回调移入渲染器。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；类型不符、空回调或重复绑定被拒绝。
 RendererResult WindowRenderer::BindBool(std::string_view id, std::function<RendererBoolResult()> read,
                                         std::function<RendererChangeResult(bool)> change)
 {
@@ -891,7 +963,9 @@ RendererResult WindowRenderer::BindBool(std::string_view id, std::function<Rende
     return {};
 }
 
-// 动态选项来源与字段回调分别校验和注册。
+// 为下拉框注册动态选项查询。
+// 入参：id：布局中的下拉框 ID；query：返回稳定值和显示名称列表的回调，移入渲染器。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；选项值唯一性在实际读取选项时检查。
 RendererResult WindowRenderer::BindOptions(std::string_view id, std::function<RendererOptionsResult()> query)
 {
     Impl::Control* control{};
@@ -906,7 +980,9 @@ RendererResult WindowRenderer::BindOptions(std::string_view id, std::function<Re
     return {};
 }
 
-// 动作只允许绑定到按钮，不接受任意代码名称解释。
+// 将布局按钮绑定到宿主业务动作。
+// 入参：id：布局中的按钮 ID；callback：按钮触发时同步调用的无参动作，移入渲染器。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；非按钮、空回调或重复绑定被拒绝。
 RendererResult WindowRenderer::BindAction(std::string_view id, std::function<void()> callback)
 {
     Impl::Control* control{};
@@ -921,7 +997,9 @@ RendererResult WindowRenderer::BindAction(std::string_view id, std::function<voi
     return {};
 }
 
-// 关闭语义属于宿主，Renderer 仅转发用户关闭请求。
+// 把标题栏关闭及 Esc 操作交由宿主决定如何处理。
+// 入参：callback：无参关闭请求回调，移入渲染器；需要退出时由宿主调用 RequestClose。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；须在显示前注册，空回调或重复绑定被拒绝。
 RendererResult WindowRenderer::SetCloseHandler(std::function<void()> callback)
 {
     const RendererResult checked = this->impl_->Check(true);
@@ -935,7 +1013,9 @@ RendererResult WindowRenderer::SetCloseHandler(std::function<void()> callback)
     return {};
 }
 
-// 错误接收器在窗口创建前注册，事件错误仍由宿主本地化。
+// 为控件事件错误注册宿主接收器。
+// 入参：callback：借用 RendererResult 处理结构化错误的回调，移入渲染器；宿主负责本地化。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；须在显示前注册，空回调或重复绑定被拒绝。
 RendererResult WindowRenderer::SetErrorHandler(std::function<void(const RendererResult&)> callback)
 {
     const RendererResult checked = this->impl_->Check(true);
@@ -949,7 +1029,9 @@ RendererResult WindowRenderer::SetErrorHandler(std::function<void(const Renderer
     return {};
 }
 
-// 默认动作按按钮 ID 校验，避免与 Win32 数字 ID 耦合。
+// 指定未被原生控件消费的 Enter 键所触发的按钮。
+// 入参：id：布局中的按钮 ID，复制到渲染器。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；非按钮或重复指定被拒绝。
 RendererResult WindowRenderer::SetDefaultAction(std::string_view id)
 {
     Impl::Control* control{};
@@ -962,13 +1044,17 @@ RendererResult WindowRenderer::SetDefaultAction(std::string_view id)
     return {};
 }
 
-// 创建前集中检查，允许调用方提前显示准确的绑定错误。
+// 检查布局和全部必需回调是否满足窗口创建条件。
+// 入参：无。
+// 返回：布局及绑定完整时返回空错误码；缺失或无效时返回定位到对应控件的结构化错误。
 RendererResult WindowRenderer::ValidateBindings() const
 {
     return this->impl_->Validate();
 }
 
-// 系统窗口创建异常转换为结果，失败不展示残缺界面。
+// 校验绑定并创建和显示非模态原生窗口。
+// 入参：options：借用的 owner 和 icon，以及初始显示命令；图标由宿主保持存活。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；创建过程失败会回收本次窗口资源。
 RendererResult WindowRenderer::Show(const RendererWindowOptions& options)
 {
     const RendererResult checked = this->ValidateBindings();
@@ -1038,7 +1124,9 @@ RendererResult WindowRenderer::Show(const RendererWindowOptions& options)
     }
 }
 
-// 模态循环只暂时禁用原启用的 owner，所有退出路径恢复并保留 WM_QUIT 退出码。
+// 创建并同步运行模态窗口，暂时禁用原本启用的所属窗口。
+// 入参：options：借用所属窗口、图标及显示命令；processThreadMessage：可选线程消息回调，返回 true 表示已消费消息。
+// 返回：正常关闭或收到 WM_QUIT 时返回空错误码；创建、消息循环或回调失败返回结构化错误；恢复本次禁用的 owner，并原码重投 WM_QUIT。
 RendererResult WindowRenderer::ShowModal(const RendererWindowOptions& options,
                                          std::function<bool(MSG&)> processThreadMessage)
 {
@@ -1054,14 +1142,18 @@ RendererResult WindowRenderer::ShowModal(const RendererWindowOptions& options,
     {
         HWND owner;
         bool restore;
-        // 只恢复本次禁用的 owner，允许在销毁模态窗口前提前恢复。
+        // 恢复本次模态调用暂时禁用的所属窗口。
+        // 入参：无。
+        // 返回：无返回值；仅窗口仍存在且 restore 为 true 时重新启用，随后清除 restore，可重复调用。
         void Restore()
         {
             if (this->restore && IsWindow(this->owner))
                 EnableWindow(this->owner, TRUE);
             this->restore = false;
         }
-        // 异常或创建失败同样恢复 owner；原先禁用的窗口始终保持禁用。
+        // 在模态调用退出或异常展开时恢复所属窗口启用状态。
+        // 入参：无。
+        // 返回：析构函数无返回值；委托 Restore，原先禁用的窗口保持禁用。
         ~OwnerGuard()
         {
             this->Restore();
@@ -1127,7 +1219,9 @@ RendererResult WindowRenderer::ShowModal(const RendererWindowOptions& options,
         PostQuitMessage(exitCode);
     return result;
 }
-// 重新取草稿和选项，刷新失败由调用方显示业务错误。
+// 重读控件草稿及动态选项，使显示值与宿主当前状态一致。
+// 入参：无。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；不调用变更回调，结构化刷新错误停止本次刷新，业务读取失败显示控件错误；已刷新的控件不回滚。
 RendererResult WindowRenderer::RefreshValues()
 {
     const RendererResult checked = this->impl_->Check();
@@ -1155,7 +1249,9 @@ RendererResult WindowRenderer::RefreshValues()
     }
 }
 
-// 文本刷新保留原生控件、焦点、草稿和当前页面。
+// 重新查询全部本地化文字并调整窗口布局。
+// 入参：无。
+// 返回：文本查询及更新请求完成时返回空错误码；状态无效或回调异常返回结构化错误；保留原生控件、焦点和草稿。
 RendererResult WindowRenderer::RefreshTexts()
 {
     const RendererResult checked = this->impl_->Check();
@@ -1191,7 +1287,9 @@ RendererResult WindowRenderer::RefreshTexts()
     }
 }
 
-// 可用状态与临时忙状态分离，解除忙状态不错误启用原来禁用的按钮。
+// 设置单个控件的宿主可用状态。
+// 入参：id：目标控件 ID；enabled：true 允许交互，false 禁用。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；窗口忙时控件仍禁用，解除忙状态后恢复该值。
 RendererResult WindowRenderer::SetEnabled(std::string_view id, bool enabled)
 {
     const RendererResult checked = this->impl_->Check();
@@ -1206,7 +1304,9 @@ RendererResult WindowRenderer::SetEnabled(std::string_view id, bool enabled)
     return {};
 }
 
-// 忙状态阻止重复操作与关闭，保存每项独立可用状态。
+// 临时禁止窗口交互和关闭请求，结束后恢复各控件状态。
+// 入参：busy：true 进入忙状态，false 恢复交互。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；解除时尝试恢复之前仍有效且可用的焦点控件。
 RendererResult WindowRenderer::SetBusy(bool busy)
 {
     const RendererResult checked = this->impl_->Check();
@@ -1229,20 +1329,26 @@ RendererResult WindowRenderer::SetBusy(bool busy)
     return {};
 }
 
-// 当前页面身份供宿主决定恢复哪些业务字段。
+// 向宿主提供当前页面的业务标识。
+// 入参：无。
+// 返回：当前页面 ID 的字符串副本；尚未加载布局时返回空字符串。
 std::string WindowRenderer::GetActivePageId() const
 {
     return this->impl_->loaded ? this->impl_->layout.pages[this->impl_->pageIndex].id : std::string{};
 }
 
-// 控件所在页由实际布局得到，移动控件不需要修改业务页面映射。
+// 查询某控件在当前布局中所属的页面。
+// 入参：id：待查询的控件 ID。
+// 返回：所属页面 ID 的副本；未知控件或底部公共控件返回空字符串。
 std::string WindowRenderer::GetControlPageId(std::string_view id) const
 {
     const auto found = this->impl_->controls.find(id);
     return found == this->impl_->controls.end() ? std::string{} : found->second.page;
 }
 
-// 字段错误文字由宿主本地化提供，并参与页面测量。
+// 在输入控件附近显示宿主提供的字段错误。
+// 入参：id：下拉框或复选框 ID；text：已本地化的错误文字，移入控件状态，空串用于清除。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；未知 ID 或非输入控件被拒绝，错误参与重新布局。
 RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring text)
 {
     const RendererResult checked = this->impl_->Check();
@@ -1260,7 +1366,9 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
     return {};
 }
 
-// 保存状态在窗口底部固定显示，长文本重新分配页面空间。
+// 设置窗口底部的公共状态文字。
+// 入参：text：宿主已本地化的状态文本，移入渲染器，空串用于清除。
+// 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；更新已存在的状态控件并重新计算布局。
 RendererResult WindowRenderer::SetStatus(std::wstring text)
 {
     const RendererResult checked = this->impl_->Check();
@@ -1273,7 +1381,9 @@ RendererResult WindowRenderer::SetStatus(std::wstring text)
     return {};
 }
 
-// 使用消息延迟销毁，避免销毁正在分派的 std::function。
+// 投递延迟关闭请求，避免销毁正在执行的事件回调。
+// 入参：无。
+// 返回：投递成功或窗口已不存在时返回空错误码；忙状态、线程检查或投递失败返回结构化错误，成功不表示窗口已同步销毁。
 RendererResult WindowRenderer::RequestClose()
 {
     const RendererResult checked = this->impl_->Check();
@@ -1286,7 +1396,9 @@ RendererResult WindowRenderer::RequestClose()
     return {};
 }
 
-// 下拉框展开优先处理 Enter/Esc，其余交给默认动作和原生 Tab 导航。
+// 为窗口处理 Enter、Esc 和 Tab 等键盘导航消息。
+// 入参：message：待处理的 Win32 消息引用，所属窗口及子控件消息才参与处理。
+// 返回：消息被消费时为 true；无有效窗口、消息不属于本窗口或下拉框应先自行处理时为 false。
 bool WindowRenderer::ProcessDialogMessage(MSG& message)
 {
     if (!this->impl_->Check() || this->impl_->window == nullptr)
@@ -1315,7 +1427,9 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
     return handled;
 }
 
-// HWND 仅借用，禁止宿主销毁或改变 Renderer 所有权。
+// 向宿主提供用于窗口协调的原生句柄。
+// 入参：无。
+// 返回：当前 HWND 的借用值；尚未创建或已销毁时为 nullptr，宿主不得据此取得销毁所有权。
 HWND WindowRenderer::NativeHandle() const noexcept
 {
     return this->impl_->window;

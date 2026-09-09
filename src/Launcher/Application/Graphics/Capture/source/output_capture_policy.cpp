@@ -1,10 +1,14 @@
+// 文件职责：实现捕获格式优先级、受控兼容回退及像素颜色空间和旋转映射策略。
+
 #include "output_capture_policy.h"
 
 #include <array>
 
 namespace open_st
 {
-// 返回进程期稳定的高色深优先协商表，调用方只借用其只读存储。
+// 提供 Desktop Duplication 的原生格式协商优先级。
+// 入参：无。
+// 返回：静态格式数组的只读视图，高色深格式位于兼容 BGRA8 之前。
 std::span<const DXGI_FORMAT> PreferredDuplicationFormats() noexcept
 {
     static constexpr std::array formats{
@@ -15,14 +19,18 @@ std::span<const DXGI_FORMAT> PreferredDuplicationFormats() noexcept
     return formats;
 }
 
-// 把接口查询和高色深会话结果收敛为严格的兼容降级判定。
+// 判断高色深捕获失败是否符合已批准的旧接口回退条件。
+// 入参：output5QueryResult：查询 IDXGIOutput5 的 HRESULT；duplicateOutput1Result：DuplicateOutput1 的 HRESULT。
+// 返回：接口不存在或高色深复制明确不支持时为 true，其他结果为 false。
 bool ShouldUseLegacyDuplication(HRESULT output5QueryResult, HRESULT duplicateOutput1Result) noexcept
 {
     return output5QueryResult == E_NOINTERFACE ||
            (SUCCEEDED(output5QueryResult) && duplicateOutput1Result == DXGI_ERROR_UNSUPPORTED);
 }
 
-// 把 Windows 常见 SDR、scRGB 和 HDR10 输出颜色空间映射到冻结模型。
+// 将 DXGI 输出颜色空间转换为冻结帧使用的稳定枚举。
+// 入参：colorSpace：DXGI 输出报告的颜色空间。
+// 返回：对应的 SDR、scRGB 或 HDR10 枚举；不支持的值返回 Unknown。
 CapturedColorSpace MapCapturedColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) noexcept
 {
     switch (colorSpace)
@@ -38,7 +46,9 @@ CapturedColorSpace MapCapturedColorSpace(DXGI_COLOR_SPACE_TYPE colorSpace) noexc
     }
 }
 
-// 接受当前冻结模型能够逐字节保存的三个 DXGI 像素格式。
+// 将桌面复制实际返回的 DXGI 格式映射为原生帧格式。
+// 入参：format：DXGI 像素格式；mappedFormat：输出参数，成功时写入对应捕获格式。
+// 返回：支持 BGRA8、RGB10A2 或 FP16 时为 true；未知格式为 false 且不改 mappedFormat。
 bool TryMapCapturedPixelFormat(DXGI_FORMAT format, CapturedPixelFormat& mappedFormat) noexcept
 {
     switch (format)
@@ -57,7 +67,9 @@ bool TryMapCapturedPixelFormat(DXGI_FORMAT format, CapturedPixelFormat& mappedFo
     }
 }
 
-// 固定 BGRA8 为 sRGB、FP16 为 scRGB；RGB10A2 依赖显示输出报告的颜色空间。
+// 结合像素格式与显示颜色空间确定冻结像素的实际解码语义。
+// 入参：format：桌面复制取得的像素格式；displayColorSpace：显示输出报告的颜色空间。
+// 返回：BGRA8 对应 SDR，FP16 对应 scRGB，RGB10A2 沿用显示颜色空间；未知格式返回 Unknown。
 CapturedColorSpace ResolveCapturedPixelColorSpace(CapturedPixelFormat format,
                                                    CapturedColorSpace displayColorSpace) noexcept
 {
@@ -74,7 +86,9 @@ CapturedColorSpace ResolveCapturedPixelColorSpace(CapturedPixelFormat format,
     }
 }
 
-// 接受 Desktop Duplication 定义的四种有效桌面表面方向。
+// 把 DXGI 旋转枚举转换为纯像素复制使用的旋转枚举。
+// 入参：rotation：DXGI 报告的表面旋转；mappedRotation：输出参数，成功时写入对应旋转方式。
+// 返回：旋转受支持时为 true；未知值为 false 且不修改 mappedRotation。
 bool TryMapCapturedRotation(DXGI_MODE_ROTATION rotation, CapturedSurfaceRotation& mappedRotation) noexcept
 {
     switch (rotation)
@@ -97,7 +111,9 @@ bool TryMapCapturedRotation(DXGI_MODE_ROTATION rotation, CapturedSurfaceRotation
     }
 }
 
-// 区分“使用旧接口”与“已发生 HDR→SDR”，避免普通 SDR 兼容路径被错误标记。
+// 识别 HDR 显示输出是否实际只取得系统已转换的 SDR 数据。
+// 入参：format：实际捕获格式；displayColorSpace：显示输出报告的颜色空间。
+// 返回：HDR10 或 scRGB 显示输出实际返回 BGRA8 时为 true，其余为 false。
 bool WasSystemConvertedToSdr(CapturedPixelFormat format, CapturedColorSpace displayColorSpace) noexcept
 {
     return format == CapturedPixelFormat::Bgra8Unorm &&

@@ -1,3 +1,5 @@
+// 提供隔离设置和模拟自启回调的欢迎窗口人工验收用例。
+
 #include "json_file_test_access.h"
 #include "settings_internal.h"
 #include <array>
@@ -16,6 +18,8 @@ class WelcomeManualTest : public testing::Test
 {
   protected:
     // 人工验收必须显式开启，普通回归不创建窗口或等待输入。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         std::array<wchar_t, 8> enabled{};
@@ -40,6 +44,8 @@ class WelcomeManualTest : public testing::Test
     }
 
     // 只清理本用例创建的隔离设置目录，退出不触及真实启动入口。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         if (this->root_.empty())
@@ -55,7 +61,9 @@ class WelcomeManualTest : public testing::Test
     std::filesystem::path root_;
 };
 
-// 无定时器和自动关闭，由用户检查复选框后主动确认、退出或关闭窗口。
+// 验证无定时器和自动关闭，由用户检查复选框后主动确认、退出或关闭窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(WelcomeManualTest, waits_for_user_close)
 {
     const std::map<std::string, std::wstring, std::less<>> texts = {
@@ -70,11 +78,17 @@ TEST_F(WelcomeManualTest, waits_for_user_close)
         {"welcome.confirm", L"确认"},
         {"welcome.exit", L"退出"}};
     open_st::SettingsWindowCallbacks callbacks;
+    // 从人工验收专用文本表查询文案，未知键直接显示键名。
+    // 入参：key 为待查询的测试界面文本键。
+    // 返回：人工验收文案；未知键返回由键名构造的宽字符串。
     callbacks.text = [&texts](std::string_view key)
     {
         const auto found = texts.find(key);
         return found == texts.end() ? std::wstring(key.begin(), key.end()) : found->second;
     };
+    // 模拟自启设置成功，人工验收不修改真实启动项。
+    // 入参：未命名 bool 为期望的自启启用状态；本模拟回调不按该值区分处理。
+    // 返回：固定为 true，表示模拟自启设置成功。
     callbacks.startupApplied = [](bool) { return true; };
     open_st::WelcomeWindow window;
     (void)window.ShowModal(GetModuleHandleW(nullptr), std::move(callbacks));

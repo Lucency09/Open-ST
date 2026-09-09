@@ -1,3 +1,5 @@
+// 验证通用窗口布局模型的解析、结构约束与控件标识校验。
+
 #include "renderer_model.h"
 #include <gtest/gtest.h>
 #include <limits>
@@ -7,6 +9,8 @@ namespace
 using open_st::renderer_detail::Layout;
 using open_st::renderer_detail::ParseLayout;
 // 创建无业务依赖的完整布局，用于逐项修改协议边界。
+// 入参：无显式入参。
+// 返回：供结构校验测试修改的合法窗口布局 JSON。
 nlohmann::json Document()
 {
     return nlohmann::json::parse(R"({
@@ -20,6 +24,8 @@ nlohmann::json Document()
     })");
 }
 // 验证布局不借用输入 JSON，输入销毁后仍保留控件与文字键。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, copies_document)
 {
     Layout layout;
@@ -30,7 +36,9 @@ TEST(RendererParserTest, copies_document)
     EXPECT_EQ(layout.pages[0].content.children[0].id, "choice");
     EXPECT_EQ(layout.trailing[0].textKey, "confirm");
 }
-// 复选框共享字段标签协议，不接受业务值或文本节点属性。
+// 验证复选框共享字段标签协议，不接受业务值或文本节点属性。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, checkbox_requires_label_and_rejects_embedded_value)
 {
     nlohmann::json document = Document();
@@ -45,7 +53,9 @@ TEST(RendererParserTest, checkbox_requires_label_and_rejects_embedded_value)
     node.erase("labelKey");
     EXPECT_EQ(ParseLayout(document, layout).code, "missing_property");
 }
-// 页面与底部按钮共享 ID 空间，重复时附带定位并保留旧输出。
+// 验证页面与底部按钮共享 ID 空间，重复时附带定位并保留旧输出。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, rejects_duplicate_ids_transactionally)
 {
     Layout layout;
@@ -58,7 +68,9 @@ TEST(RendererParserTest, rejects_duplicate_ids_transactionally)
     EXPECT_EQ(result.path, "/footer/trailing/0/id");
     EXPECT_EQ(layout.trailing[0].id, "confirm");
 }
-// 未知属性、节点类别及协议版本不能被默认忽略。
+// 验证未知属性、节点类别及协议版本不能被默认忽略。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, rejects_unknown_protocol_fields)
 {
     Layout layout;
@@ -72,7 +84,9 @@ TEST(RendererParserTest, rejects_unknown_protocol_fields)
     document["pages"][0]["content"]["children"][0]["type"] = "script";
     EXPECT_EQ(ParseLayout(document, layout).code, "unknown_node");
 }
-// 负数、布尔、过大无符号值及浮点尺寸均不能进入布局计算。
+// 验证负数、布尔、过大无符号值及浮点尺寸均不能进入布局计算。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, rejects_invalid_dimensions)
 {
     const std::vector<nlohmann::json> invalid = {-1, true, 0, 1.5, std::numeric_limits<std::uint64_t>::max()};
@@ -84,7 +98,9 @@ TEST(RendererParserTest, rejects_invalid_dimensions)
         EXPECT_EQ(ParseLayout(document, layout).code, "invalid_dimension");
     }
 }
-// 递归布局深度超过上限必须在创建窗口之前拒绝。
+// 验证递归布局深度超过上限必须在创建窗口之前拒绝。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, limits_depth)
 {
     nlohmann::json node = {{"type", "text"}, {"id", "leaf"}, {"textKey", "text"}};
@@ -96,7 +112,9 @@ TEST(RendererParserTest, limits_depth)
     Layout layout;
     EXPECT_EQ(ParseLayout(document, layout).code, "depth_limit");
 }
-// 过大节点总量在协议解析阶段拒绝，包含页面及容器计数。
+// 验证过大节点总量在协议解析阶段拒绝，包含页面及容器计数。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, limits_node_count)
 {
     nlohmann::json document = Document();
@@ -106,7 +124,9 @@ TEST(RendererParserTest, limits_node_count)
     Layout layout;
     EXPECT_EQ(ParseLayout(document, layout).code, "node_limit");
 }
-// 不允许空页面、非容器页内容及底部交互类型混用。
+// 验证不允许空页面、非容器页内容及底部交互类型混用。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererParserTest, rejects_invalid_structure)
 {
     Layout layout;

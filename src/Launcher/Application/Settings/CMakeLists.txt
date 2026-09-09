@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/Settings 模块的源码、公开头及构建依赖。
+
 # Settings 拥有设置业务与非模态窗口；仅使用 Common 通用 JSON 句柄读写文件。
 add_library(open_st_settings_window STATIC)
 add_library(OpenST::SettingsWindow ALIAS open_st_settings_window)

@@ -1,3 +1,5 @@
+# 配置 Launcher/Application/SystemIntegration 模块的源码、公开头及构建依赖。
+
 add_library(open_st_system_integration STATIC)
 add_library(OpenST::SystemIntegration ALIAS open_st_system_integration)
 target_sources(open_st_system_integration PRIVATE source/startup_registration.cpp source/single_instance.cpp

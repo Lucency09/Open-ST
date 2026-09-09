@@ -1,3 +1,5 @@
+// 验证启动参数、隔离注册表启动项与单实例跨进程命令通信。
+
 #include <gtest/gtest.h>
 #include <single_instance.h>
 #include <startup_registration.h>
@@ -8,6 +10,8 @@ namespace open_st
 namespace
 {
 // 为每个用例生成不与产品系统入口重叠的名称。
+// 入参：无显式入参。
+// 返回：包含进程 ID 和递增序号的测试专用实例名称。
 std::wstring UniqueName()
 {
     static unsigned sequence{};
@@ -18,12 +22,16 @@ class StartupRegistrationTest : public testing::Test
   protected:
     std::wstring key_ = L"Software\\Open-ST-Tests\\" + UniqueName();
     // 仅清理本用例创建的专属测试键，不访问真实 Run 项。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         RegDeleteTreeW(HKEY_CURRENT_USER, this->key_.c_str());
     }
 };
 // 验证启用、查询、重复禁用及带空格路径的引号命令契约。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, enable_query_disable)
 {
     StartupRegistration registration(L"C:\\Open ST\\Open-ST.exe", this->key_);
@@ -34,6 +42,8 @@ TEST_F(StartupRegistrationTest, enable_query_disable)
     EXPECT_EQ(registration.Apply(false).state, StartupState::Missing);
 }
 // 验证旧路径必须获得明确修复授权后才会被新路径覆盖。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, moved_path_requires_confirmation)
 {
     StartupRegistration oldPath(L"C:\\Old\\Open-ST.exe", this->key_);
@@ -45,6 +55,8 @@ TEST_F(StartupRegistrationTest, moved_path_requires_confirmation)
     EXPECT_EQ(newPath.Apply(true, true).state, StartupState::CurrentPath);
 }
 // 验证外部不属于本程序的值不会被启用、禁用或修复覆盖。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, unrelated_value_is_preserved)
 {
     StartupRegistration other(L"C:\\Other.exe", this->key_);
@@ -55,6 +67,8 @@ TEST_F(StartupRegistrationTest, unrelated_value_is_preserved)
     EXPECT_EQ(other.Query().state, StartupState::CurrentPath);
 }
 // 验证超长、相对或包含引号的启动路径不会创建入口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, invalid_command_is_rejected)
 {
     EXPECT_EQ(StartupRegistration(L"Open-ST.exe", this->key_).Apply(true).state, StartupState::Failed);
@@ -64,6 +78,8 @@ TEST_F(StartupRegistrationTest, invalid_command_is_rejected)
     EXPECT_EQ(StartupRegistration(L"C:\\Open-ST.exe", this->key_).Query().state, StartupState::Missing);
 }
 // 验证 Run 命令允许恰好 260 字符，超过一个字符时不截断或覆盖旧值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, run_command_length_boundary)
 {
     StartupRegistration allowed(L"C:\\" + std::wstring(241, L'x') + L".exe", this->key_);
@@ -73,6 +89,8 @@ TEST_F(StartupRegistrationTest, run_command_length_boundary)
     EXPECT_EQ(allowed.Query().state, StartupState::CurrentPath);
 }
 // 验证外部写入的非字符串值会被报告为冲突而不会被删除。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(StartupRegistrationTest, wrong_registry_type_is_preserved)
 {
     HKEY key{};
@@ -89,6 +107,8 @@ TEST_F(StartupRegistrationTest, wrong_registry_type_is_preserved)
     EXPECT_EQ(registration.Apply(false).state, StartupState::Conflict);
 }
 // 验证未知和互斥参数不改变上次解析结果。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(LaunchCommandTest, fixed_commands_only)
 {
     LaunchCommand command = LaunchCommand::Normal;
@@ -102,6 +122,8 @@ TEST(LaunchCommandTest, fixed_commands_only)
     EXPECT_EQ(command, LaunchCommand::Startup);
 }
 // 验证同用户同名只产生一个主实例，尚未开始监听时会有限超时。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceTest, duplicate_does_not_become_primary)
 {
     const std::wstring name = UniqueName();
@@ -113,6 +135,8 @@ TEST(SingleInstanceTest, duplicate_does_not_become_primary)
     EXPECT_LT(GetTickCount64() - before, 1000u);
 }
 // 验证固定命令经管道传输后只异步投递到目标窗口，停止不需要客户端连接。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceTest, pipe_forwards_command_and_stops)
 {
     const std::wstring name = UniqueName();
@@ -131,12 +155,17 @@ TEST(SingleInstanceTest, pipe_forwards_command_and_stops)
     DestroyWindow(window);
 }
 // 验证暂停门禁在接收线程拒绝截图且不投递消息，普通启动仍可到达。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceTest, capture_gate_rejects_paused_request)
 {
     const std::wstring name = UniqueName();
     SingleInstance primary(name), secondary(name);
     ASSERT_EQ(primary.Acquire().result, InstanceResult::Primary);
     ASSERT_EQ(secondary.Acquire().result, InstanceResult::Forwarded);
+    // 模拟截图门禁忙状态，以空代次拒绝转发请求。
+    // 入参：无显式入参。
+    // 返回：std::nullopt，表示门禁拒绝本次截图请求。
     primary.SetCaptureGate([]() -> std::optional<LPARAM> { return std::nullopt; });
     HWND window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     ASSERT_NE(window, nullptr);
@@ -154,12 +183,17 @@ TEST(SingleInstanceTest, capture_gate_rejects_paused_request)
     DestroyWindow(window);
 }
 // 验证允许截图携带接收时的代次，供 UI 丢弃已过期请求。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceTest, capture_gate_passes_generation_token)
 {
     const std::wstring name = UniqueName();
     SingleInstance primary(name), secondary(name);
     ASSERT_EQ(primary.Acquire().result, InstanceResult::Primary);
     ASSERT_EQ(secondary.Acquire().result, InstanceResult::Forwarded);
+    // 返回固定截图代次，验证管道接收将其传入窗口消息。
+    // 入参：无显式入参。
+    // 返回：含代次 42 的 optional，供接收消息的 lParam 断言使用。
     primary.SetCaptureGate([]() -> std::optional<LPARAM> { return 42; });
     HWND window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     ASSERT_NE(window, nullptr);
@@ -174,6 +208,8 @@ TEST(SingleInstanceTest, capture_gate_passes_generation_token)
     DestroyWindow(window);
 }
 // 验证管道延迟创建时次实例重试可以成功，而不会错误启动第二个实例。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceTest, startup_readiness_retry)
 {
     const std::wstring name = UniqueName();
@@ -183,6 +219,9 @@ TEST(SingleInstanceTest, startup_readiness_retry)
     HWND window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     ASSERT_NE(window, nullptr);
     InstanceStatus result;
+    // 在客户端线程限时转发普通启动命令，验证服务器稍后就绪仍可接收。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     std::thread client([&]() { result = secondary.Forward(LaunchCommand::Normal, 2000); });
     Sleep(40);
     EXPECT_TRUE(primary.StartListening(window, WM_APP + 44));
@@ -191,7 +230,9 @@ TEST(SingleInstanceTest, startup_readiness_retry)
     primary.Stop();
     DestroyWindow(window);
 }
-// 仅由父用例通过环境变量激活子进程接收端；普通测试枚举必须跳过。
+// 验证仅由父用例通过环境变量激活子进程接收端；普通测试枚举必须跳过。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceProcessTest, child_receiver)
 {
     wchar_t name[256]{};
@@ -229,6 +270,8 @@ TEST(SingleInstanceProcessTest, child_receiver)
     DestroyWindow(window);
 }
 // 验证独立进程共享用户互斥体并能通过受限管道转发命令。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(SingleInstanceProcessTest, forwards_between_processes)
 {
     const std::wstring name = UniqueName();

@@ -1,3 +1,5 @@
+// 定义通用表单的私有布局树及严格 JSON 布局解析入口。
+
 #pragma once
 #include "window_renderer.h"
 namespace open_st::renderer_detail
@@ -39,6 +41,8 @@ struct Layout
     std::vector<Node> leading;
     std::vector<Node> trailing;
 };
-// 解析并复制完整布局；失败保留输出，错误携带 JSON 路径和控件 ID。
+// 校验并解析 JSON 布局为可独立持有的窗口布局树。
+// 入参：document：调用期间借用的完整布局 JSON；output：输出参数，成功时接收解析后的布局。
+// 返回：错误码为空表示成功；失败提供错误码、JSON 路径及控件 ID，保留 output 原值。
 RendererResult ParseLayout(const nlohmann::json& document, Layout& output);
 } // namespace open_st::renderer_detail

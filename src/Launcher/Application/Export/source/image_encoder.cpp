@@ -1,3 +1,5 @@
+// 校验 SDR 像素范围，并用 WIC 编码带 sRGB 元数据的 PNG/JPEG 图像。
+
 #include "image_encoder.h"
 
 #include <Windows.h>
@@ -11,7 +13,9 @@ namespace open_st
 {
 namespace
 {
-// 保留具体 HRESULT 供上层记录，用户可见错误由 Application 本地化。
+// 检查 WIC 或内存流调用结果，并把失败阶段写入诊断。
+// 入参：result：待检查的 HRESULT；operation：失败操作的宽字符名称；error：输出参数，接收操作名称及 HRESULT。
+// 返回：HRESULT 成功时为 true；失败时为 false 并写入 error。
 bool CheckResult(HRESULT result, const wchar_t* operation, std::wstring& error)
 {
     if (SUCCEEDED(result))
@@ -23,7 +27,9 @@ bool CheckResult(HRESULT result, const wchar_t* operation, std::wstring& error)
 }
 } // namespace
 
-// 在任何像素访问和尺寸乘法之前验证输入范围，允许最后一行不带 padding。
+// 检查 SDR 图像视图能否被 Windows 图像接口安全读取。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 返回：尺寸、行跨度及缓冲区覆盖范围有效时为 true；否则为 false，允许最后一行不带行尾填充。
 bool ValidateSdrImage(const SdrImageView& image, std::wstring& error)
 {
     error.clear();
@@ -47,7 +53,10 @@ bool ValidateSdrImage(const SdrImageView& image, std::wstring& error)
     return true;
 }
 
-// 使用 WIC 内存流编码不透明 BGR24，明确记录 sRGB 色彩语义。
+// 将 SDR 图像编码为含 sRGB 元数据的 PNG 或 JPEG 内存字节，调用线程须已初始化 COM。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；format：PNG 或 JPEG
+// 编码格式；encoded：输出参数，成功时接收自有编码字节；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 返回：完整编码成功时为 true；输入、格式、WIC 调用或分配失败时为 false，encoded 保持原值。
 bool EncodeSdrImage(const SdrImageView& image, ImageFileFormat format, std::vector<std::uint8_t>& encoded,
                     std::wstring& error)
 {

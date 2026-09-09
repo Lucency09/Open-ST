@@ -1,3 +1,5 @@
+// 文件职责：实现 HDR 像素解码及 Windows 原生效果色调映射，验证效果属性并回读 SDR 输出。
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -16,7 +18,9 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-// 记录 HRESULT 与具体阶段，不包含图像内容。
+// 检查图形调用 HRESULT，并在失败时补充具体效果阶段诊断。
+// 入参：result：待检查的 HRESULT；stage：图形调用阶段的宽字符描述；error：输出参数，失败时写入阶段及 HRESULT。
+// 返回：HRESULT 成功时为 true；失败时为 false 并写入 error。
 bool Check(HRESULT result, const wchar_t* stage, std::wstring& error)
 {
     if (SUCCEEDED(result))
@@ -29,7 +33,10 @@ bool Check(HRESULT result, const wchar_t* stage, std::wstring& error)
     return false;
 }
 
-// 设置并回读简单属性，避免驱动或效果拒绝参数后静默采用默认值。
+// 设置并回读原生图像效果属性，确认效果接受所请求的参数。
+// 入参：effect：借用的 D2D 效果对象；property：效果属性索引；value：拟写入的属性值；error：输出参数，接收失败诊断。
+//       模板参数 T：支持效果属性读写及相等比较的属性值类型。
+// 返回：属性写入、读取均成功且回读值一致时为 true；任一步失败或值不一致时为 false。
 template <typename T> bool SetChecked(ID2D1Effect* effect, UINT32 property, T value, std::wstring& error)
 {
     T actual{};
@@ -46,7 +53,10 @@ template <typename T> bool SetChecked(ID2D1Effect* effect, UINT32 property, T va
     return true;
 }
 
-// 紧凑解码为 FP16/scRGB 并统计内容峰值；不缩放 Windows 已合成的 SDR 白。
+// 将借用 HDR 图像解码为紧凑 FP16/scRGB，并统计内容峰值用于原生色调映射。
+// 入参：image：HDR 原始像素、尺寸和字节行跨度；linear：输出参数，接收 FP16 RGBA 通道；peakNits：输出参数，接收最大正 RGB 亮度，单位
+// nit；error：输出参数，接收输入或颜色异常诊断。
+// 返回：完成全部像素解码时为 true；尺寸、格式或通道非法时为 false，linear 可能包含尚未完成的数据。
 bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& linear, float& peakNits,
             std::wstring& error)
 {
@@ -145,7 +155,9 @@ class NativeToneMapper::Impl final
     bool warpAttempted{};
     std::wstring initializationError;
 
-    // 断开输入和目标引用并释放 D2D 图像缓存，保留设备及小型效果。
+    // 断开效果图对单张图像的引用并释放图像资源，降低转换后的驻留内存。
+    // 入参：无。
+    // 返回：无返回值；输入、输出图像引用与 D2D 图像缓存被释放，设备和可复用效果仍保留。
     void ReleaseImages() noexcept
     {
         if (this->tone)
@@ -167,7 +179,9 @@ class NativeToneMapper::Impl final
         }
     }
 
-    // 创建指定驱动类型的整个效果链；调用方统一执行最多一次 WARP 降级。
+    // 按指定驱动类型创建并验证原生色调映射所需的 D3D/D2D 设备和效果。
+    // 入参：driver：D3D 硬件或 WARP 驱动类型；error：输出参数，接收设备或效果初始化失败原因。
+    // 返回：设备及所需效果均可用时为 true；初始化或属性校验失败时为 false。
     bool InitializeDriver(D3D_DRIVER_TYPE driver, std::wstring& error)
     {
         this->color.Reset();
@@ -251,7 +265,9 @@ class NativeToneMapper::Impl final
         return true;
     }
 
-    // 绑定首次使用线程并缓存初始化结果，不因反复重试而重复冷启动。
+    // 在首次使用线程建立并缓存色调映射设备，硬件失败时尝试一次 WARP。
+    // 入参：error：输出参数，初始化失败或跨线程调用时接收诊断。
+    // 返回：设备可用时为 true；跨线程调用或初始化失败时为 false，失败结果被缓存。
     bool Initialize(std::wstring& error)
     {
         if (this->threadId != 0U && this->threadId != GetCurrentThreadId())
@@ -289,19 +305,27 @@ class NativeToneMapper::Impl final
     }
 };
 
-// 创建惰性设备容器，不在构造函数中占用 GPU。
+// 创建HDR 原生色调映射器的内部资源容器，延迟到首次初始化时建立图形设备。
+// 入参：无。
+// 返回：无返回值；构造后的对象尚未建立图形设备，内存分配失败可抛出异常。
 NativeToneMapper::NativeToneMapper() : impl_(std::make_unique<Impl>()) {}
-// 释放仍连接的图像，再由 ComPtr 释放设备和效果图。
+// 释放色调映射效果、设备及仍被效果引用的单张图像。
+// 入参：无。
+// 返回：无返回值；析构完成对应资源清理。
 NativeToneMapper::~NativeToneMapper()
 {
     this->ReleaseImageResources();
 }
-// 主动断开当前图像引用，用于截图结束及错误清理。
+// 释放本次图像转换使用的大块资源，同时保留可复用转换设备。
+// 入参：无。
+// 返回：无返回值；效果图不再引用单张图像，图像缓存被释放，可再次执行转换。
 void NativeToneMapper::ReleaseImageResources() noexcept
 {
     this->impl_->ReleaseImages();
 }
-// 使用微小黑色图像执行完整链路，在 UI 空闲消息中支付首次编译成本。
+// 建立并预热 HDR 色调映射资源，避免第一次选区输出承担全部初始化成本。
+// 入参：errorMessage：输出参数，失败时接收初始化或预热原因。
+// 返回：设备及微小图像预热成功时为 true；受控回退后仍失败或分配异常时为 false。
 bool NativeToneMapper::Prepare(std::wstring& errorMessage)
 try
 {
@@ -339,7 +363,9 @@ catch (const std::exception&)
     return false;
 }
 
-// 执行单次原生效果链并读回 BGRA8；局部位图及输入引用在所有出口释放。
+// 通过 Windows 原生效果将借用 HDR 图像转换为紧凑 SDR/sRGB 输出。
+// 入参：image：只在调用期间借用的 HDR 图像视图；bgra：输出参数，接收紧凑 BGRA8 字节且 alpha 为 255；errorMessage：输出参数，接收失败诊断。
+// 返回：完成解码、原生映射和 GPU 回读时为 true；失败为 false，bgra 清空，不发布部分图像。
 bool NativeToneMapper::Convert(const HdrImageView& image, std::vector<std::uint8_t>& bgra, std::wstring& errorMessage)
 try
 {
@@ -355,7 +381,9 @@ try
     struct ImageGuard final
     {
         NativeToneMapper& mapper;
-        // 局部位图析构后清除效果持有的最后引用。
+        // 在转换退出或异常展开时断开效果图对本次图像的引用。
+        // 入参：无。
+        // 返回：无返回值；析构完成对应资源清理。
         ~ImageGuard()
         {
             this->mapper.ReleaseImageResources();

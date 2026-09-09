@@ -1,3 +1,5 @@
+// 提供显式启用且等待真人关闭的通用窗口视觉验收用例。
+
 #include <window_renderer.h>
 
 #include <gtest/gtest.h>
@@ -9,7 +11,9 @@
 
 namespace
 {
-// 只有明确启用环境开关才等待真人关闭；普通回归测试跳过，不能用定时器冒充人工验收。
+// 验证只有明确启用环境开关才等待真人关闭；普通回归测试跳过，不能用定时器冒充人工验收。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST(RendererManualTest, waits_for_user_close)
 {
     std::array<wchar_t, 4> enabled{};
@@ -46,6 +50,9 @@ TEST(RendererManualTest, waits_for_user_close)
     open_st::WindowRenderer renderer;
     ASSERT_TRUE(renderer.LoadLayout(layout));
     ASSERT_TRUE(renderer.SetTextResolver(
+        // 提供人工验收窗口的标题、正文和按钮文本，未知键原样显示。
+        // 入参：key 为待查询的测试界面文本键。
+        // 返回：人工验收文案；未知键返回由键名构造的宽字符串。
         [](std::string_view key) -> std::wstring
         {
             if (key == "title")
@@ -65,12 +72,18 @@ TEST(RendererManualTest, waits_for_user_close)
         }));
     bool closeRequested = false;
     ASSERT_TRUE(renderer.BindAction("confirm",
+                                    // 记录确认按钮触发的关闭请求，并检查窗口接受关闭。
+                                    // 入参：无显式入参。
+                                    // 返回：无返回值。
                                     [&renderer, &closeRequested]()
                                     {
                                         closeRequested = true;
                                         EXPECT_TRUE(renderer.RequestClose());
                                     }));
     ASSERT_TRUE(renderer.SetCloseHandler(
+        // 记录标题栏或退出键触发的关闭请求，并检查窗口接受关闭。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         [&renderer, &closeRequested]()
         {
             closeRequested = true;

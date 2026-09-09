@@ -1,3 +1,5 @@
+// 文件职责：将各输出原生冻结像素转换为窗口预览，处理 HDR 显示格式和 SDR UI 参考白。
+
 #include <desktop_preview.h>
 
 #include <color_conversion.h>
@@ -13,14 +15,18 @@
 
 namespace
 {
-// 判断当前显示输出是否明确报告 HDR，未知显示状态不猜测 SDR 白亮度。
+// 判断预览目标是否报告 HDR10 或 scRGB 显示颜色空间。
+// 入参：metadata：捕获输出保存的显示颜色元数据。
+// 返回：显示颜色空间为 HDR10 或 scRGB 时为 true，其余为 false。
 bool IsHdrOutput(const open_st::OutputColorMetadata& metadata) noexcept
 {
     return metadata.displayColorSpace == open_st::CapturedColorSpace::Hdr10 ||
            metadata.displayColorSpace == open_st::CapturedColorSpace::ScRgb;
 }
 
-// 把线性颜色写入不透明 FP16 像素，保留负色域分量与超出 1.0 的高光。
+// 将线性 scRGB 三通道编码为不透明 FP16 像素供 HDR 预览上传。
+// 入参：color：线性 scRGB RGB，1.0 对应 80 nit；target：输出参数，指向至少 8 字节目标像素。
+// 返回：无返回值；目标写入四个 binary16 通道，alpha 固定为 1.0。
 void WriteLinearPixel(open_st::LinearScRgb color, std::uint8_t* target) noexcept
 {
     const std::uint16_t channels[4]{open_st::EncodeFloat16(color.red), open_st::EncodeFloat16(color.green),
@@ -28,7 +34,9 @@ void WriteLinearPixel(open_st::LinearScRgb color, std::uint8_t* target) noexcept
     std::memcpy(target, channels, sizeof(channels));
 }
 
-// 原样保留 FP16 RGB 位模式；桌面 alpha 不参与最终不透明覆盖窗口合成。
+// 复制原生 FP16 RGB 位模式并统一桌面预览的不透明 alpha。
+// 入参：source：借用的 8 字节 FP16 源像素；target：输出参数，指向至少 8 字节目标像素。
+// 返回：无返回值；RGB 原位复制，目标 alpha 写为 binary16 的 1.0。
 void CopyHalfPixel(const std::uint8_t* source, std::uint8_t* target) noexcept
 {
     std::memcpy(target, source, 6U);
@@ -36,7 +44,9 @@ void CopyHalfPixel(const std::uint8_t* source, std::uint8_t* target) noexcept
     std::memcpy(target + 6U, &OPAQUE_ALPHA, sizeof(OPAQUE_ALPHA));
 }
 
-// 按单屏呈现策略转换像素；仅 HDR 上的 SDR 兼容内容需要缩放 SDR 白，不缩放原生 HDR 数据。
+// 按原生 plane 格式和预览目标转换一个像素，统一 SDR/HDR 预览语义。
+// 入参：plane：原生输出格式和颜色信息；source：借用的当前源像素；preview：目标预览格式和 UI 白比例；target：输出参数，指向足够容纳目标像素的内存。
+// 返回：无返回值；目标写入匹配 preview 格式的像素，必要时解码 HDR10 或应用一次 SDR 白缩放。
 void ConvertPixel(const open_st::CapturedOutputPlane& plane, const std::uint8_t* source,
                   const open_st::OutputPreviewFrame& preview, std::uint8_t* target) noexcept
 {
@@ -88,7 +98,9 @@ void ConvertPixel(const open_st::CapturedOutputPlane& plane, const std::uint8_t*
 
 namespace open_st
 {
-// 为每个输出独立准备 SDR 或 scRGB 呈现缓冲，避免跨屏统一色调映射改变原始 HDR 亮度。
+// 从原生冻结 plane 生成独立单屏预览，保留 HDR 像素亮度语义。
+// 入参：plane：只读原生冻结输出；preview：输出参数，接收自有预览像素、格式及颜色信息；errorMessage：输出参数，接收失败原因。
+// 返回：预览完整生成时为 true；原生帧或元数据无效时为 false，preview 清空并写入诊断。
 bool BuildOutputPreview(const CapturedOutputPlane& plane, OutputPreviewFrame& preview, std::wstring& errorMessage)
 {
     preview = {};

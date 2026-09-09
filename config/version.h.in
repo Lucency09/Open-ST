@@ -1,3 +1,5 @@
+// 提供 CMake 配置生成的版本头模板，集中声明界面版本与项目主页常量。
+
 #pragma once
 
 // CMake 生成带 v 前缀的界面版本；数字版本仍由 PROJECT_VERSION 统一维护。

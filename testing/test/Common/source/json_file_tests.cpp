@@ -1,3 +1,5 @@
+// 验证 JSON 文件句柄、缓存一致性、并发编辑、失败回退与日志隐私边界。
+
 #include <json_file.h>
 
 #include "json_file_test_access.h"
@@ -21,11 +23,15 @@ class ExclusiveFile final
 {
   public:
     // 独占测试文件，模拟外部程序阻止 Common 打开读写句柄。
+    // 入参：path 为测试文件路径。
+    // 返回：无返回值。
     explicit ExclusiveFile(const std::filesystem::path& path)
         : handle_(CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr))
     {
     }
     // 断言提前结束时也关闭模拟的外部独占句柄。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~ExclusiveFile()
     {
         if (this->handle_ != INVALID_HANDLE_VALUE)
@@ -34,10 +40,16 @@ class ExclusiveFile final
         }
     }
     // 禁止复制 Win32 句柄所有权。
+    // 入参：未命名 ExclusiveFile 引用为被禁止复制或赋值的独占文件句柄来源。
+    // 返回：无可调用实现；该操作已删除，尝试调用会导致编译错误。
     ExclusiveFile(const ExclusiveFile&) = delete;
     // 禁止复制赋值以避免重复释放句柄。
+    // 入参：未命名 ExclusiveFile 引用为被禁止复制或赋值的独占文件句柄来源。
+    // 返回：无可调用实现；该操作已删除，尝试调用会导致编译错误。
     ExclusiveFile& operator=(const ExclusiveFile&) = delete;
-    // 返回独占文件条件是否成功建立。
+    // 检查测试所需的外部独占文件条件是否已成功建立。
+    // 入参：无显式入参。
+    // 返回：独占文件句柄有效时为 true，否则为 false。
     bool IsValid() const noexcept
     {
         return this->handle_ != INVALID_HANDLE_VALUE;
@@ -50,6 +62,8 @@ class JsonFileTest : public testing::Test
 {
   protected:
     // 每例使用隔离目录与动态卡名，不操作产品运行文件。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void SetUp() override
     {
         open_st::Logger::Shutdown();
@@ -64,6 +78,8 @@ class JsonFileTest : public testing::Test
         this->cardName_ = "common.test." + std::string(info->name());
     }
     // 释放测试绑定、恢复只读属性并清理测试目录。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void TearDown() override
     {
         open_st::Logger::Shutdown();
@@ -81,6 +97,8 @@ class JsonFileTest : public testing::Test
         EXPECT_FALSE(error);
     }
     // 模拟外部程序绕过 Common 修改文件，供变更和冲突测试使用。
+    // 入参：path 为测试文件路径；contents 为写入的原始字节文本。
+    // 返回：无返回值。
     static void WriteRaw(const std::filesystem::path& path, std::string_view contents)
     {
         std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -89,12 +107,16 @@ class JsonFileTest : public testing::Test
         ASSERT_TRUE(output.good());
     }
     // 读取原始字节，检查失败或无变化操作没有重排或覆盖原文件。
+    // 入参：path 为测试文件路径。
+    // 返回：文件的原始字节字符串，供磁盘内容断言使用。
     static std::string ReadRaw(const std::filesystem::path& path)
     {
         std::ifstream input(path, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
     }
     // 返回本用例唯一的具名文件入口，不执行文件读取。
+    // 入参：path 为测试文件路径。
+    // 返回：与本用例卡名绑定的轻量 JSON 文件句柄；取得句柄本身不读取文件。
     open_st::JsonFileHandle Open(const std::filesystem::path& path) const
     {
         return open_st::JsonFileManager::Instance().GetFile(this->cardName_, path);
@@ -104,6 +126,8 @@ class JsonFileTest : public testing::Test
 };
 
 // 验证获取入口不创建文件，缺失读取失败保留输出，外部创建后正常读取。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, handle_acquisition_is_lazy)
 {
     const std::filesystem::path path = this->root_ / "lazy.json";
@@ -120,6 +144,8 @@ TEST_F(JsonFileTest, handle_acquisition_is_lazy)
 }
 
 // 验证相同绑定共享状态并观察外部更新，读取副本被业务修改不污染缓存。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, handles_share_state_and_reload_external_changes)
 {
     const std::filesystem::path path = this->root_ / "shared.json";
@@ -138,6 +164,8 @@ TEST_F(JsonFileTest, handles_share_state_and_reload_external_changes)
 }
 
 // 验证一个卡名不能绑定两条路径，同一路径也不能绑定不同卡名。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, rejects_conflicting_name_and_path_bindings)
 {
     const std::filesystem::path path = this->root_ / "first.json";
@@ -149,6 +177,8 @@ TEST_F(JsonFileTest, rejects_conflicting_name_and_path_bindings)
 }
 
 // 验证无效参数和句柄均失败，不修改输出、不执行编辑回调或创建文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, invalid_handles_and_arguments_fail_without_side_effects)
 {
     const std::filesystem::path path = this->root_ / "invalid.json";
@@ -162,6 +192,8 @@ TEST_F(JsonFileTest, invalid_handles_and_arguments_fail_without_side_effects)
     EXPECT_FALSE(invalid.Write(nlohmann::json{{"value", 1}}));
     bool called = false;
     // 无效入口必须在调用业务前失败。
+    // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
+    // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
     EXPECT_FALSE(invalid.Write([&called](std::optional<nlohmann::json>&)
     {
         called = true;
@@ -174,6 +206,8 @@ TEST_F(JsonFileTest, invalid_handles_and_arguments_fail_without_side_effects)
 }
 
 // 验证损坏后不会用旧缓存冒充成功，普通写和编辑写均拒绝覆盖损坏文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, invalid_external_update_preserves_output_and_rejects_writes)
 {
     const std::filesystem::path path = this->root_ / "stale.json";
@@ -188,6 +222,8 @@ TEST_F(JsonFileTest, invalid_external_update_preserves_output_and_rejects_writes
     EXPECT_EQ(output, "sentinel");
     bool called = false;
     // 损坏文档不交给编辑器，避免业务基于旧快照写回。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
     EXPECT_FALSE(handle.Write([&called](std::optional<nlohmann::json>& document)
     {
         called = true;
@@ -200,6 +236,8 @@ TEST_F(JsonFileTest, invalid_external_update_preserves_output_and_rejects_writes
 }
 
 // 验证无效签名不会阻止文件恢复后重新读取，失败期间输出仍保持原值。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, changed_invalid_file_is_retried_after_next_update)
 {
     const std::filesystem::path path = this->root_ / "retry.json";
@@ -216,6 +254,8 @@ TEST_F(JsonFileTest, changed_invalid_file_is_retried_after_next_update)
 }
 
 // 验证删除已有缓存对应文件时失败不改输出，重新创建后取得新内容。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, deleted_file_fails_read_and_recovers_after_recreation)
 {
     const std::filesystem::path path = this->root_ / "deleted.json";
@@ -233,6 +273,8 @@ TEST_F(JsonFileTest, deleted_file_fails_read_and_recovers_after_recreation)
 }
 
 // 验证外部独占使读取失败时不返回旧缓存、不执行编辑，解除独占后恢复。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, inaccessible_changed_file_fails_without_running_editor)
 {
     const std::filesystem::path path = this->root_ / "exclusive.json";
@@ -249,6 +291,8 @@ TEST_F(JsonFileTest, inaccessible_changed_file_fails_without_running_editor)
         EXPECT_EQ(output, "sentinel");
         bool called = false;
         // 无法访问当前文件时不把旧内容提供给编辑器。
+        // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
+        // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
         EXPECT_FALSE(handle.Write([&called](std::optional<nlohmann::json>&)
         {
             called = true;
@@ -262,11 +306,15 @@ TEST_F(JsonFileTest, inaccessible_changed_file_fails_without_running_editor)
 }
 
 // 验证编辑器识别缺失后填入业务文档可安全创建，并立即读取新内容。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, create_creates_file_and_publishes_snapshot)
 {
     const std::filesystem::path path = this->root_ / "created.json";
     const open_st::JsonFileHandle handle = this->Open(path);
     // 仅缺失时填充默认内容，Common 不参与默认字段决策。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：文档已存在时为 false；缺失时填入默认文档并返回 true 允许提交。
     ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
     {
         if (document.has_value())
@@ -282,6 +330,8 @@ TEST_F(JsonFileTest, create_creates_file_and_publishes_snapshot)
 }
 
 // 验证普通整份写入也能创建不存在的父目录和文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, whole_document_write_creates_missing_parent_directories)
 {
     const std::filesystem::path path = this->root_ / "nested" / "created.json";
@@ -294,6 +344,8 @@ TEST_F(JsonFileTest, whole_document_write_creates_missing_parent_directories)
 }
 
 // 验证整份写入按明确目标替换旧文档，旧字段不被意外保留。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, write_replaces_existing_file_and_publishes_snapshot)
 {
     const std::filesystem::path path = this->root_ / "replaced.json";
@@ -308,6 +360,8 @@ TEST_F(JsonFileTest, write_replaces_existing_file_and_publishes_snapshot)
 }
 
 // 验证业务只在缺失时创建的意图不会覆盖已存在文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, create_never_overwrites_existing_file)
 {
     const std::filesystem::path path = this->root_ / "existing.json";
@@ -315,6 +369,8 @@ TEST_F(JsonFileTest, create_never_overwrites_existing_file)
     JsonFileTest::WriteRaw(path, original);
     const open_st::JsonFileHandle handle = this->Open(path);
     // 文档已存在则由业务取消，不需要底层认识默认配置。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：文档已存在时为 false；缺失时填入默认文档并返回 true 允许提交。
     EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>& document)
     {
         if (document.has_value())
@@ -328,12 +384,16 @@ TEST_F(JsonFileTest, create_never_overwrites_existing_file)
 }
 
 // 验证锁内编辑只改目标字段，保留业务未识别的所有字段。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, update_preserves_unknown_values)
 {
     const std::filesystem::path path = this->root_ / "update.json";
     JsonFileTest::WriteRaw(path, R"({"settings":{"ui.language":"en-US","unknown":42}})");
     const open_st::JsonFileHandle handle = this->Open(path);
     // 编辑最新文档中的单个字段。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：true，允许 Common 继续执行候选文档的提交前检查。
     ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
     {
         document.value()["settings"]["ui.language"] = "ja-JP";
@@ -346,6 +406,8 @@ TEST_F(JsonFileTest, update_preserves_unknown_values)
 }
 
 // 验证四线程各五次累计修改全部串行成功，总计二十次修改不丢失。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, serializes_concurrent_updates)
 {
     const std::filesystem::path path = this->root_ / "concurrent.json";
@@ -355,11 +417,15 @@ TEST_F(JsonFileTest, serializes_concurrent_updates)
     for (int workerIndex = 0; workerIndex < 4; ++workerIndex)
     {
         // 各线程复制轻量句柄，连续请求五次原子编辑。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         workers.emplace_back([handle]()
         {
             for (int updateIndex = 0; updateIndex < 5; ++updateIndex)
             {
                 // 读计数和改计数属于同一个被锁保护的编辑。
+                // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+                // 返回：true，允许 Common 继续执行候选文档的提交前检查。
                 const bool updated = handle.Write([](std::optional<nlohmann::json>& document)
                 {
                     document.value()["counter"] = document.value()["counter"].get<int>() + 1;
@@ -379,6 +445,8 @@ TEST_F(JsonFileTest, serializes_concurrent_updates)
 }
 
 // 验证编辑拒绝、抛异常和清空 optional 均取消，不改磁盘、不发布候选数据、不自动重放。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
 {
     const std::filesystem::path path = this->root_ / "cancel.json";
@@ -387,6 +455,8 @@ TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
     const open_st::JsonFileHandle handle = this->Open(path);
     int calls = 0;
     // 修改候选值后主动拒绝提交。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：false，主动拒绝提交已修改的候选文档。
     EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document)
     {
         ++calls;
@@ -394,6 +464,8 @@ TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
         return false;
     }));
     // 修改候选值后抛异常，要求只执行一次且异常不穿过接口。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
     EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document) -> bool
     {
         ++calls;
@@ -401,6 +473,8 @@ TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
         throw std::runtime_error("cancel edit");
     }));
     // 清空 optional 不是文件删除操作，只取消本次修改。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：true；但 optional 已被清空，Common 仍应取消提交。
     EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document)
     {
         ++calls;
@@ -415,6 +489,8 @@ TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
 }
 
 // 验证合法 JSON null 是有值文档，不能与缺失文件的空 optional 混淆。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, json_null_remains_a_present_document)
 {
     const std::filesystem::path path = this->root_ / "null.json";
@@ -425,6 +501,8 @@ TEST_F(JsonFileTest, json_null_remains_a_present_document)
     EXPECT_TRUE(output.is_null());
     bool presentNull = false;
     // 对已有 null 进行普通业务结构替换。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：true，允许 Common 继续执行候选文档的提交前检查。
     ASSERT_TRUE(handle.Write([&presentNull](std::optional<nlohmann::json>& document)
     {
         presentNull = document.has_value() && document->is_null();
@@ -437,6 +515,8 @@ TEST_F(JsonFileTest, json_null_remains_a_present_document)
 }
 
 // 验证同内容写入保留原排版与修改时间，完成后不残留临时探测文件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, unchanged_write_preserves_bytes_time_and_cleans_probe)
 {
     const std::filesystem::path path = this->root_ / "unchanged.json";
@@ -446,6 +526,8 @@ TEST_F(JsonFileTest, unchanged_write_preserves_bytes_time_and_cleans_probe)
     const open_st::JsonFileHandle handle = this->Open(path);
     ASSERT_TRUE(handle.Write(nlohmann::json{{"stable", 1}}));
     // 不变更文档的编辑仍需检查写入前提。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：候选文档存在时为 true，否则为 false；不修改文档内容。
     ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
     {
         return document.has_value();
@@ -462,6 +544,8 @@ TEST_F(JsonFileTest, unchanged_write_preserves_bytes_time_and_cleans_probe)
 }
 
 // 验证只读文件即使内容相同也写入失败，正常读取不受影响。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, readonly_unchanged_write_fails_without_modifying_file)
 {
     const std::filesystem::path path = this->root_ / "readonly.json";
@@ -471,6 +555,8 @@ TEST_F(JsonFileTest, readonly_unchanged_write_fails_without_modifying_file)
     const open_st::JsonFileHandle handle = this->Open(path);
     EXPECT_FALSE(handle.Write(nlohmann::json{{"stable", 1}}));
     // 不变更的编辑不能绕过只读检查。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：候选文档存在时为 true，否则为 false；不修改文档内容。
     EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>& document)
     {
         return document.has_value();
@@ -482,12 +568,16 @@ TEST_F(JsonFileTest, readonly_unchanged_write_fails_without_modifying_file)
 }
 
 // 验证缺失检查之后外部抢先创建文件时，Common 取消而不覆盖对方内容。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, external_creation_during_editor_is_not_overwritten)
 {
     const std::filesystem::path path = this->root_ / "create_race.json";
     const open_st::JsonFileHandle handle = this->Open(path);
     const std::string external = R"({"owner":"external process"})";
     // 仅测试故意绕过 Common 模拟外部创建；产品编辑器不允许此类副作用。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：true，允许 Common 继续执行候选文档的提交前检查。
     EXPECT_FALSE(handle.Write([&path, &external](std::optional<nlohmann::json>& document)
     {
         EXPECT_FALSE(document.has_value());
@@ -502,6 +592,8 @@ TEST_F(JsonFileTest, external_creation_during_editor_is_not_overwritten)
 }
 
 // 验证编辑期间外部改写已有文件，提交检查发现冲突后不发布候选数据。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, external_change_during_editor_is_not_overwritten)
 {
     const std::filesystem::path path = this->root_ / "update_race.json";
@@ -509,6 +601,8 @@ TEST_F(JsonFileTest, external_change_during_editor_is_not_overwritten)
     const open_st::JsonFileHandle handle = this->Open(path);
     const std::string external = R"({"owner":"external changed to a distinct size"})";
     // 只在测试中模拟其他进程写入，不经同一锁重入。
+    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+    // 返回：true，允许 Common 继续执行候选文档的提交前检查。
     EXPECT_FALSE(handle.Write([&path, &external](std::optional<nlohmann::json>& document)
     {
         JsonFileTest::WriteRaw(path, external);
@@ -522,6 +616,8 @@ TEST_F(JsonFileTest, external_change_during_editor_is_not_overwritten)
 }
 
 // 验证数值相等但类型不同的 1.0 到 1 必须真正提交，不能把 JSON 数值相等误判为无需写入。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, whole_write_preserves_requested_integer_type_when_float_was_equal)
 {
     const std::filesystem::path path = this->root_ / "number_type.json";
@@ -545,6 +641,8 @@ TEST_F(JsonFileTest, whole_write_preserves_requested_integer_type_when_float_was
 }
 
 // 验证存活句柄阻止私有清理，句柄销毁后绑定仍由管理器保留，显式测试清理后才可重绑。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, manager_retains_binding_until_last_handle_is_gone_and_test_releases_it)
 {
     const std::filesystem::path path = this->root_ / "retained.json";
@@ -567,6 +665,8 @@ TEST_F(JsonFileTest, manager_retains_binding_until_last_handle_is_gone_and_test_
 }
 
 // 验证解析与编辑异常留下文件诊断，但日志不含 JSON 正文或异常携带的业务秘密。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(JsonFileTest, failures_log_diagnostics_without_document_or_exception_contents)
 {
     ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
@@ -577,6 +677,8 @@ TEST_F(JsonFileTest, failures_log_diagnostics_without_document_or_exception_cont
     EXPECT_FALSE(handle.Read(output));
     JsonFileTest::WriteRaw(path, R"({"stable":1})");
     // 模拟异常正文携带敏感数据，日志只能记录错误类别。
+    // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
+    // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
     EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>&) -> bool
     {
         throw std::runtime_error("SECRET_EXCEPTION_CONTENT_762");

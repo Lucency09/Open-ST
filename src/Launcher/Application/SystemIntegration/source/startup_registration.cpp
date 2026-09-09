@@ -1,3 +1,5 @@
+// 实现当前用户启动项的严格识别、冲突保护和写入后核验。
+
 #include <filesystem>
 #include <startup_registration.h>
 #include <string_view>
@@ -12,6 +14,8 @@ struct RegistryKey
 {
     HKEY value{};
     // 关闭本次查询或写入拥有的注册表句柄。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ~RegistryKey()
     {
         if (this->value != nullptr)
@@ -19,17 +23,23 @@ struct RegistryKey
     }
 };
 // 比较 Windows 路径文本，忽略大小写。
+// 入参：left、right 为待比较的 Windows 路径文本。
+// 返回：忽略大小写后两条路径文本相等时为 true，否则为 false。
 bool EqualPath(const std::wstring& left, const std::wstring& right)
 {
     return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 } // namespace
-// 保存注入参数，不在构造期间写注册表。
+// 创建当前用户单值启动项访问对象，保存程序路径与注册表位置。
+// 入参：executablePath 为程序绝对路径；registryKey 为当前用户下的启动项键路径；valueName 为只允许操作的单个值名。
+// 返回：无返回值。
 StartupRegistration::StartupRegistration(std::wstring executablePath, std::wstring registryKey, std::wstring valueName)
     : executablePath_(std::move(executablePath)), registryKey_(std::move(registryKey)), valueName_(std::move(valueName))
 {
 }
-// 严格识别带引号绝对路径和固定开关，其他值均保留为冲突。
+// 识别当前用户启动项的归属，区分当前路径、旧路径、冲突和系统失败。
+// 入参：无显式入参。
+// 返回：启动项缺失、属于当前路径、属于旧路径、外部冲突或系统失败的状态及错误码。
 StartupStatus StartupRegistration::Query() const
 {
     RegistryKey key;
@@ -69,7 +79,9 @@ StartupStatus StartupRegistration::Query() const
         return {StartupState::OtherPath, 0};
     return {StartupState::Conflict, ERROR_INVALID_DATA};
 }
-// 不覆盖外部冲突；成功写入后再次读取，避免把系统错误报告为已生效。
+// 按启停意图更新本程序启动项，在授权修复旧路径后写入并读取核验。
+// 入参：enabled 为期望启停状态；allowPathRepair 为是否允许将已识别的旧程序路径修复为当前路径。
+// 返回：操作后的核验状态；拒绝修复或外部冲突时保留原状态，系统操作失败附带错误码。
 StartupStatus StartupRegistration::Apply(bool enabled, bool allowPathRepair) const
 {
     const std::wstring command = L"\"" + this->executablePath_ + L"\" --startup";

@@ -1,3 +1,5 @@
+// 验证通用窗口的控件绑定、草稿交互、布局测量与回调错误处理。
+
 #include "window_renderer.h"
 #include <commctrl.h>
 #include <gtest/gtest.h>
@@ -6,6 +8,8 @@
 namespace
 {
 // 创建两页和通用按钮，不引用 Settings、Common 或本地化模块。
+// 入参：无显式入参。
+// 返回：含两页、下拉框、正文和确认/取消按钮的独立测试布局 JSON。
 nlohmann::json WindowDocument()
 {
     return nlohmann::json::parse(R"({
@@ -22,6 +26,8 @@ nlohmann::json WindowDocument()
     })");
 }
 // 枚举查找原生下拉框，用真实父窗口路由通知。
+// 入参：window 为枚举到的原生子窗口；context 为接收匹配控件 HWND 的输出地址。
+// 返回：找到目标控件时返回 FALSE 停止枚举；未匹配时返回 TRUE 继续枚举。
 BOOL CALLBACK FindCombo(HWND window, LPARAM context)
 {
     wchar_t name[64]{};
@@ -34,6 +40,8 @@ BOOL CALLBACK FindCombo(HWND window, LPARAM context)
     return TRUE;
 }
 // 清空当前线程已有消息，包含延迟关闭但不等待外部输入。
+// 入参：无显式入参。
+// 返回：无返回值。
 void PumpMessages()
 {
     MSG message{};
@@ -54,17 +62,29 @@ class RendererBindingTest : public testing::Test
     bool throwChange_ = false;
     std::vector<open_st::RendererResult> errors_;
     // 注册可独立运行的草稿、选项和关闭动作。
+    // 入参：document 为要加载的测试布局 JSON；默认包含两页和通用按钮。
+    // 返回：无返回值。
     void Prepare(nlohmann::json document = WindowDocument())
     {
         ASSERT_TRUE(this->renderer_.LoadLayout(document));
         ASSERT_TRUE(this->renderer_.SetTextResolver(
+            // 按测试开关生成普通或超长文本，检查布局测量与截断行为。
+            // 入参：key 为待查询的测试界面文本键。
+            // 返回：普通模式返回键名；长文本模式返回用于布局测量的重复 W 字符串。
             [this](std::string_view key)
             {
                 return this->longText_ ? std::wstring(key == "longInfo" ? 2000 : 120, L'W')
                                        : std::wstring(key.begin(), key.end());
             }));
         ASSERT_TRUE(this->renderer_.BindString(
-            "choice", [this]() { return open_st::RendererStringResult{true, this->draft_, {}}; },
+            "choice",
+            // 返回当前字符串草稿供控件读取。
+            // 入参：无显式入参。
+            // 返回：成功的字符串读取结果，值为当前 draft_。
+            [this]() { return open_st::RendererStringResult{true, this->draft_, {}}; },
+            // 记录字符串修改并更新草稿，可按开关注入变更异常。
+            // 入参：value 为控件提交的新字符串草稿值。
+            // 返回：成功的字段修改结果；启用异常开关时抛出异常。
             [this](std::string_view value)
             {
                 if (this->throwChange_)
@@ -74,15 +94,33 @@ class RendererBindingTest : public testing::Test
                 return open_st::RendererChangeResult{};
             }));
         ASSERT_TRUE(this->renderer_.BindOptions(
-            "choice", []() { return open_st::RendererOptionsResult{true, {{"a", L"A"}, {"b", L"B"}}, {}}; }));
+            "choice",
+            // 返回固定的两个下拉选项，隔离业务选项查询。
+            // 入参：无显式入参。
+            // 返回：成功的选项查询结果，包含 a/A 和 b/B 两项。
+            []() { return open_st::RendererOptionsResult{true, {{"a", L"A"}, {"b", L"B"}}, {}}; }));
+        // 累计确认动作次数，检测控件是否重复分发。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         ASSERT_TRUE(this->renderer_.BindAction("confirm", [this]() { ++this->actions_; }));
+        // 由取消按钮请求关闭当前测试窗口。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         ASSERT_TRUE(this->renderer_.BindAction("cancel", [this]() { this->renderer_.RequestClose(); }));
+        // 将系统关闭动作交给窗口关闭流程。
+        // 入参：无显式入参。
+        // 返回：无返回值。
         ASSERT_TRUE(this->renderer_.SetCloseHandler([this]() { this->renderer_.RequestClose(); }));
         ASSERT_TRUE(this->renderer_.SetDefaultAction("confirm"));
+        // 收集结构化回调错误，供错误类别与次数断言使用。
+        // 入参：error 为窗口回调边界捕获的结构化错误，借用到本次通知结束。
+        // 返回：无返回值。
         ASSERT_TRUE(this->renderer_.SetErrorHandler([this](const open_st::RendererResult& error)
                                                     { this->errors_.push_back(error); }));
     }
     // 显示隐藏测试窗口，避免测试抢占前台。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void Show()
     {
         open_st::RendererWindowOptions options;
@@ -91,6 +129,8 @@ class RendererBindingTest : public testing::Test
         ASSERT_NE(this->renderer_.NativeHandle(), nullptr);
     }
     // 查找本实例控件，不依赖固定 Win32 数值 ID。
+    // 入参：无显式入参。
+    // 返回：匹配控件或窗口的借用句柄；未找到时为 nullptr，调用方不取得销毁责任。
     HWND Combo()
     {
         HWND combo = nullptr;
@@ -98,7 +138,9 @@ class RendererBindingTest : public testing::Test
         return combo;
     }
 };
-// 无布局或缺少窗口级与字段级回调时不可创建半成品窗口。
+// 验证无布局或缺少窗口级与字段级回调时不可创建半成品窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, requires_complete_bindings)
 {
     EXPECT_FALSE(this->renderer_.ValidateBindings());
@@ -107,26 +149,47 @@ TEST_F(RendererBindingTest, requires_complete_bindings)
     EXPECT_FALSE(this->renderer_.Show());
     EXPECT_EQ(this->renderer_.NativeHandle(), nullptr);
 }
-// 不存在 ID 和类型不匹配在注册时拒绝，而非延迟点击崩溃。
+// 验证不存在 ID 和类型不匹配在注册时拒绝，而非延迟点击崩溃。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, rejects_unknown_and_wrong_type)
 {
     ASSERT_TRUE(this->renderer_.LoadLayout(WindowDocument()));
+    // 提供空动作，验证不存在的控件标识仍拒绝绑定。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     EXPECT_FALSE(this->renderer_.BindAction("missing", []() {}));
+    // 提供空动作，验证字符串控件不能绑定按钮动作。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     EXPECT_FALSE(this->renderer_.BindAction("choice", []() {}));
+    // 提供空选项结果，验证按钮不能绑定选项查询。
+    // 入参：无显式入参。
+    // 返回：成功的选项查询结果，选项列表为空。
     EXPECT_FALSE(this->renderer_.BindOptions("confirm", []() { return open_st::RendererOptionsResult{}; }));
 }
-// 同类型绑定不可覆盖，空函数也不能注册。
+// 验证同类型绑定不可覆盖，空函数也不能注册。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, rejects_duplicate_and_empty_callback)
 {
     this->Prepare();
+    // 提供空动作，验证已有动作绑定不会被覆盖。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     EXPECT_FALSE(this->renderer_.BindAction("confirm", []() {}));
+    // 提供空选项结果，验证已有选项绑定不会被覆盖。
+    // 入参：无显式入参。
+    // 返回：成功的选项查询结果，选项列表为空。
     EXPECT_FALSE(this->renderer_.BindOptions("choice", []() { return open_st::RendererOptionsResult{}; }));
     open_st::WindowRenderer other;
     ASSERT_TRUE(other.LoadLayout(WindowDocument()));
     EXPECT_FALSE(other.BindAction("confirm", {}));
     EXPECT_FALSE(other.BindString("choice", {}, {}));
 }
-// 一个下拉框的数据与选项属于不同槽，均注册后可以显示。
+// 验证一个下拉框的数据与选项属于不同槽，均注册后可以显示。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, accepts_distinct_binding_slots)
 {
     this->Prepare();
@@ -136,24 +199,50 @@ TEST_F(RendererBindingTest, accepts_distinct_binding_slots)
     EXPECT_EQ(this->renderer_.GetControlPageId("choice"), "first");
     EXPECT_EQ(this->renderer_.GetControlPageId("confirm"), "");
 }
-// 显示回调抛异常时返回错误，异常不能越过窗口过程。
+// 验证显示回调抛异常时返回错误，异常不能越过窗口过程。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, catches_text_callback_exception)
 {
     ASSERT_TRUE(this->renderer_.LoadLayout(WindowDocument()));
     ASSERT_TRUE(
+        // 在文本查询时抛出异常，验证窗口创建以失败返回。
+        // 入参：未命名 std::string_view 为文本查询键，本故障注入回调不使用该值。
+        // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
         this->renderer_.SetTextResolver([](std::string_view) -> std::wstring { throw std::runtime_error("fake"); }));
     ASSERT_TRUE(this->renderer_.BindString(
-        "choice", []() { return open_st::RendererStringResult{}; },
+        "choice",
+        // 提供默认字符串读取结果，满足创建前的字段绑定。
+        // 入参：无显式入参。
+        // 返回：成功的字符串读取结果，字符串为空。
+        []() { return open_st::RendererStringResult{}; },
+        // 返回默认修改结果，避免引入文本故障之外的副作用。
+        // 入参：未命名 std::string_view 为控件请求写入的新值，本默认结果回调不读取该值。
+        // 返回：表示修改已接受的成功结果。
         [](std::string_view) { return open_st::RendererChangeResult{}; }));
+    // 提供默认选项结果，满足创建前的下拉框绑定。
+    // 入参：无显式入参。
+    // 返回：成功的选项查询结果，选项列表为空。
     ASSERT_TRUE(this->renderer_.BindOptions("choice", []() { return open_st::RendererOptionsResult{}; }));
+    // 提供无副作用的确认动作，隔离创建期文本异常。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ASSERT_TRUE(this->renderer_.BindAction("confirm", []() {}));
+    // 提供无副作用的取消动作，隔离创建期文本异常。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ASSERT_TRUE(this->renderer_.BindAction("cancel", []() {}));
+    // 提供无副作用的系统关闭回调，隔离创建期文本异常。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     ASSERT_TRUE(this->renderer_.SetCloseHandler([]() {}));
     ASSERT_TRUE(this->renderer_.SetDefaultAction("confirm"));
     EXPECT_FALSE(this->renderer_.Show());
     EXPECT_EQ(this->renderer_.NativeHandle(), nullptr);
 }
-// 程序刷新读取新的草稿但绝不触发修改回调。
+// 验证程序刷新读取新的草稿但绝不触发修改回调。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, refresh_does_not_write_draft)
 {
     this->Prepare();
@@ -165,7 +254,9 @@ TEST_F(RendererBindingTest, refresh_does_not_write_draft)
     EXPECT_EQ(SendMessageW(combo, CB_GETCURSEL, 0, 0), 1);
     EXPECT_EQ(this->changes_, 0);
 }
-// 原生控件的真实父窗口接收通知后修改草稿一次。
+// 验证原生控件的真实父窗口接收通知后修改草稿一次。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, dispatches_selection_change)
 {
     this->Prepare();
@@ -178,7 +269,9 @@ TEST_F(RendererBindingTest, dispatches_selection_change)
     EXPECT_EQ(this->draft_, "b");
     EXPECT_EQ(this->changes_, 1);
 }
-// 草稿不在选项中保持无选择，不能偷偷采用第一项。
+// 验证草稿不在选项中保持无选择，不能偷偷采用第一项。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, missing_option_preserves_draft)
 {
     this->Prepare();
@@ -190,7 +283,9 @@ TEST_F(RendererBindingTest, missing_option_preserves_draft)
     EXPECT_EQ(this->draft_, "missing");
     EXPECT_EQ(this->changes_, 0);
 }
-// 关闭请求在当前分派结束后销毁窗口，不向线程投递退出。
+// 验证关闭请求在当前分派结束后销毁窗口，不向线程投递退出。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, closes_after_message_dispatch)
 {
     this->Prepare();
@@ -200,7 +295,9 @@ TEST_F(RendererBindingTest, closes_after_message_dispatch)
     PumpMessages();
     EXPECT_EQ(this->renderer_.NativeHandle(), nullptr);
 }
-// 忙状态解除后恢复宿主单项禁用状态，刷新不会解锁字段。
+// 验证忙状态解除后恢复宿主单项禁用状态，刷新不会解锁字段。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, restores_host_enabled_state_after_busy)
 {
     this->Prepare();
@@ -213,7 +310,9 @@ TEST_F(RendererBindingTest, restores_host_enabled_state_after_busy)
     EXPECT_FALSE(IsWindowEnabled(combo));
     EXPECT_EQ(this->changes_, 0);
 }
-// 原生页签通知切换页面身份，并隐藏上一页输入控件。
+// 验证原生页签通知切换页面身份，并隐藏上一页输入控件。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, switches_pages_with_native_notification)
 {
     this->Prepare();
@@ -231,7 +330,9 @@ TEST_F(RendererBindingTest, switches_pages_with_native_notification)
     EXPECT_EQ(this->renderer_.GetActivePageId(), "first");
     EXPECT_NE(GetWindowLongPtrW(this->Combo(), GWL_STYLE) & WS_VISIBLE, 0);
 }
-// 展开的下拉框优先消费 Enter/Esc，不得触发默认动作或关闭窗口。
+// 验证展开的下拉框优先消费 Enter/Esc，不得触发默认动作或关闭窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, dropped_combo_keeps_enter_escape_local)
 {
     this->Prepare();
@@ -255,7 +356,9 @@ TEST_F(RendererBindingTest, dropped_combo_keeps_enter_escape_local)
         EXPECT_EQ(this->renderer_.NativeHandle(), window);
     }
 }
-// 较小客户区中的长译文按钮换行后必须完整位于窗口内部且互不覆盖。
+// 验证较小客户区中的长译文按钮换行后必须完整位于窗口内部且互不覆盖。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, long_footer_fits_small_client)
 {
     this->longText_ = true;
@@ -291,7 +394,9 @@ TEST_F(RendererBindingTest, long_footer_fits_small_client)
     }
     EXPECT_EQ(buttons.size(), 2U);
 }
-// DPI 重排只改变几何与字体，144/192 DPI 下保持当前草稿及选择。
+// 验证DPI 重排只改变几何与字体，144/192 DPI 下保持当前草稿及选择。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, dpi_changes_preserve_selection)
 {
     this->Prepare();
@@ -309,7 +414,9 @@ TEST_F(RendererBindingTest, dpi_changes_preserve_selection)
         EXPECT_EQ(this->changes_, 0);
     }
 }
-// Tab 导航到长页面底部字段时应滚动，使获得焦点的输入框可见。
+// 验证Tab 导航到长页面底部字段时应滚动，使获得焦点的输入框可见。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, tab_scrolls_focused_field_into_view)
 {
     nlohmann::json document = WindowDocument();
@@ -342,7 +449,9 @@ TEST_F(RendererBindingTest, tab_scrolls_focused_field_into_view)
     EXPECT_LE(field.bottom, viewport.bottom);
     EXPECT_EQ(this->changes_, 0);
 }
-// 忙状态页面滚轮不得回传父窗口形成递归，并保持草稿不变。
+// 验证忙状态页面滚轮不得回传父窗口形成递归，并保持草稿不变。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, busy_page_wheel_returns_without_recursion)
 {
     this->Prepare();
@@ -357,7 +466,9 @@ TEST_F(RendererBindingTest, busy_page_wheel_returns_without_recursion)
     EXPECT_NE(this->renderer_.NativeHandle(), nullptr);
     ASSERT_TRUE(this->renderer_.SetBusy(false));
 }
-// 修改回调异常时恢复已接受的草稿选择，并通知宿主错误与字段 ID。
+// 验证修改回调异常时恢复已接受的草稿选择，并通知宿主错误与字段 ID。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, throwing_change_restores_value_and_reports_error)
 {
     this->Prepare();
@@ -375,7 +486,9 @@ TEST_F(RendererBindingTest, throwing_change_restores_value_and_reports_error)
     EXPECT_EQ(this->errors_.back().code, "callback_failed");
     EXPECT_EQ(this->errors_.back().id, "choice");
 }
-// 首次显示遇到草稿选项失效时通知宿主，不默默采用可用的第一项。
+// 验证首次显示遇到草稿选项失效时通知宿主，不默默采用可用的第一项。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBindingTest, initial_unavailable_value_reports_error)
 {
     this->Prepare();
@@ -388,6 +501,8 @@ TEST_F(RendererBindingTest, initial_unavailable_value_reports_error)
     EXPECT_EQ(this->changes_, 0);
 }
 // 通过原生样式识别复选框，避免依赖创建顺序或业务 ID。
+// 入参：window 为枚举到的原生子窗口；context 为接收匹配控件 HWND 的输出地址。
+// 返回：找到目标控件时返回 FALSE 停止枚举；未匹配时返回 TRUE 继续枚举。
 BOOL CALLBACK FindCheckbox(HWND window, LPARAM context)
 {
     wchar_t name[64]{};
@@ -408,6 +523,8 @@ class RendererBoolTest : public RendererBindingTest
     bool readFailure_ = false;
     bool throwRead_ = false;
     // 在现有窗口加入通用布尔字段及其独立草稿。
+    // 入参：无显式入参。
+    // 返回：无返回值。
     void PrepareBool()
     {
         nlohmann::json document = WindowDocument();
@@ -416,6 +533,9 @@ class RendererBoolTest : public RendererBindingTest
         this->Prepare(document);
         ASSERT_TRUE(this->renderer_.BindBool(
             "checked",
+            // 读取布尔草稿，分别模拟错误结果或异常。
+            // 入参：无显式入参。
+            // 返回：包含当前布尔草稿及读失败状态的结果；启用异常开关时抛出异常。
             [this]()
             {
                 if (this->throwRead_)
@@ -423,6 +543,9 @@ class RendererBoolTest : public RendererBindingTest
                 return open_st::RendererBoolResult{!this->readFailure_, this->value_,
                                                    this->readFailure_ ? L"read failed" : L""};
             },
+            // 按测试开关拒绝或抛出变更错误，成功时更新布尔草稿和计数。
+            // 入参：value 为复选框请求写入的新布尔草稿值。
+            // 返回：拒绝开关生效时返回失败结果；接受时更新草稿并返回成功，异常开关可使其抛出异常。
             [this](bool value)
             {
                 if (this->throw_)
@@ -435,6 +558,8 @@ class RendererBoolTest : public RendererBindingTest
             }));
     }
     // 查找属于当前测试窗口的复选框。
+    // 入参：无显式入参。
+    // 返回：匹配控件或窗口的借用句柄；未找到时为 nullptr，调用方不取得销毁责任。
     HWND Checkbox()
     {
         HWND checkbox{};
@@ -442,21 +567,34 @@ class RendererBoolTest : public RendererBindingTest
         return checkbox;
     }
 };
-// 布尔槽位不能重复、跨类型或缺失回调。
+// 验证布尔槽位不能重复、跨类型或缺失回调。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, validates_bool_binding_type_and_uniqueness)
 {
     this->PrepareBool();
+    // 提供默认布尔读取结果，专门用于校验绑定目标。
+    // 入参：无显式入参。
+    // 返回：成功的布尔读取结果，值为 false。
     const auto read = []() { return open_st::RendererBoolResult{}; };
+    // 提供默认布尔修改结果，专门用于校验绑定目标。
+    // 入参：未命名 bool 为请求写入的布尔值，本绑定目标测试不读取该值。
+    // 返回：表示修改已接受的成功结果。
     const auto change = [](bool) { return open_st::RendererChangeResult{}; };
     EXPECT_EQ(this->renderer_.BindBool("checked", read, change).code, "duplicate_binding");
     EXPECT_EQ(this->renderer_.BindBool("choice", read, change).code, "wrong_control_type");
     EXPECT_EQ(this->renderer_.BindBool("unknown", read, change).code, "unknown_id");
     EXPECT_EQ(this->renderer_.BindBool("checked", {}, change).code, "empty_callback");
+    // 提供默认选项结果，验证复选框拒绝选项绑定。
+    // 入参：无显式入参。
+    // 返回：成功的选项查询结果，选项列表为空。
     EXPECT_EQ(this->renderer_.BindOptions("checked", []() { return open_st::RendererOptionsResult{}; }).code,
               "wrong_control_type");
     EXPECT_TRUE(this->renderer_.ValidateBindings());
 }
-// 缺少布尔读取或修改绑定时，不创建半成品窗口。
+// 验证缺少布尔读取或修改绑定时，不创建半成品窗口。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, missing_bool_binding_prevents_window_creation)
 {
     nlohmann::json document = WindowDocument();
@@ -467,7 +605,9 @@ TEST_F(RendererBoolTest, missing_bool_binding_prevents_window_creation)
     EXPECT_FALSE(this->renderer_.Show());
     EXPECT_EQ(this->renderer_.NativeHandle(), nullptr);
 }
-// 读取失败保留已显示草稿，读取异常只返回结构错误且不修改业务。
+// 验证读取失败保留已显示草稿，读取异常只返回结构错误且不修改业务。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, failed_read_keeps_previous_visual_value)
 {
     this->PrepareBool();
@@ -483,7 +623,9 @@ TEST_F(RendererBoolTest, failed_read_keeps_previous_visual_value)
     EXPECT_EQ(SendMessageW(checkbox, BM_GETCHECK, 0, 0), BST_CHECKED);
     EXPECT_EQ(this->changes_, 0);
 }
-// 原生点击修改草稿，程序刷新和文字刷新保留布尔值且不回写。
+// 验证原生点击修改草稿，程序刷新和文字刷新保留布尔值且不回写。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, click_updates_bool_and_refresh_is_read_only)
 {
     this->PrepareBool();
@@ -502,7 +644,9 @@ TEST_F(RendererBoolTest, click_updates_bool_and_refresh_is_read_only)
     EXPECT_EQ(this->changes_, 1);
     EXPECT_TRUE(this->renderer_.SetFieldError("checked", L"field error"));
 }
-// 拒绝和异常均恢复视觉值，异常带控件 ID 汇报。
+// 验证拒绝和异常均恢复视觉值，异常带控件 ID 汇报。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, rejected_or_throwing_change_restores_previous_check)
 {
     this->PrepareBool();
@@ -520,7 +664,9 @@ TEST_F(RendererBoolTest, rejected_or_throwing_change_restores_previous_check)
     EXPECT_EQ(this->errors_.back().code, "callback_failed");
     EXPECT_EQ(this->errors_.back().id, "checked");
 }
-// 忙状态与单控件禁用均禁止通知修改业务草稿。
+// 验证忙状态与单控件禁用均禁止通知修改业务草稿。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；通过 GoogleTest 断言记录验证结果。
 TEST_F(RendererBoolTest, disabled_and_busy_checkbox_do_not_dispatch)
 {
     this->PrepareBool();

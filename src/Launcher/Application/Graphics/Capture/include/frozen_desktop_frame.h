@@ -1,3 +1,5 @@
+// 文件职责：定义原生显示输出 plane、像素与颜色格式及不可复制的冻结桌面数据模型。
+
 #pragma once
 
 #include <geometry.h>
@@ -46,7 +48,9 @@ struct OutputColorMetadata final
     bool hasSdrWhiteLevel{}; // 查询失败时保持 false，不能把零值或显示器峰值当成参考白。
 };
 
-// 返回指定冻结像素格式每个像素占用的字节数；未知枚举值返回零。
+// 确定原生像素格式的存储宽度以计算行跨度和复制偏移。
+// 入参：format：待查询的捕获像素格式。
+// 返回：BGRA8/RGB10A2 返回 4 字节，FP16 返回 8 字节，未知格式返回 0。
 [[nodiscard]] std::size_t CapturedBytesPerPixel(CapturedPixelFormat format) noexcept;
 
 // 拥有单个显示输出已经旋转到虚拟桌面方向的紧凑原生像素。
@@ -54,37 +58,67 @@ class CapturedOutputPlane final
 {
   public:
     // 创建无效空 plane，供失败清理和移动后状态使用。
+    // 入参：无。
+    // 返回：无返回值；构造后的图像对象为空，IsValid() 为 false。
     CapturedOutputPlane() = default;
-    // 接管紧凑像素缓冲区；边界或字节数不符合格式时保持无效状态。
+    // 构造并独占一个显示输出的原生冻结像素，校验颜色格式和内存布局。
+    // 入参：bounds：桌面方向物理像素半开边界；format：原生像素格式；pixelColorSpace：像素编码颜色空间；metadata：显示输出颜色信息；pixels：转移所有权的紧凑原生像素字节。
+    // 返回：无返回值；尺寸或存储不合法时对象无效。
     CapturedOutputPlane(RectI bounds, CapturedPixelFormat format, CapturedColorSpace pixelColorSpace,
                         OutputColorMetadata metadata, std::vector<std::uint8_t> pixels) noexcept;
 
     // 禁止复制原生桌面像素，避免高分辨率缓冲区被意外复制。
+    // 入参：未命名 const CapturedOutputPlane 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     CapturedOutputPlane(const CapturedOutputPlane&) = delete;
     // 禁止复制赋值，确保每块原生像素只有一个所有者。
+    // 入参：未命名 const CapturedOutputPlane 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     CapturedOutputPlane& operator=(const CapturedOutputPlane&) = delete;
-    // 允许移动 plane 所拥有的像素缓冲区。
+    // 转移原生冻结输出的像素所有权，避免复制图像缓冲区。
+    // 入参：未命名 CapturedOutputPlane 右值引用：交出像素所有权的源对象。
+    // 返回：无返回值；构造的新对象接管源像素缓冲区。
     CapturedOutputPlane(CapturedOutputPlane&&) noexcept = default;
-    // 允许通过移动赋值转移 plane 所拥有的像素缓冲区。
+    // 转移原生冻结输出的像素所有权，避免复制图像缓冲区。
+    // 入参：未命名 CapturedOutputPlane 右值引用：交出像素所有权的源对象。
+    // 返回：赋值后的当前对象引用。
     CapturedOutputPlane& operator=(CapturedOutputPlane&&) noexcept = default;
 
-    // 验证边界、格式、stride 和像素缓冲区大小组成完整一致的 plane。
+    // 检查原生输出 plane是否可供下游读取和处理。
+    // 入参：无。
+    // 返回：边界、行跨度及像素存储符合帧格式时为 true，否则为 false。
     [[nodiscard]] bool IsValid() const noexcept;
-    // 返回 plane 在虚拟桌面物理像素中的半开边界。
+    // 提供图像在虚拟桌面中的物理像素范围。
+    // 入参：无。
+    // 返回：当前对象所持半开矩形的只读引用；仅借用对象内存，不转移所有权。
     [[nodiscard]] const RectI& Bounds() const noexcept;
-    // 返回已经旋转到桌面方向的像素宽度。
+    // 查询矩形或图像的水平物理像素尺寸。
+    // 入参：无。
+    // 返回：right 减 left 的有符号宽度，空或反向边界可能为零或负数。
     [[nodiscard]] int Width() const noexcept;
-    // 返回已经旋转到桌面方向的像素高度。
+    // 查询矩形或图像的垂直物理像素尺寸。
+    // 入参：无。
+    // 返回：bottom 减 top 的有符号高度，空或反向边界可能为零或负数。
     [[nodiscard]] int Height() const noexcept;
-    // 返回该 plane 的原生像素格式。
+    // 查询原生 plane 使用的像素编码格式。
+    // 入参：无。
+    // 返回：捕获时保存的 CapturedPixelFormat 枚举值。
     [[nodiscard]] CapturedPixelFormat Format() const noexcept;
-    // 返回 plane 像素自身的颜色空间，不等同于显示器输出线缆颜色空间。
+    // 查询原生像素自身的颜色空间以选择正确解码方式。
+    // 入参：无。
+    // 返回：plane 保存的像素颜色空间，不等同于显示输出的传输颜色空间。
     [[nodiscard]] CapturedColorSpace PixelColorSpace() const noexcept;
-    // 返回显示输出能力、亮度和兼容降级信息。
+    // 提供显示输出颜色能力、参考白及兼容回退信息。
+    // 入参：无。
+    // 返回：当前 plane 所持颜色元数据的只读引用，其生命周期不超过当前对象。
     [[nodiscard]] const OutputColorMetadata& ColorMetadata() const noexcept;
-    // 返回去除驱动 RowPitch padding 后的紧凑行跨度。
+    // 查询逐行访问图像所需的字节步长。
+    // 入参：无。
+    // 返回：一行紧凑像素的字节数，不包含驱动行填充。
     [[nodiscard]] std::size_t Stride() const noexcept;
-    // 返回只读原生像素；其生命周期不超过当前 plane。
+    // 向图像消费者提供只读像素视图，避免复制完整缓冲区。
+    // 入参：无。
+    // 返回：借用当前对象像素内存的只读 span；对象销毁或缓冲区改变后不可继续使用。
     [[nodiscard]] std::span<const std::uint8_t> Pixels() const noexcept;
 
   private:
@@ -101,26 +135,46 @@ class FrozenDesktopFrame final
 {
   public:
     // 创建不包含桌面数据的无效冻结帧。
+    // 入参：无。
+    // 返回：无返回值；构造后的图像对象为空，IsValid() 为 false。
     FrozenDesktopFrame() = default;
-    // 接管一次完整捕获产生的全部输出；任一 plane 越界或无效时保持无效状态。
+    // 接管一次完整捕获的全部显示输出，形成可重复读取的冻结桌面。
+    // 入参：bounds：虚拟桌面物理像素半开边界；outputs：转移所有权的全部显示输出 plane。
+    // 返回：无返回值；尺寸或存储不合法时对象无效。
     FrozenDesktopFrame(RectI bounds, std::vector<CapturedOutputPlane> outputs) noexcept;
 
     // 禁止复制冻结桌面，避免原生像素被隐式复制。
+    // 入参：未命名 const FrozenDesktopFrame 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     FrozenDesktopFrame(const FrozenDesktopFrame&) = delete;
     // 禁止复制赋值，保证一次截图会话独占冻结像素。
+    // 入参：未命名 const FrozenDesktopFrame 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     FrozenDesktopFrame& operator=(const FrozenDesktopFrame&) = delete;
-    // 允许移动整次冻结桌面的所有权。
+    // 转移冻结桌面的像素所有权，避免复制图像缓冲区。
+    // 入参：未命名 FrozenDesktopFrame 右值引用：交出像素所有权的源对象。
+    // 返回：无返回值；构造的新对象接管源像素缓冲区。
     FrozenDesktopFrame(FrozenDesktopFrame&&) noexcept = default;
-    // 允许通过移动赋值替换冻结桌面所有权。
+    // 转移冻结桌面的像素所有权，避免复制图像缓冲区。
+    // 入参：未命名 FrozenDesktopFrame 右值引用：交出像素所有权的源对象。
+    // 返回：赋值后的当前对象引用。
     FrozenDesktopFrame& operator=(FrozenDesktopFrame&&) noexcept = default;
 
-    // 验证虚拟桌面边界、输出集合以及所有 plane 的包含关系。
+    // 检查冻结桌面是否可供下游读取和处理。
+    // 入参：无。
+    // 返回：桌面边界非空、输出集合非空且所有有效 plane 均被边界包含时为 true，否则为 false。
     [[nodiscard]] bool IsValid() const noexcept;
-    // 返回冻结时刻的虚拟桌面物理像素边界。
+    // 提供图像在虚拟桌面中的物理像素范围。
+    // 入参：无。
+    // 返回：当前对象所持半开矩形的只读引用；仅借用对象内存，不转移所有权。
     [[nodiscard]] const RectI& Bounds() const noexcept;
-    // 返回只读显示输出集合，禁止下游修改原始捕获数据。
+    // 向预览和选区裁切提供冻结桌面的原生输出集合。
+    // 入参：无。
+    // 返回：按捕获枚举顺序排列的只读 plane 视图，借用当前冻结桌面的内存。
     [[nodiscard]] std::span<const CapturedOutputPlane> Outputs() const noexcept;
-    // 清空全部原生像素并恢复为无效状态。
+    // 丢弃冻结桌面的全部原生输出并复位图像几何信息。
+    // 入参：无。
+    // 返回：无返回值；对象恢复为空且 IsValid() 为 false。
     void Clear() noexcept;
 
   private:

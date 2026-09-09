@@ -1,3 +1,5 @@
+// 文件职责：定义各显示输出的预览帧和生成接口，区分 SDR 与 HDR 预览的像素和参考白语义。
+
 #pragma once
 
 #include <frozen_desktop_frame.h>
@@ -20,7 +22,9 @@ struct OutputPreviewFrame final
     bool compatibilityMode{}; // HDR 输出只取得 SDR 数据时置位，不能视为原生 HDR 还原成功。
 };
 
-// 从只读原生 plane 生成单屏呈现数据；FP16 不色调映射，失败时清空 preview 并返回诊断原因。
+// 从原生冻结 plane 生成独立单屏预览，保留 HDR 像素亮度语义。
+// 入参：plane：只读原生冻结输出；preview：输出参数，接收自有预览像素、格式及颜色信息；errorMessage：输出参数，接收失败原因。
+// 返回：预览完整生成时为 true；原生帧或元数据无效时为 false，preview 清空并写入诊断。
 [[nodiscard]] bool BuildOutputPreview(const CapturedOutputPlane& plane, OutputPreviewFrame& preview,
                                       std::wstring& errorMessage);
 } // namespace open_st

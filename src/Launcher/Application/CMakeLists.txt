@@ -1,3 +1,5 @@
+# 构建 Application 协调库，加载直接子模块并声明应用编排源码及依赖。
+
 # application 封装应用生命周期、托盘、快捷键和窗口消息协调逻辑。
 add_subdirectory(CaptureToolbar)
 add_subdirectory(Export)

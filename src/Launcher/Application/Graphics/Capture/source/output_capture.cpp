@@ -1,3 +1,5 @@
+// 文件职责：实现单屏 Desktop Duplication、原生格式协商、GPU 回读与捕获资源的 RAII 清理。
+
 #include "output_capture.h"
 
 #include "captured_plane_writer.h"
@@ -21,7 +23,9 @@ namespace
 {
 constexpr UINT CAPTURE_TIMEOUT_MILLISECONDS = 500;
 
-// 把失败阶段和 HRESULT 格式化为供上层诊断使用的宽字符串。
+// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
+// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
+// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
 std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
 {
     std::wostringstream stream;
@@ -33,9 +37,13 @@ std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
 class AcquiredFrameGuard final
 {
   public:
-    // 借用 duplication；尚未成功获取帧前不执行释放。
+    // 建立桌面复制帧归还守卫，确保成功获取的帧最终释放。
+    // 入参：duplication：调用期间保持有效的借用桌面复制接口。
+    // 返回：无返回值；初始状态尚未取得帧，获取成功后须调用 MarkAcquired。
     explicit AcquiredFrameGuard(IDXGIOutputDuplication* duplication) noexcept : duplication_(duplication) {}
-    // 若调用方尚未显式归还帧，则在栈展开时执行兜底释放。
+    // 在离开捕获作用域时归还尚未显式释放的桌面复制帧。
+    // 入参：无。
+    // 返回：无返回值；析构完成对应资源清理。
     ~AcquiredFrameGuard()
     {
         if (this->acquired_ && this->duplication_ != nullptr)
@@ -45,17 +53,25 @@ class AcquiredFrameGuard final
     }
 
     // 禁止复制 guard，避免同一 Desktop Duplication 帧被释放两次。
+    // 入参：未命名 const AcquiredFrameGuard 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     AcquiredFrameGuard(const AcquiredFrameGuard&) = delete;
     // 禁止复制赋值，保持释放职责唯一。
+    // 入参：未命名 const AcquiredFrameGuard 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     AcquiredFrameGuard& operator=(const AcquiredFrameGuard&) = delete;
 
-    // 标记一次 AcquireNextFrame 已成功，后续退出必须归还。
+    // 登记桌面复制帧已成功获取，使守卫负责后续归还。
+    // 入参：无。
+    // 返回：无返回值；acquired_ 被设置为 true，后续 Release 或析构将尝试归还帧。
     void MarkAcquired() noexcept
     {
         this->acquired_ = true;
     }
 
-    // 显式归还当前帧并报告 ReleaseFrame 失败；成功后析构不再重复释放。
+    // 显式归还已获取的桌面复制帧并报告系统释放错误。
+    // 入参：errorMessage：输出参数，ReleaseFrame 失败时写入阶段和 HRESULT。
+    // 返回：无需归还或成功归还时为 true；ReleaseFrame 失败时为 false，已获取标记均清除以避免重复归还。
     [[nodiscard]] bool Release(std::wstring& errorMessage)
     {
         if (!this->acquired_ || this->duplication_ == nullptr)
@@ -81,23 +97,33 @@ class AcquiredFrameGuard final
 class MappedTextureGuard final
 {
   public:
-    // 借用已经成功 Map 的 context 和 texture，并取得唯一 Unmap 职责。
+    // 接管一块已映射纹理的解除映射职责，确保提前退出时也执行 Unmap。
+    // 入参：context：借用的 D3D11 立即上下文；texture：已成功 Map 且等待解除映射的借用纹理。
+    // 返回：无返回值；守卫开始负责解除该纹理映射。
     MappedTextureGuard(ID3D11DeviceContext* context, ID3D11Texture2D* texture) noexcept
         : context_(context), texture_(texture)
     {
     }
-    // 若尚未显式解除映射，则在栈展开时执行兜底 Unmap。
+    // 在离开像素回读作用域时解除尚未显式解除的纹理映射。
+    // 入参：无。
+    // 返回：无返回值；析构完成对应资源清理。
     ~MappedTextureGuard()
     {
         this->Unmap();
     }
 
     // 禁止复制 guard，避免同一纹理被重复 Unmap。
+    // 入参：未命名 const MappedTextureGuard 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     MappedTextureGuard(const MappedTextureGuard&) = delete;
     // 禁止复制赋值，保持 Unmap 职责唯一。
+    // 入参：未命名 const MappedTextureGuard 引用：拟复制的源对象；该操作被禁止。
+    // 返回：无；函数已删除，尝试调用会产生编译错误。
     MappedTextureGuard& operator=(const MappedTextureGuard&) = delete;
 
-    // 显式解除 CPU 映射；重复调用没有效果。
+    // 解除 staging texture 的 CPU 映射并清除守卫借用的资源指针。
+    // 入参：无。
+    // 返回：无返回值；有效映射被解除，context 和 texture 指针清空，重复调用无效果。
     void Unmap() noexcept
     {
         if (this->context_ != nullptr && this->texture_ != nullptr)
@@ -113,7 +139,9 @@ class MappedTextureGuard final
     ID3D11Texture2D* texture_{};
 };
 
-// 读取扩展显示颜色元数据；旧驱动不提供 IDXGIOutput6 时保留 Unknown 和零亮度。
+// 读取 DXGI 扩展颜色能力，用于确定原生像素转换和兼容状态。
+// 入参：output：借用的 DXGI 显示输出对象。
+// 返回：已读取的颜色空间、位深及亮度元数据；扩展接口不可用或读取失败时对应字段保持未知或零。
 open_st::OutputColorMetadata ReadOutputColorMetadata(IDXGIOutput* output) noexcept
 {
     open_st::OutputColorMetadata metadata{};
@@ -133,7 +161,10 @@ open_st::OutputColorMetadata ReadOutputColorMetadata(IDXGIOutput* output) noexce
     return metadata;
 }
 
-// 优先创建支持高色深格式协商的 DuplicateOutput1；仅接口缺失或明确不支持时降级旧接口。
+// 优先建立高色深桌面复制会话，仅在明确兼容条件下使用旧接口。
+// 入参：output：借用的显示输出；device：该适配器的 D3D11
+// 设备；duplication：输出参数，接收复制会话；usedLegacyFallback：输出参数，标识是否采用旧接口；errorMessage：输出参数，失败时接收诊断。
+// 返回：复制会话建立成功时为 true；接口或创建失败且无法受控回退时为 false，并写入诊断。
 bool CreateDuplication(IDXGIOutput* output, ID3D11Device* device, ComPtr<IDXGIOutputDuplication>& duplication,
                        bool& usedLegacyFallback, std::wstring& errorMessage)
 {
@@ -184,7 +215,10 @@ bool CreateDuplication(IDXGIOutput* output, ID3D11Device* device, ComPtr<IDXGIOu
 
 namespace open_st
 {
-// 获取一个真实显示输出的原生桌面表面，复制到自有紧凑内存后再释放 DXGI 资源。
+// 捕获单显示输出并回读原生像素，形成不依赖 DXGI 资源的冻结 plane。
+// 入参：output：借用的显示输出；device：对应适配器的 D3D11 设备；context：该设备的立即上下文；capturedOutput：输出参数，接收自有原生
+// plane；errorMessage：输出参数，接收失败诊断。
+// 返回：捕获、映射、复制及资源归还成功时为 true；失败为 false，capturedOutput 保持无效。
 bool CaptureSingleOutput(IDXGIOutput* output, ID3D11Device* device, ID3D11DeviceContext* context,
                          CapturedOutputPlane& capturedOutput, std::wstring& errorMessage)
 {
