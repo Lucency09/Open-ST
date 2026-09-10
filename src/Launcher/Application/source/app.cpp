@@ -15,6 +15,7 @@
 #include <image_file_writer.h>
 #include <log.h>
 #include <overlay_renderer.h>
+#include <pin_window_manager.h>
 #include <selection_model.h>
 #include <selection_output_renderer.h>
 #include <settings.h>
@@ -54,6 +55,8 @@ constexpr wchar_t MESSAGE_CLASS[] = L"OpenST.MessageWindow";
 constexpr wchar_t OVERLAY_CLASS[] = L"OpenST.CaptureOverlay";
 constexpr UINT LAUNCH_MESSAGE = WM_APP + 3;
 constexpr UINT TOOLBAR_COMMAND_MESSAGE = WM_APP + 4;
+constexpr UINT PIN_COMMAND_MESSAGE = WM_APP + 5;
+constexpr UINT PIN_STOPPED_MESSAGE = WM_APP + 6;
 constexpr UINT PREPARE_OUTPUT_MESSAGE = WM_APP + 2;
 constexpr UINT TRAY_MESSAGE = WM_APP + 1;
 constexpr UINT TRAY_ID = 1;
@@ -263,11 +266,17 @@ App::App(HINSTANCE instance) noexcept : instance_(instance) {}
 // 返回：析构函数无返回值；停止实例监听，关闭设置和截图会话，移除托盘并释放图标、消息窗口、COM 和日志。
 App::~App()
 {
+    this->shuttingDown_ = true;
+    this->pendingPinId_ = 0;
     if (this->singleInstance_ != nullptr)
     {
         this->singleInstance_->Stop();
     }
     OPEN_ST_LOG_INFO("Application shutting down.");
+    if (this->pinManager_)
+        this->pinManager_->Shutdown();
+    this->CloseOverlay();
+    this->pinManager_.reset();
     // 按“会话资源 → 系统集成 → 消息窗口 → 互斥体”的逆初始化顺序清理。
     if (this->settingsWindow_ != nullptr)
     {
@@ -407,6 +416,7 @@ int App::Run(int)
     this->comInitialized_ = true;
     this->outputRenderer_ = std::make_unique<SelectionOutputRenderer>();
     this->completion_ = std::make_unique<CaptureCompletion>();
+    this->pinManager_ = std::make_unique<PinWindowManager>(this->instance_, this->MakePinCallbacks());
     this->AddTrayIcon();
     std::array<wchar_t, 32768> executable{};
     const DWORD length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
@@ -501,7 +511,7 @@ int App::Run(int)
 // 返回：无返回值；截图或模态提示期间延后处理，其余时消费告警并显示一次合并提示。
 void App::ReportDataReadWarnings()
 {
-    if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_)
+    if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_ || this->shuttingDown_)
     {
         return;
     }
@@ -515,7 +525,14 @@ void App::ReportDataReadWarnings()
     const std::wstring title = GetUiText("app.title");
     // 读取告警文本本身若遇到新故障，本次合并提示已经覆盖，不留到下一条消息重复报告。
     (void)ConsumeUiTextReadWarning();
-    (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+    // 以已解析快照提示读取故障，模态期间暂停全部贴图。
+    // 入参：无；按值保留本次正文，避免失败资源被反复读取。
+    // 返回：错误正文。
+    this->ShowSimpleMessage([message]() { return message; },
+                            // 返回已解析的告警标题。
+                            // 入参：无。
+                            // 返回：标题快照。
+                            [title]() { return title; }, MB_OK | MB_ICONWARNING);
 }
 
 // 注册并创建接收热键、托盘和业务命令的隐藏消息窗口。
@@ -578,6 +595,26 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 返回：已消费业务消息的处理结果；其他消息返回 DefWindowProcW 的结果。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (message == PIN_STOPPED_MESSAGE)
+    {
+        this->UpdateCaptureGate();
+        return 0;
+    }
+    if (message == PIN_COMMAND_MESSAGE)
+    {
+        this->DispatchPinCommand(static_cast<PinCommand>(wParam), static_cast<std::uint64_t>(lParam));
+        return 0;
+    }
+    if (message == WM_CLOSE)
+    {
+        this->shuttingDown_ = true;
+        this->pendingPinId_ = 0;
+        if (this->pinManager_)
+            this->pinManager_->Shutdown();
+        this->CloseOverlay();
+        this->UpdateCaptureGate();
+        return 0;
+    }
     if (message == TOOLBAR_COMMAND_MESSAGE)
     {
         this->DispatchToolbarCommand(static_cast<CaptureToolbarCommand>(wParam), static_cast<std::uint64_t>(lParam));
@@ -653,7 +690,12 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
             return 0;
         // 用户选择托盘菜单中的“退出”，向当前线程投递 WM_QUIT 以结束消息循环。
         case ID_TRAY_EXIT:
-            PostQuitMessage(0);
+            SendMessageW(this->messageWindow_, WM_CLOSE, 0, 0);
+            return 0;
+        case ID_TRAY_PIN_CLOSE_ALL:
+            this->pendingPinId_ = 0;
+            if (this->pinManager_)
+                this->pinManager_->CloseAll();
             return 0;
         default:
             break;
@@ -742,6 +784,8 @@ void App::RemoveTrayIcon() noexcept
 // 返回：无返回值；更新已存在的界面对象，不创建新的业务窗口。
 void App::RefreshLocalizedUi()
 {
+    if (this->pinManager_)
+        this->pinManager_->RefreshText();
     if (this->captureToolbar_ != nullptr)
     {
         const ToolbarResult result = this->captureToolbar_->RefreshTexts();
@@ -806,6 +850,11 @@ void App::ShowTrayMenu()
     const std::wstring exitText = GetUiText("tray.exit");
     const std::wstring cleanupText = GetUiText("tray.cleanup");
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_CAPTURE, captureText.c_str());
+    if (this->pinManager_ && this->pinManager_->Count() != 0)
+    {
+        const std::wstring closePinsText = GetUiText("tray.pin_close_all");
+        (void)AppendMenuW(menu, MF_STRING, ID_TRAY_PIN_CLOSE_ALL, closePinsText.c_str());
+    }
     (void)AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_SETTINGS, settingsText.c_str());
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_ABOUT, aboutText.c_str());
@@ -813,8 +862,14 @@ void App::ShowTrayMenu()
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_EXIT, exitText.c_str());
     // Win32 托盘菜单需要先把所属窗口设为前台，否则用户点击菜单外部时菜单可能无法自动收起。
     SetForegroundWindow(this->messageWindow_);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON, cursor.x, cursor.y, 0, this->messageWindow_, nullptr);
+    const bool pausePins = this->pinManager_ && this->pinManager_->BeginModal(0);
+    const UINT selected = static_cast<UINT>(TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+                                                           cursor.x, cursor.y, 0, this->messageWindow_, nullptr));
     DestroyMenu(menu);
+    if (pausePins)
+        this->pinManager_->EndModal();
+    if (selected != 0)
+        SendMessageW(this->messageWindow_, WM_COMMAND, selected, 0);
 }
 
 // 打开或激活应用的唯一非模态设置窗口。
@@ -832,9 +887,14 @@ void App::ShowSettings()
     }
     if (!this->settingsWindow_->Show(this->instance_, this->MakeSettingsCallbacks()))
     {
-        const std::wstring message = GetUiText("settings.open_failed");
-        const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        // 查询设置窗口创建失败提示，使用统一模态门禁暂停贴图。
+        // 入参：无。
+        // 返回：当前语言的错误文字。
+        this->ShowSimpleMessage([]() { return GetUiText("settings.open_failed"); },
+                                // 查询提示标题。
+                                // 入参：无。
+                                // 返回：当前语言的应用名称。
+                                []() { return GetUiText("app.title"); }, MB_OK | MB_ICONWARNING);
     }
 }
 
@@ -873,9 +933,17 @@ bool App::ApplyStartup(bool enabled)
 
 // 选择系统模态提示的所属窗口。
 // 入参：无。
-// 返回：优先返回可见设置窗口的借用句柄，否则返回隐藏消息窗口；不转移所有权。
+// 返回：依次选择有效截图窗口、可见贴图、设置或隐藏消息窗口；不转移所有权。
 HWND App::DialogOwner() const noexcept
 {
+    if (this->overlaySession_ && IsWindow(this->overlaySession_->ActivationWindow()))
+        return this->overlaySession_->ActivationWindow();
+    if (this->pinManager_)
+    {
+        const HWND pin = this->pinManager_->ModalOwner();
+        if (pin)
+            return pin;
+    }
     if (this->settingsWindow_ != nullptr && this->settingsWindow_->IsOpen())
     {
         return this->settingsWindow_->NativeHandle();
@@ -892,7 +960,20 @@ void App::UpdateCaptureGate() noexcept
         this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_;
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
+    if (paused)
+        this->pendingPinId_ = 0;
+    const bool pausePins = this->dialogActive_ || this->settingsBusy_ || this->welcoming_;
+    if (this->pinManager_ && pausePins && !this->pinModalHeld_)
+        this->pinModalHeld_ = this->pinManager_->BeginModal(0);
+    else if (this->pinManager_ && !pausePins && this->pinModalHeld_)
+    {
+        this->pinModalHeld_ = false;
+        this->pinManager_->EndModal();
+    }
     this->InvalidateToolbarCommands();
+    if (this->shuttingDown_ && !this->completionBusy_ && !this->dialogActive_ && !this->settingsBusy_ &&
+        !this->welcoming_ && (!this->pinManager_ || !this->pinManager_->IsBusy()))
+        PostQuitMessage(0);
 }
 
 // 判断当前截图会话能否接受新的完成命令。
@@ -912,7 +993,7 @@ bool App::CanSubmitToolbarCommand() const noexcept
 bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
 {
     if (command != CaptureToolbarCommand::Cancel && command != CaptureToolbarCommand::Save &&
-        command != CaptureToolbarCommand::Copy)
+        command != CaptureToolbarCommand::Copy && command != CaptureToolbarCommand::Pin)
     {
         return false;
     }
@@ -958,6 +1039,9 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
     case CaptureToolbarCommand::Copy:
         this->CopySelection();
         break;
+    case CaptureToolbarCommand::Pin:
+        this->PinSelection();
+        break;
     }
     this->RefreshCaptureToolbar();
 }
@@ -998,8 +1082,9 @@ try
         const BOOL enumerated = EnumDisplayMonitors(
             nullptr, nullptr,
             // 收集当前枚举到的显示器以选择工具栏目标屏幕。
-            // 入参：monitor：当前显示器；未命名 HDC、LPRECT：本回调不使用的设备上下文与矩形；data：借用的显示器向量指针。
-            // 返回：追加成功 TRUE 继续枚举；内存分配等异常时 FALSE 终止枚举。
+            // 入参：monitor：当前显示器；未命名
+            // HDC、LPRECT：本回调不使用的设备上下文与矩形；data：借用的显示器向量指针。 返回：追加成功 TRUE
+            // 继续枚举；内存分配等异常时 FALSE 终止枚举。
             [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL
             {
                 try
@@ -1081,6 +1166,7 @@ void App::CreateCaptureToolbar() noexcept
         this->captureToolbar_ = std::make_unique<CaptureToolbar>();
         std::vector<ToolbarButtonSpec> buttons{
             {CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "capture.toolbar.cancel", 0},
+            {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "capture.toolbar.pin", 1},
             {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
             {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
         const ToolbarResult result = this->captureToolbar_->Create(
@@ -1141,7 +1227,30 @@ try
         return;
     }
 
-    // 产品约束要求先冻结全部原生显示输出，再生成预览并显示遮罩，防止把界面截入结果。
+    if (this->pinManager_ && this->pinManager_->IsBusy())
+        return;
+    this->pendingPinId_ = 0;
+    struct CloseCaptureOnFailure final
+    {
+        App& app;
+        bool keepSession{};
+        // 在失败或异常时统一清理，保证遮罩销毁后才恢复贴图交互。
+        // 入参：无。
+        // 返回：无返回值；退出中的管理器自行禁止恢复。
+        ~CloseCaptureOnFailure()
+        {
+            if (!this->keepSession)
+                this->app.CloseOverlay();
+        }
+    } captureGuard{*this};
+    std::wstring pinError;
+    if (this->pinManager_ && !this->pinManager_->BeginCapture(pinError))
+    {
+        OPEN_ST_LOG_ERROR("Cannot pause existing pins before capture. detail=", WideToUtf8(pinError));
+        this->ShowCaptureError("capture.error.unknown");
+        return;
+    }
+    // 旧贴图保持可见，当前缩放、透明度和叠放外观一并进入冻结帧；截图遮罩此时尚未显示。
     std::unique_ptr<FrozenDesktopFrame> capturedFrame = std::make_unique<FrozenDesktopFrame>();
     // 捕获当前虚拟桌面的原生 SDR/HDR plane；底层诊断不直接显示给用户。
     DesktopCapturer capturer;
@@ -1243,6 +1352,7 @@ try
     }
     OPEN_ST_LOG_DEBUG("All capture output overlays displayed.");
     this->CreateCaptureToolbar();
+    captureGuard.keepSession = this->overlaySession_ != nullptr;
 }
 catch (const std::exception&)
 {
@@ -1579,6 +1689,8 @@ void App::CloseOverlay() noexcept
     this->frozenDesktopFrame_.reset();
     this->overlayPreparing_ = false;
     this->overlayInvalidated_ = false;
+    if (this->pinManager_ && !this->shuttingDown_)
+        this->pinManager_->EndCapture();
 }
 
 // 把当前稳定截图选区复制到系统剪贴板。
@@ -1709,9 +1821,14 @@ try
     }
     if (result == CompletionResult::SavedDirectoryWarning)
     {
-        const std::wstring message = GetUiText("export.directory_failed");
-        const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
+        // 在旧贴图恢复后仍对目录告警应用全局模态暂停。
+        // 入参：无。
+        // 返回：当前语言的保存目录告警。
+        this->ShowSimpleMessage([]() { return GetUiText("export.directory_failed"); },
+                                // 查询应用告警标题。
+                                // 入参：无。
+                                // 返回：应用名称。
+                                []() { return GetUiText("app.title"); }, MB_OK | MB_ICONWARNING);
     }
 }
 catch (const std::exception&)
@@ -1796,10 +1913,10 @@ void App::ShowCleanup()
             { return GetUiText(key == "cleanup.cancel" && stopped ? "cleanup.keep_logs_exit" : key); }));
         require(renderer.BindBool(
             "deleteLogs",
-                // 读取本次退出清理的删除日志选项。
-                // 入参：无显式入参；借用 deleteLogs 草稿。
-                // 返回：成功的 RendererBoolResult，其 value 为当前删除日志选项。
-                [&deleteLogs]() { return RendererBoolResult{true, deleteLogs, {}}; },
+            // 读取本次退出清理的删除日志选项。
+            // 入参：无显式入参；借用 deleteLogs 草稿。
+            // 返回：成功的 RendererBoolResult，其 value 为当前删除日志选项。
+            [&deleteLogs]() { return RendererBoolResult{true, deleteLogs, {}}; },
             // 更新本次退出清理的删除日志草稿。
             // 入参：value：复选框新值；借用 deleteLogs 存储草稿。
             // 返回：表示变更成功的 RendererChangeResult，不写持久化设置。
@@ -1864,7 +1981,7 @@ void App::ShowCleanup()
                                         (void)renderer.RequestClose();
                                     }));
         RendererWindowOptions options;
-        options.owner = this->messageWindow_;
+        options.owner = this->DialogOwner();
         options.icon = this->largeIcon_;
         require(renderer.ShowModal(options));
     }
@@ -1913,10 +2030,10 @@ void App::ShowCaptureError(std::string_view detailKey)
 }
 
 // 显示可随语言变化刷新的简单模态提示，并在 Renderer 失败时回退系统提示。
-// 入参：message、title：正文和标题查询回调；fallbackFlags：MessageBoxW 的按钮及图标标志。
+// 入参：message、title：正文和标题查询回调；fallbackFlags：系统提示标志；owner：可选的受保护所属窗口。
 // 返回：无返回值；守卫覆盖自定义和系统提示两条路径，阻止模态期间再次进入业务。
 void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function<std::wstring()> title,
-                            UINT fallbackFlags)
+                            UINT fallbackFlags, HWND owner)
 {
     if (this->dialogActive_)
     {
@@ -1926,20 +2043,20 @@ void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function
     // 入参：无显式入参；捕获存活中的 App 指针。
     // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。
     CompletionBusyGuard dialogGuard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
+    const HWND effectiveOwner = IsWindow(owner) ? owner : this->DialogOwner();
     bool shown = false;
     try
     {
         shown = TryShowSimpleMessageWindow(
-            this->messageWindow_, this->largeIcon_, title, message,
-                // 提供简单提示窗口确认按钮的当前语言文字。
-                // 入参：无。
-                // 返回：当前语言的确认按钮文本宽字符串。
-                []() { return GetUiText("dialog.ok"); },
-            this->messageRenderer_,
-                // 在简单提示的模态循环中处理设置窗口键盘导航。
-                // 入参：threadMessage：可由设置窗口消费的线程消息引用；捕获 App。
-                // 返回：设置窗口存在且消费消息时 true，否则 false。
-                [this](MSG& threadMessage)
+            effectiveOwner, this->largeIcon_, title, message,
+            // 提供简单提示窗口确认按钮的当前语言文字。
+            // 入参：无。
+            // 返回：当前语言的确认按钮文本宽字符串。
+            []() { return GetUiText("dialog.ok"); }, this->messageRenderer_,
+            // 在简单提示的模态循环中处理设置窗口键盘导航。
+            // 入参：threadMessage：可由设置窗口消费的线程消息引用；捕获 App。
+            // 返回：设置窗口存在且消费消息时 true，否则 false。
+            [this](MSG& threadMessage)
             { return this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(threadMessage); });
     }
     catch (...)
@@ -1948,7 +2065,7 @@ void App::ShowSimpleMessage(std::function<std::wstring()> message, std::function
     }
     if (!shown)
     {
-        (void)MessageBoxW(this->DialogOwner(), message().c_str(), title().c_str(), fallbackFlags);
+        (void)MessageBoxW(effectiveOwner, message().c_str(), title().c_str(), fallbackFlags);
     }
     dialogGuard.Release();
     if (this->overlaySession_ != nullptr)

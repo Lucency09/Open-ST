@@ -20,8 +20,9 @@ ToolbarResult ValidateButtons(std::span<const ToolbarButtonSpec> specs)
     {
         const ToolbarButtonSpec& spec = specs[index];
         if ((spec.command != CaptureToolbarCommand::Cancel && spec.command != CaptureToolbarCommand::Save &&
-             spec.command != CaptureToolbarCommand::Copy) ||
-            (spec.icon != ToolbarIcon::Cancel && spec.icon != ToolbarIcon::Save && spec.icon != ToolbarIcon::Copy) ||
+             spec.command != CaptureToolbarCommand::Copy && spec.command != CaptureToolbarCommand::Pin) ||
+            (spec.icon != ToolbarIcon::Cancel && spec.icon != ToolbarIcon::Save && spec.icon != ToolbarIcon::Copy &&
+             spec.icon != ToolbarIcon::Pin) ||
             spec.tooltipKey.empty())
         {
             return {false, L"工具栏包含无效命令、图标或文本键。"};
@@ -38,8 +39,9 @@ ToolbarResult ValidateButtons(std::span<const ToolbarButtonSpec> specs)
 }
 
 // 根据可见按钮和选区计算工具栏窗口、按钮及分隔线布局。
-// 入参：specs：有序按钮描述；states：一一对应的状态；selection、workArea：虚拟桌面物理像素矩形；dpi：目标屏 DPI；layout：输出布局。
-// 返回：成功时 success 为 true 并发布 layout；非法输入或工作区不足时 false 并附诊断，保留原布局。
+// 入参：specs：有序按钮描述；states：一一对应的状态；selection、workArea：虚拟桌面物理像素矩形；dpi：目标屏
+// DPI；layout：输出布局。 返回：成功时 success 为 true 并发布 layout；非法输入或工作区不足时 false
+// 并附诊断，保留原布局。
 ToolbarResult BuildLayout(std::span<const ToolbarButtonSpec> specs, std::span<const ToolbarButtonState> states,
                           RECT selection, RECT workArea, UINT dpi, ToolbarLayout& layout)
 {

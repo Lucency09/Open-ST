@@ -5,6 +5,7 @@
 .DESCRIPTION
     第一个位置参数是模块名，第二个位置参数是该模块下的 case 名。
     两者都不提供时运行全部测试；只提供模块名时运行该模块全部测试。
+    批量测试跳过人工窗口；指定 case 时自动启用，结束后清除环境开关。
 
     本脚本不调用产品构建入口 build.ps1。测试配置和二进制写入
     testing/testoutput/Debug；GoogleTest installed tree 保存在 .cache/。
@@ -24,6 +25,9 @@
 
 # 任一配置、编译或测试错误都立即终止，防止失败后继续运行并给出假成功结果。
 $ErrorActionPreference = 'Stop'
+
+# 清除当前进程遗留开关，保证批量回归跳过人工窗口。
+$env:OPEN_ST_INTERACTIVE_UI_TESTS = $null
 
 # 使用 $args 而不是 param()，是为了保持“模块、case”两个纯位置参数的调用形式。
 if ($args.Count -gt 2) {
@@ -135,7 +139,17 @@ else {
     Write-Host "测试范围：模块 $moduleName 的 case $caseName"
 }
 
-& $ctest @ctestArguments
-if ($LASTEXITCODE -ne 0) {
-    throw "测试失败，退出码：$LASTEXITCODE"
+try {
+    # 指定 case 时自动启用人工窗口，普通 case 仍正常执行。
+    if (-not [string]::IsNullOrWhiteSpace($caseName)) {
+        $env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
+    }
+    & $ctest @ctestArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "测试失败，退出码：$LASTEXITCODE"
+    }
+}
+finally {
+    # 成功或失败均清除开关，不恢复调用前的遗留值。
+    $env:OPEN_ST_INTERACTIVE_UI_TESTS = $null
 }

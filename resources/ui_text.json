@@ -2,6 +2,61 @@
   "schemaVersion": 1,
   "languages": ["zh-CN", "en-US", "ja-JP"],
   "texts": {
+    "capture.toolbar.pin": {
+      "zh-CN": "固定到屏幕",
+      "en-US": "Pin to screen",
+      "ja-JP": "画面に固定"
+    },
+    "pin.title": {
+      "zh-CN": "贴图",
+      "en-US": "Pinned image",
+      "ja-JP": "固定画像"
+    },
+    "pin.copy": {
+      "zh-CN": "复制",
+      "en-US": "Copy",
+      "ja-JP": "コピー"
+    },
+    "pin.save": {
+      "zh-CN": "保存…",
+      "en-US": "Save…",
+      "ja-JP": "保存…"
+    },
+    "pin.raise": {
+      "zh-CN": "调整为最上层",
+      "en-US": "Bring to top",
+      "ja-JP": "最前面に移動"
+    },
+    "pin.close": {
+      "zh-CN": "关闭",
+      "en-US": "Close",
+      "ja-JP": "閉じる"
+    },
+    "pin.create_failed": {
+      "zh-CN": "无法固定当前截图，请重试。",
+      "en-US": "Could not pin this capture. Please try again.",
+      "ja-JP": "キャプチャを固定できませんでした。もう一度お試しください。"
+    },
+    "pin.render_failed": {
+      "zh-CN": "贴图显示失败，窗口已关闭。请重新截图。",
+      "en-US": "The pinned image could not be displayed and was closed. Please capture it again.",
+      "ja-JP": "固定画像を表示できないため、ウィンドウを閉じました。再度キャプチャしてください。"
+    },
+    "pin.show_failed": {
+      "zh-CN": "无法显示贴图，请重新截图。",
+      "en-US": "Could not show the pinned image. Please capture it again.",
+      "ja-JP": "固定画像を表示できませんでした。再度キャプチャしてください。"
+    },
+    "pin.menu_failed": {
+      "zh-CN": "无法打开贴图菜单，请重试。",
+      "en-US": "Could not open the pinned image menu. Please try again.",
+      "ja-JP": "固定画像のメニューを開けませんでした。もう一度お試しください。"
+    },
+    "tray.pin_close_all": {
+      "zh-CN": "关闭全部贴图",
+      "en-US": "Close all pinned images",
+      "ja-JP": "すべての固定画像を閉じる"
+    },
     "capture.toolbar.title": {
       "zh-CN": "截图工具栏",
       "en-US": "Capture toolbar",

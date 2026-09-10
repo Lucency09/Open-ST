@@ -82,6 +82,10 @@ class CaptureToolbarWindowTest : public ::testing::Test
                 {
                     return this->chinese_ ? L"复制" : L"Copy";
                 }
+                if (key == "pin")
+                {
+                    return this->chinese_ ? L"固定到屏幕" : L"Pin to screen";
+                }
                 return this->chinese_ ? L"截图工具栏" : L"Capture toolbar";
             },
             // 记录工具栏命令和代次，并按测试状态模拟回调结果。
@@ -130,6 +134,47 @@ TEST_F(CaptureToolbarWindowTest, rejects_duplicate_commands)
                                {CaptureToolbarCommand::Copy, ToolbarIcon::Save, "save", 1}})
                      .success);
     EXPECT_FALSE(IsWindow(this->toolbar_.NativeHandle()));
+}
+
+// 验证插入图钉后复制仍在最右，图钉按稳定命令 ID 提交并遵守忙状态和重复提交限制。
+// 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
+// 返回：无返回值；断言四按钮位置、语言刷新、命令 ID、选区代次及拒绝重复提交。
+TEST_F(CaptureToolbarWindowTest, pin_entry_preserves_order_and_command_gates)
+{
+    ASSERT_TRUE(this->Create({
+        {CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "cancel", 0},
+        {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "pin", 1},
+        {CaptureToolbarCommand::Save, ToolbarIcon::Save, "save", 1},
+        {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "copy", 1}}).success);
+    this->Show();
+    const HWND pin = this->Button(L"Pin to screen");
+    ASSERT_NE(pin, nullptr);
+    const std::array<HWND, 4> buttons{
+        this->Button(L"Cancel"), pin, this->Button(L"Save"), this->Button(L"Copy")};
+    RECT previous{};
+    for (std::size_t index = 0; index < buttons.size(); ++index)
+    {
+        ASSERT_NE(buttons[index], nullptr);
+        RECT current{};
+        ASSERT_TRUE(GetWindowRect(buttons[index], &current));
+        if (index != 0) EXPECT_LE(previous.right, current.left);
+        previous = current;
+    }
+    EXPECT_EQ(static_cast<std::uint32_t>(CaptureToolbarCommand::Cancel), 1U);
+    EXPECT_EQ(static_cast<std::uint32_t>(CaptureToolbarCommand::Save), 2U);
+    EXPECT_EQ(static_cast<std::uint32_t>(CaptureToolbarCommand::Copy), 3U);
+    this->toolbar_.SetBusy(true);
+    SendMessageW(pin, BM_CLICK, 0, 0);
+    EXPECT_EQ(this->calls_, 0);
+    this->toolbar_.SetBusy(false);
+    SendMessageW(pin, BM_CLICK, 0, 0);
+    SendMessageW(pin, BM_CLICK, 0, 0);
+    EXPECT_EQ(this->calls_, 1);
+    EXPECT_EQ(this->lastCommand_, CaptureToolbarCommand::Pin);
+    EXPECT_EQ(this->lastToken_, 42U);
+    this->chinese_ = true;
+    ASSERT_TRUE(this->toolbar_.RefreshTexts().success);
+    EXPECT_EQ(this->Button(L"固定到屏幕"), pin);
 }
 
 // 验证窗口及按钮的可访问名称随文本刷新更新。

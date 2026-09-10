@@ -5,6 +5,7 @@ add_subdirectory(CaptureToolbar)
 add_subdirectory(Export)
 add_subdirectory(Graphics)
 add_subdirectory(Localization)
+add_subdirectory(PinWindow)
 add_subdirectory(Settings)
 add_subdirectory(SystemIntegration)
 
@@ -15,6 +16,7 @@ target_sources(open_st_application
     PRIVATE
         source/app.cpp
         source/app_callbacks.cpp
+        source/app_pin.cpp
         source/capture_completion.cpp
         source/capture_toolbar_monitor.cpp
         private/capture_toolbar_monitor.h
@@ -40,6 +42,7 @@ target_link_libraries(open_st_application
     PRIVATE
         # 功能模块只作为 application 的实现细节，不传播给 launcher。
         OpenST::Export
+        OpenST::PinWindow
         OpenST::CaptureToolbar
         OpenST::Capture
         OpenST::Graphics

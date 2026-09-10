@@ -47,6 +47,10 @@ src/
         │   ├── include/
         │   ├── private/
         │   └── source/
+        ├── PinWindow/          # OpenST::PinWindow：独立图像、置顶窗口及交互管理
+        │   ├── include/
+        │   ├── private/
+        │   └── source/
         ├── Settings/           # OpenST::Settings，SettingsWindow 为同一目标的兼容别名
         │   ├── CMakeLists.txt
         │   ├── include/
@@ -102,6 +106,8 @@ launcher -> application
 application -> localization
 application -> system_integration
 application -> capture_toolbar
+application -> pin_window
+pin_window -> common
 application -> settings
 application -> graphics
 application -> export
@@ -121,6 +127,13 @@ localization -> common
 `App::CopySelection` 与 `App::SaveSelection` 是统一完成入口，由快捷键或工具栏命令调用。Application 的私有 `CaptureCompletion` 编排同步转换和输出，忙状态覆盖保存对话框与错误提示；取消或失败保留有效会话，显示布局失效则在模态调用返回后回收。工具栏与快捷键共享待处理状态、截图/选区代次及忙状态检查；本阶段不实现双击完成或独立快捷键配置模块。
 
 `CaptureToolbar` 只依赖标准库、Windows SDK 及统一编译选项，不能依赖 Application 或其兄弟模块，也不链接 Common/WindowRenderer。App 将选区转换为物理像素 RECT，传入目标屏工作区和 DPI；工具栏只消费自己的按钮描述、状态、文本和命令回调。业务命令由 App 投递回消息窗口；工具栏不读 JSON、不持有冻结帧、不参与导出。普通按钮扩展使用稳定命令 ID，禁止以按钮排列下标作为业务 ID。
+
+`PinWindow` 只依赖 Common 日志与 Windows SDK，拥有独立 SDR 原图、图形资源及稳定 ID，不依赖兄弟模块。
+Application 从冻结选区生成贴图，以 `app_callbacks.cpp` 注入文字与命令；`app_pin.cpp` 负责复制保存编排。
+截图前仅暂停旧贴图输入与层级修复，真实窗口全程保持显示，由现有冻结遮罩直接覆盖。
+新截图包含旧贴图的当前缩放、透明度与叠放结果；关闭遮罩后恢复交互，退出期间不恢复。
+保存和错误提示期间暂停全部贴图，原图快照与所属 HWND 保留到模态返回；提示选择有效截图窗口或可见置顶贴图
+作为 owner，防止被图像遮挡。显示缩放和不透明度不写入复制保存的像素。
 
 ## 3. CMake 辅助文件
 
@@ -195,6 +208,7 @@ testing/
 │       ├── Settings/
 │       ├── SystemIntegration/
 │       ├── CaptureToolbar/
+│       ├── PinWindow/
 │       └── Graphics/
 │           ├── source/
 │           ├── selection/      # Graphics 内部选区测试
@@ -299,17 +313,36 @@ Git 跟踪源码、测试、CMake、清单、脚本、配置、文档和许可�
 从列表移除当前语言后，下次资源读取会将运行时语言退回 `en-US`，不会自动改写用户设置。
 旧版资源必须补上 `languages`；字段缺失或无效时保留最后有效资源，没有有效资源时报告不可用。
 
+### 人工测试用例清单
+
+脚本统一管理当前进程的 `OPEN_ST_INTERACTIVE_UI_TESTS`，无需手动设置。
+
+| 调用方式 | 执行范围 | 人工用例 |
+|---|---|---|
+| `.\scripts\test.ps1` | 全量测试 | 跳过 |
+| `.\scripts\test.ps1 <module>` | 模块全量测试 | 跳过 |
+| `.\scripts\test.ps1 <module> <Suite.case>` | 指定模块的指定用例 | 自动启用 |
+
+脚本入口清除遗留开关，仅在指定 case 的 CTest 执行期间设置为 `1`，结束或报错后通过 `finally` 清除，不恢复旧值。
+只影响当前进程及其子进程，不修改用户级或系统级环境变量。直接运行测试二进制或 CTest 时仍需自行管理开关。
+只写 case 名仍会匹配该模块不同 Suite 的同名用例；精确执行人工用例请使用下表完整命令。
+
+| 模块 | 人工用例执行命令 | 验收内容 |
+|---|---|---|
+| `window_renderer` | `.\scripts\test.ps1 window_renderer RendererManualTest.waits_for_user_close` | 通用窗口文字、布局、缩放和关闭 |
+| `settings` | `.\scripts\test.ps1 settings WelcomeManualTest.waits_for_user_close` | 欢迎窗口；隔离设置、模拟自启回调 |
+| `capture_toolbar` | `.\scripts\test.ps1 capture_toolbar ToolbarManualTest.waits_for_user_close` | 工具栏外观和交互；模拟业务 |
+| `pin_window` | `.\scripts\test.ps1 pin_window PinWindowManualTest.waits_for_user_close` | 三张重叠贴图、控制窗及真实视觉交互 |
+
+新增人工用例时同步维护此清单。人工用例保留 `manual` 标签、默认 `GTEST_SKIP()` 和等待真人关闭的行为。
+跳过或正常关闭窗口均不能代替完整视觉验收；具体检查项目见下方各节。
+
 ### WindowRenderer 人工窗口验收
 
 欢迎窗口也提供独立人工用例。在仓库根目录运行以下命令，使用临时设置和模拟自启回调，不修改真实启动项：
 
 ```powershell
-$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
-try {
-    .\scripts\test.ps1 settings WelcomeManualTest.waits_for_user_close
-} finally {
-    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
-}
+.\scripts\test.ps1 settings WelcomeManualTest.waits_for_user_close
 ```
 
 窗口一直等待确认、退出或关闭，默认测试跳过该用例。
@@ -319,16 +352,11 @@ try {
 `RendererManualTest.waits_for_user_close` 默认跳过。在仓库根目录打开 PowerShell，仅在人工验收时运行：
 
 ```powershell
-$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
-try {
-    .\scripts\test.ps1 window_renderer RendererManualTest.waits_for_user_close
-} finally {
-    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
-}
+.\scripts\test.ps1 window_renderer RendererManualTest.waits_for_user_close
 ```
 
 窗口弹出后一直等待用户点击“确定”、按 Esc 或点击右上角关闭按钮，没有自动关闭计时器。
-`finally` 在测试结束或报错后清除环境开关，避免之后的普通回归意外等待人工操作。
+测试脚本的 `finally` 在测试结束或报错后清除环境开关，避免之后的普通回归意外等待人工操作。
 普通回归中的 skip 不表示人工验收通过。自动模态测试使用消息驱动关闭，另行报告。
 
 ### 截图工具栏人工窗口验收
@@ -336,12 +364,7 @@ try {
 工具栏模块测试筛选名为 `capture_toolbar`。在仓库根目录运行：
 
 ```powershell
-$env:OPEN_ST_INTERACTIVE_UI_TESTS = '1'
-try {
-    .\scripts\test.ps1 capture_toolbar ToolbarManualTest.waits_for_user_close
-} finally {
-    Remove-Item Env:OPEN_ST_INTERACTIVE_UI_TESTS -ErrorAction SilentlyContinue
-}
+.\scripts\test.ps1 capture_toolbar ToolbarManualTest.waits_for_user_close
 ```
 
 该独立测试只显示测试宿主和工具栏，按钮使用模拟业务，不写系统剪贴板、截图文件或启动项。
@@ -349,7 +372,30 @@ try {
 
 实际截图还需检查：选区创建/移动/缩放后工具栏位置、不同 DPI 和负坐标屏幕、取消与快捷键语义、
 保存取消或失败后恢复、快速交替点击保存和按 Ctrl+S 不重复打开窗口，以及复制/保存结果不含工具栏。
-首版不包含标注、撤销/重做、贴图或“更多”菜单。
+当前工具栏顺序为“取消 | 贴图 保存 复制”，不包含标注、撤销/重做或“更多”菜单。
+
+### 贴图第一阶段人工验收
+
+`pin_window` 模块自动测试包含真实桌面输入，须在可交互桌面运行；每项设置 45 秒超时，失败不会以跳过掩盖。
+人工测试默认跳过，显式开启后显示红 A、绿 B、蓝 C 三张重叠贴图，以及关闭全部的测试控制窗。
+测试复制保存项不修改剪贴板或文件。用户关闭全部图像或控制窗后结束，没有自动关闭计时器。
+
+```powershell
+.\scripts\test.ps1 pin_window PinWindowManualTest.waits_for_user_close
+```
+
+依次检查：点击、拖动底层红图时，红图不遮住绿/蓝图且交叠区没有瞬时闪烁；点击后滚轮缩放、Ctrl+滚轮透明度；
+右键提层只提升目标、取消菜单不关闭图像；Esc、右键关闭和控制窗关闭全部可正常结束贴图；跨屏物理尺寸及显示正确。
+真实焦点和最终顺序自动测试通过，不等于无可见闪烁通过。该前置视觉验收通过后才进入工具栏与 App 的完整接入。
+
+用户已于 2026-09-10 确认上述三色窗口前置验收，并补测缩放及透明度后确认通过，不重复要求此项审核。
+产品接入后仍需用实际截图检查：连续创建多张贴图、再次截图包含旧图当前外观、取消后恢复，
+以及原生菜单复制保存、保存取消/失败提示、托盘关闭全部与退出清理。负坐标、混合 DPI 和显示器移除
+仍属实际环境验收；独立窗口的前置确认不代替这些产品流程。
+
+贴图导出专项位于独立 application 测试目标，通过静态链接替身替换系统剪贴板、图片写入、保存对话框
+和简单提示显示入口，实际执行 App 消息分派与模态业务栈；设置目录为每次测试创建的独立临时目录。
+这些用例不写真实剪贴板或 PNG/JPEG，实际编码由 Export 模块测试验证，产品对话框交互仍需人工复核。
 
 ### 欢迎、开机启动与退出清理人工验收
 

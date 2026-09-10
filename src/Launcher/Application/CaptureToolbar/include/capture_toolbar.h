@@ -18,13 +18,15 @@ enum class CaptureToolbarCommand : std::uint32_t
 {
     Cancel = 1,
     Save,
-    Copy
+    Copy,
+    Pin
 };
 enum class ToolbarIcon
 {
     Cancel,
     Save,
-    Copy
+    Copy,
+    Pin
 };
 
 struct ToolbarButtonSpec

@@ -174,6 +174,15 @@ struct CaptureToolbar::Impl
             rectangle(5, 1, 12, 6);
             rectangle(5, 9, 12, 15);
             break;
+        case ToolbarIcon::Pin:
+            line(5, 2, 12, 2);
+            line(6, 2, 6, 7);
+            line(11, 2, 11, 7);
+            line(6, 7, 3, 10);
+            line(11, 7, 14, 10);
+            line(3, 10, 14, 10);
+            line(8, 10, 8, 16);
+            break;
         }
         SelectObject(draw.hDC, oldBrush);
         SelectObject(draw.hDC, oldPen);
@@ -185,13 +194,15 @@ struct CaptureToolbar::Impl
     // 返回：已处理消息的 Win32 结果；其他消息交给 DefWindowProcW。
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     // 处理工具栏按钮的鼠标交互并防止点击抢走截图键盘焦点。
-    // 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
+    // 入参：window：接收消息的窗口句柄；message：Win32
+    // 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
     // 返回：已处理消息的结果；未拦截消息交给 DefSubclassProc。
     static LRESULT CALLBACK ButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId,
                                        DWORD_PTR reference);
 };
 // 处理工具栏按钮的鼠标交互并防止点击抢走截图键盘焦点。
-// 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
+// 入参：window：接收消息的窗口句柄；message：Win32
+// 消息编号；wParam、lParam：对应消息的附加数据；subclassId：子类注册标识；reference：注册时借用的工具栏 Impl 指针。
 // 返回：已处理消息的结果；未拦截消息交给 DefSubclassProc。
 LRESULT CALLBACK CaptureToolbar::Impl::ButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
                                                   UINT_PTR subclassId, DWORD_PTR reference)

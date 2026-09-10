@@ -21,6 +21,9 @@ class SelectionOutputRenderer;
 class CaptureCompletion;
 class CaptureToolbar;
 class CaptureCommandGate;
+class PinWindowManager;
+struct PinWindowCallbacks;
+enum class PinCommand : std::uint32_t;
 enum class CaptureToolbarCommand : std::uint32_t;
 class SingleInstance;
 class StartupRegistration;
@@ -66,6 +69,24 @@ class App final
 
   private:
     friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
+    friend struct AppPinTestAccess;
+    struct PinOperation;
+    // 集中组装贴图文本查询和异步业务命令回调。
+    // 入参：无。
+    // 返回：借用当前 App 的回调集合，Manager 在 App 退出前解除回调。
+    PinWindowCallbacks MakePinCallbacks();
+    // 将当前冻结选区准备为独立贴图，成功后结束截图并显示新图。
+    // 入参：无。
+    // 返回：无返回值；失败保留仍有效选区供重试。
+    void PinSelection();
+    // 预订贴图输出命令，投递独立请求代次到消息窗口。
+    // 入参：id 为稳定贴图标识；command 为复制或保存。
+    // 返回：成功排队 true；无效目标、重复请求或忙状态 false。
+    bool PostPinCommand(std::uint64_t id, PinCommand command) noexcept;
+    // 消费贴图请求，重新检查目标并在模态保护中执行输出。
+    // 入参：command 为消息命令；request 为投递时的请求代次。
+    // 返回：无返回值；旧请求丢弃，输出完成保留贴图。
+    void DispatchPinCommand(PinCommand command, std::uint64_t request);
     // 建立隐藏消息窗口与 App 的关联并转发窗口消息。
     // 入参：window：接收消息的窗口句柄；message：Win32 消息编号；wParam、lParam：对应消息的附加数据。
     // 返回：App 实例处理消息的结果；尚未绑定实例时返回 DefWindowProcW 的结果。
@@ -136,7 +157,7 @@ class App final
     void ShowCleanup();
     // 选择系统模态提示的所属窗口。
     // 入参：无。
-    // 返回：优先返回可见设置窗口的借用句柄，否则返回隐藏消息窗口；不转移所有权。
+    // 返回：依次选择有效截图窗口、可见贴图、设置或隐藏消息窗口；不转移所有权。
     HWND DialogOwner() const noexcept;
     // 根据应用忙状态发布跨线程截图准入状态并更新代次。
     // 入参：无。
@@ -187,10 +208,10 @@ class App final
     // 返回：无返回值；将原因嵌入截图错误消息正文后显示。
     void ShowCaptureError(std::string_view detailKey);
     // 显示可随语言变化刷新的简单模态提示，并在 Renderer 失败时回退系统提示。
-    // 入参：message、title：正文和标题查询回调；fallbackFlags：MessageBoxW 的按钮及图标标志。
+    // 入参：message、title：正文和标题查询回调；fallbackFlags：系统提示标志；owner：可选的受保护所属窗口。
     // 返回：无返回值；守卫覆盖自定义和系统提示两条路径，阻止模态期间再次进入业务。
     void ShowSimpleMessage(std::function<std::wstring()> message, std::function<std::wstring()> title,
-                           UINT fallbackFlags);
+                           UINT fallbackFlags, HWND owner = nullptr);
 
     // 协调选区图像转换、复制或保存及成功后的会话收尾。
     // 入参：save：true 选择路径并保存文件，false 写入剪贴板。
@@ -202,6 +223,11 @@ class App final
     bool welcoming_{};
     bool shuttingDown_{};
     bool settingsBusy_{};
+    bool pinModalHeld_{}; // App 自己的提示或设置模态对全部贴图持有一层暂停。
+    std::unique_ptr<PinWindowManager> pinManager_;
+    std::uint64_t pendingPinId_{};
+    std::uint64_t pinRequestSerial_{};
+    PinCommand pendingPinCommand_{};
     std::atomic<std::uint64_t> captureGate_{1}; // 低位为暂停标记，初始化期间拒绝截图。
     std::unique_ptr<SingleInstance> singleInstance_;
     std::unique_ptr<StartupRegistration> startup_;

@@ -1,12 +1,38 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
 #include <app.h>
+#include <pin_window_manager.h>
 #include <settings_window.h>
 #include <ui_text.h>
 #include <vector>
 
 namespace open_st
 {
+// 组装贴图与宿主之间的窄回调，保持兄弟模块互不依赖。
+// 入参：无。
+// 返回：文本同步查询，复制保存仅提交异步请求。
+PinWindowCallbacks App::MakePinCallbacks()
+{
+    PinWindowCallbacks callbacks;
+    // 查询贴图标题和菜单所需的当前语言文字。
+    // 入参：key 为资源键。
+    // 返回：本地化宽字符串。
+    callbacks.text = [](std::string_view key) { return GetUiText(key); };
+    // 将贴图输出意图投递到 App 消息队列。
+    // 入参：id 为稳定图像标识；command 为复制或保存。
+    // 返回：成功入队 true，不代表输出已经成功。
+    callbacks.command = [this](PinId id, PinCommand command) { return this->PostPinCommand(id, command); };
+    // 让主消息循环在 Manager 最外层调用退出后重新检查延迟退出条件。
+    // 入参：无。
+    // 返回：无返回值；不在管理器的同步回调内销毁 App。
+    callbacks.stopped = [this]()
+    {
+        if (IsWindow(this->messageWindow_))
+            PostMessageW(this->messageWindow_, WM_APP + 6, 0, 0);
+    };
+    return callbacks;
+}
+
 // 组装供设置和欢迎窗口调用的本地化及系统集成回调。
 // 入参：无。
 // 返回：包含文本、语言、启动项和忙状态通知的回调集合；其中捕获的 App 须存活到回调解除。
