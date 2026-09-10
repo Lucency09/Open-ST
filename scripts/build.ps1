@@ -238,7 +238,7 @@ if ($Configuration -eq 'Release') {
 
 # -Package 基于已经修剪过的 Release 目录生成版本化交付目录，不复制任何编译工作树。
 if ($Package) {
-    $artifactDir = Join-Path $projectRoot 'artifacts\Open-ST-0.2.0-win-x64'
+    $artifactDir = Join-Path $projectRoot 'artifacts\Open-ST-0.3.0-win-x64'
     $artifactRoot = Join-Path $projectRoot 'artifacts'
     $verifiedArtifactDir = Get-VerifiedChildPath -Root $artifactRoot -Candidate $artifactDir
     if (Test-Path -LiteralPath $verifiedArtifactDir) {

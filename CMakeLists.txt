@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # 声明项目名称、当前版本和使用的编程语言。
 # VERSION 会提供 PROJECT_VERSION 等变量，并用于生成程序内显示的版本号。
-project(OpenST VERSION 0.2.0 LANGUAGES CXX)
+project(OpenST VERSION 0.3.0 LANGUAGES CXX)
 
 # 让 CMake 在构建目录生成 compile_commands.json，供 IDE（C/C++ 插件 / clangd）解析
 # include 路径与编译宏。对产品构建和测试构建同时生效，且不影响任何编译行为。

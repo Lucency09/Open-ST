@@ -1,6 +1,7 @@
 # Open-ST 实现进度
 
 更新时间：2026-09-11
+当前开发版本：`0.3.0`；已发布版本：[v0.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.2.0)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
 ## 2026-09-11 v0.2.0 发布
@@ -12,6 +13,9 @@
   真实鼠标拖动首轮有 1 像素偏差，代码和断言未变，单项复跑通过；人工与条件跳过不计为已验收。
 - 验证记录：`build/release-v0.2.0-package.log`、`testing/testoutput/release-v0.2.0-full.log`、
   `testing/testoutput/release-v0.2.0-desktop-recheck.log`。发布物为 Windows x64 ZIP 与 SHA-256 校验文件。
+- GitHub 正式发行版及 `v0.2.0` 标签已发布，ZIP 为 429769 字节，8 个包内文件逐一校验，服务端附件 SHA-256 与本地一致。
+- 发布后 CMake、vcpkg 版本与打包目录名同步提升为 `0.3.0`。此切换不代表新增功能；下方未完成开发及人工验收项继续结转，具体施工仍需独立审核。
+- `0.3.0` Debug `/W4 /WX` 构建、生成版本头及打包脚本语法检查通过；首次链接被本仓库运行的 Debug 进程锁定，核对路径并结束该进程后重建成功。记录：`build/development-v0.3.0-debug-recheck.log`。
 
 ## 2026-09-11 二次截图保留已有贴图并删除显隐流程
 

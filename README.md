@@ -4,7 +4,7 @@
 
 Open-ST is a portable Windows screenshot tool. Annotation, offline OCR, and translation are planned.
 
-The project targets Windows 10 22H2 and Windows 11 on x64. The latest release is `0.2.0`; the project is under active development.
+The project targets Windows 10 22H2 and Windows 11 on x64. The latest release is `0.2.0`; the current development version is `0.3.0`.
 
 ## Download and use
 
