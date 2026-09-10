@@ -4,17 +4,18 @@
 
 Open-ST is a portable Windows screenshot tool. Annotation, offline OCR, and translation are planned.
 
-The project targets Windows 10 22H2 and Windows 11 on x64. It is under active development; the first development version is `0.1.0`.
+The project targets Windows 10 22H2 and Windows 11 on x64. The latest release is `0.2.0`; the project is under active development.
 
 ## Download and use
 
 Download the Windows x64 ZIP from [Releases](https://github.com/Lucency09/Open-ST/releases), extract the whole archive to a writable folder, and run `Open-ST.exe`.
 The [Microsoft Visual C++ v14 x64 runtime](https://aka.ms/vc14/vc_redist.x64.exe) is required and is not bundled.
 
-Version 0.1.0 supports multi-monitor selection, clipboard copy, PNG/JPEG saving, HDR capture and SDR output, and Chinese/English/Japanese UI.
+Version 0.2.0 adds a screenshot toolbar, multiple pinned images, a redesigned settings window, a first-run welcome screen, and optional startup at sign-in. Multi-monitor selection, clipboard copy, PNG/JPEG saving, HDR capture with SDR output, and Chinese/English/Japanese UI remain available.
 Use `Ctrl+Alt+Q` to capture, `Ctrl+C` or `Enter` to copy, `Ctrl+S` to save, and `Esc` or right-click to cancel.
-The screenshot toolbar, automatic window selection, annotations, pinned images, OCR, and translation are not available yet.
-HDR color and cross-monitor performance still have known limitations; see [release notes](docs/releases/v0.1.0.md).
+Use the toolbar to pin a selection. Click a pinned image before using the wheel to zoom or `Ctrl+wheel` to adjust opacity; use its context menu to copy, save, raise, or close it. Recapturing includes visible pinned images.
+Automatic window selection, annotations, OCR, translation, and configurable capture shortcuts are not available yet.
+HDR color and cross-monitor performance still have known limitations; see [release notes](docs/releases/v0.2.0.md).
 
 ## Build
 

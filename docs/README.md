@@ -4,16 +4,17 @@
 
 Open-ST 是一款面向 Windows 的便携式截图工具；标注、离线 OCR 与翻译功能仍在规划中。
 
-项目支持 Windows 10 22H2 和 Windows 11 x64，目前仍在积极开发中；首个开发版本为 `0.1.0`。
+项目支持 Windows 10 22H2 和 Windows 11 x64，最新发布版本为 `0.2.0`，目前仍在积极开发中。
 
 ## 下载与使用
 
 从 [Releases](https://github.com/Lucency09/Open-ST/releases) 下载 Windows x64 ZIP，完整解压到可写目录后运行 `Open-ST.exe`。
 需要安装 [Microsoft Visual C++ v14 x64 运行库](https://aka.ms/vc14/vc_redist.x64.exe)，发布包不包含运行库安装程序。
 
-0.1.0 支持多显示器选区、复制到剪贴板、PNG/JPEG保存、HDR捕获与SDR输出，以及中英日界面。
+0.2.0 新增截图工具栏、多张置顶贴图、重做的设置窗口、首次欢迎页及可选的开机启动；继续支持多显示器选区、复制到剪贴板、PNG/JPEG 保存、HDR 捕获与 SDR 输出，以及中英日界面。
 `Ctrl+Alt+Q` 开始截图，`Ctrl+C` 或 `Enter` 复制，`Ctrl+S` 保存，`Esc` 或右键分层取消。
-截图工具栏、窗口自动识别、标注、贴图、OCR及翻译尚未实现；HDR颜色及跨屏性能仍有待完善，详见[发行说明](releases/v0.1.0.md)。
+工具栏可将选区固定为贴图；点击贴图后滚轮缩放、`Ctrl+滚轮` 调整透明度，右键菜单可复制、保存、提层或关闭。再次截图包含已有贴图当前外观。
+窗口自动识别、标注、OCR、翻译及截图快捷键配置尚未实现；HDR 颜色及跨屏性能仍有待完善，详见[发行说明](releases/v0.2.0.md)。
 
 ## 构建
 
