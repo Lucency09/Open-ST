@@ -14,13 +14,13 @@
     .\scripts\test.ps1
 
 .EXAMPLE
-    .\scripts\test.ps1 foundation
+    .\scripts\test.ps1 common
 
 .EXAMPLE
-    .\scripts\test.ps1 foundation union_rectangles
+    .\scripts\test.ps1 capture union_rectangles
 
 .EXAMPLE
-    .\scripts\test.ps1 foundation GeometryTest.union_rectangles
+    .\scripts\test.ps1 capture GeometryTest.union_rectangles
 #>
 
 # 任一配置、编译或测试错误都立即终止，防止失败后继续运行并给出假成功结果。

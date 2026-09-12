@@ -19,9 +19,13 @@ target_sources(open_st_application
         source/app_pin.cpp
         source/capture_completion.cpp
         source/capture_toolbar_monitor.cpp
+        source/diagnostic_text.cpp
         private/capture_toolbar_monitor.h
         private/capture_command_gate.h
+        private/diagnostic_text.h
         source/save_image_dialog.cpp
+        source/save_directory.cpp
+        private/save_directory.h
         source/simple_message_window.cpp
         private/simple_message_window.h
         private/capture_completion.h

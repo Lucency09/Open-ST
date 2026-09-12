@@ -3,8 +3,10 @@
 #include "export_system_fake.h"
 #include "image_encoder.h"
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <iostream>
 #include <limits>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -79,6 +81,9 @@ TEST(ClipboardTest, success_transfers_memory_and_closes_session)
     std::wstring error;
     EXPECT_TRUE(CopyImageWithApi(ExportSystemFake::Owner(), Image(), fake.Clipboard(), error));
     EXPECT_EQ(fake.publishedFormat, CF_DIB);
+    std::vector<std::uint8_t> expected;
+    ASSERT_TRUE(BuildClipboardDib(Image(), expected, error));
+    EXPECT_EQ(fake.memory, expected);
     EXPECT_EQ(Count(fake, "free"), 0U);
     EXPECT_EQ(Count(fake, "clipboardClose"), 1U);
     EXPECT_EQ(fake.calls, (std::vector<std::string>{"owner", "allocate", "lock", "unlock", "open", "empty", "set",
@@ -297,6 +302,43 @@ TEST_F(ImageEncoderTest, encoding_failure_never_opens_destination)
     EXPECT_FALSE(WriteImageWithApi({}, L"fake.png", ImageFileFormat::Png, fake.File(), error));
     EXPECT_FALSE(WriteImageWithApi(Image(), L"fake.png", static_cast<ImageFileFormat>(99), fake.File(), error));
     EXPECT_TRUE(fake.calls.empty());
+}
+// 比较旧式整帧临时 DIB 加复制与直接填充，测试替身避免触碰系统剪贴板。
+// 入参：仅 Release 且 OPEN_ST_EXPORT_BENCHMARKS=1 时执行；固定 4K 像素和九次采样。
+// 返回：输出中位毫秒和明确省去的临时字节数；不设置机器相关的耗时断言。
+TEST(ClipboardBenchmark, compares_4k_preparation)
+{
+#if !defined(NDEBUG)
+    GTEST_SKIP() << "Release benchmark only";
+#else
+    wchar_t enabled[2]{};
+    if (GetEnvironmentVariableW(L"OPEN_ST_EXPORT_BENCHMARKS", enabled, 2) != 1 || enabled[0] != L'1')
+        GTEST_SKIP() << "Set OPEN_ST_EXPORT_BENCHMARKS=1 to measure";
+    const std::vector<std::uint8_t> pixels(3840U * 2160U * 4U, 37);
+    const SdrImageView image{3840U, 2160U, 3840U * 4U, pixels};
+    std::array<double, 9> before{};
+    std::array<double, 9> after{};
+    for (std::size_t sample = 0; sample < before.size(); ++sample)
+    {
+        std::wstring error;
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        std::vector<std::uint8_t> dib;
+        ASSERT_TRUE(BuildClipboardDib(image, dib, error));
+        std::vector<std::uint8_t> published(dib.size());
+        std::memcpy(published.data(), dib.data(), dib.size());
+        const std::chrono::steady_clock::time_point copied = std::chrono::steady_clock::now();
+        ExportSystemFake fake;
+        ASSERT_TRUE(CopyImageWithApi(ExportSystemFake::Owner(), image, fake.Clipboard(), error));
+        const std::chrono::steady_clock::time_point direct = std::chrono::steady_clock::now();
+        ASSERT_EQ(fake.memory, published);
+        before[sample] = std::chrono::duration<double, std::milli>(copied - start).count();
+        after[sample] = std::chrono::duration<double, std::milli>(direct - copied).count();
+    }
+    std::sort(before.begin(), before.end());
+    std::sort(after.begin(), after.end());
+    std::cout << "4K DIB preparation: temporary+copy=" << before[4] << "ms direct=" << after[4]
+              << "ms temporary_bytes_removed=" << pixels.size() + sizeof(BITMAPINFOHEADER) << '\n';
+#endif
 }
 } // namespace
 } // namespace open_st

@@ -1,4 +1,4 @@
-// 声明设置模块内部的目录注入、布局读取和编辑文件获取接口。
+// 声明设置模块内部的文档校验、目录注入、布局读取和编辑文件获取接口。
 
 #pragma once
 
@@ -7,6 +7,10 @@
 
 namespace open_st
 {
+// 统一设置读取与编辑的固定外层协议，动态设置键不设白名单。
+// 入参：document 为待校验的设置文档。
+// 返回：版本为整数 1 且 settings 为对象时为 true；其他结构或异常为 false。
+[[nodiscard]] bool IsSettingsDocument(const nlohmann::json& document) noexcept;
 // 从隔离目录只读启动语言，供早期启动测试使用。
 // 入参：applicationDirectory 为应用根目录，其 resources 和 data 子目录分别保存资源与用户设置。
 // 返回：有效的启动语言代码；用户值无效时回退默认资源，两者均不可用时为 std::nullopt。

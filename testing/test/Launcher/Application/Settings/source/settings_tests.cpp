@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <string>
 
 namespace
@@ -172,6 +173,32 @@ TEST_F(SettingsTest, typed_setters_preserve_unknown_keys)
 
     const nlohmann::json saved = nlohmann::json::parse(SettingsTest::ReadRaw(this->root_ / "data" / "settings.json"));
     EXPECT_EQ(saved.at("settings").at("unknown").get<int>(), 42);
+}
+
+// 验证无符号整数超出 int64_t 范围时回退默认值，而合法上下界仍可读取。
+// 入参：无运行入参。
+// 返回：无返回值；通过 GoogleTest 断言记录范围和回退结果。
+TEST_F(SettingsTest, integer_overflow_falls_back_without_wrapping)
+{
+    const std::int64_t maximum = std::numeric_limits<std::int64_t>::max();
+    const std::int64_t minimum = std::numeric_limits<std::int64_t>::min();
+    const nlohmann::json defaults{{"schemaVersion", 1}, {"settings", {{"overflow", 17}}}};
+    const nlohmann::json user{{"schemaVersion", 1},
+                              {"settings",
+                               {{"overflow", static_cast<std::uint64_t>(maximum) + 1},
+                                {"no.default", std::numeric_limits<std::uint64_t>::max()},
+                                {"maximum", maximum},
+                                {"minimum", minimum},
+                                {"floating", 1.0}}}};
+    SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json", defaults.dump());
+    SettingsTest::WriteRaw(this->root_ / "data" / "settings.json", user.dump());
+
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(open_st::GetIntegerSetting("overflow"), 17);
+    EXPECT_FALSE(open_st::GetIntegerSetting("no.default").has_value());
+    EXPECT_EQ(open_st::GetIntegerSetting("maximum"), maximum);
+    EXPECT_EQ(open_st::GetIntegerSetting("minimum"), minimum);
+    EXPECT_FALSE(open_st::GetIntegerSetting("floating").has_value());
 }
 
 // 验证用户值缺失或类型错误时，类型化 getter 会读取默认配置中的同名动态 key。

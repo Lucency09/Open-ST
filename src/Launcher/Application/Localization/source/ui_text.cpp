@@ -8,8 +8,8 @@
 #include <log.h>
 #include <nlohmann/json.hpp>
 #include <windows.h>
+#include <windows_util.h>
 
-#include <array>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -85,7 +85,7 @@ bool IsUiTextDocument(const nlohmann::json& document) noexcept
         const nlohmann::json::const_iterator textsIterator = document.find("texts");
         const nlohmann::json::const_iterator languagesIterator = document.find("languages");
         if (schemaIterator == document.end() || !schemaIterator->is_number_integer() ||
-            schemaIterator->get<int>() != RESOURCE_SCHEMA_VERSION || textsIterator == document.end() ||
+            *schemaIterator != RESOURCE_SCHEMA_VERSION || textsIterator == document.end() ||
             !textsIterator->is_object() || textsIterator->empty() || languagesIterator == document.end() ||
             !languagesIterator->is_array() || languagesIterator->empty())
         {
@@ -143,20 +143,6 @@ bool ContainsLanguage(const nlohmann::json& document, std::string_view languageC
     {
     }
     return false;
-}
-
-// 获取程序资源定位所需的可执行文件目录。
-// 入参：无。
-// 返回：当前 EXE 的父目录；系统路径查询失败或超出缓冲区时返回空路径。
-std::filesystem::path ExecutableDirectory()
-{
-    std::array<wchar_t, 32768> pathBuffer{};
-    const DWORD length = GetModuleFileNameW(nullptr, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
-    if (length == 0 || length >= static_cast<DWORD>(pathBuffer.size()))
-    {
-        return {};
-    }
-    return std::filesystem::path(std::wstring_view(pathBuffer.data(), length)).parent_path();
 }
 
 class UiTextState final
@@ -359,9 +345,13 @@ class UiTextState final
                 return this->validatedDocument_;
             }
             this->readFailed_ = false;
-            if (IsUiTextDocument(document))
+            // JSON 数值相等会把 1 与 1.0 视为相同，复用校验前仍需确认协议版本是整数。
+            const nlohmann::json::const_iterator schemaIterator = document.find("schemaVersion");
+            const bool unchanged = this->validatedDocument_ != nullptr && schemaIterator != document.end() &&
+                                   schemaIterator->is_number_integer() && *this->validatedDocument_ == document;
+            if (unchanged || IsUiTextDocument(document))
             {
-                if (this->validatedDocument_ == nullptr || *this->validatedDocument_ != document)
+                if (!unchanged)
                 {
                     this->validatedDocument_ = std::make_shared<const nlohmann::json>(std::move(document));
                 }
@@ -415,7 +405,7 @@ bool InitializeUiText() noexcept
 {
     try
     {
-        const std::filesystem::path applicationDirectory = ExecutableDirectory();
+        const std::filesystem::path applicationDirectory = GetExecutableDirectory();
         return !applicationDirectory.empty() && InitializeUiText(applicationDirectory);
     }
     catch (...)

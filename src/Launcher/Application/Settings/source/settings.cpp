@@ -8,35 +8,18 @@
 #include <log.h>
 #include <nlohmann/json.hpp>
 #include <windows.h>
+#include <windows_util.h>
 
-#include <array>
 #include <filesystem>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 
-namespace
+namespace open_st
 {
-constexpr int SETTINGS_SCHEMA_VERSION = 1;
-constexpr std::string_view USER_SETTINGS_CARD_NAME = "settings.user";
-constexpr std::string_view DEFAULT_SETTINGS_CARD_NAME = "settings.default";
-
-// 获取程序目录，作为正式运行时 resources/ 与 data/ 的共同路径基准。
-// 入参：无显式入参。
-// 返回：当前 EXE 的父目录路径；系统查询失败或路径缓冲区不足时为空路径。
-std::filesystem::path ExecutableDirectory()
-{
-    std::array<wchar_t, 32768> pathBuffer{};
-    const DWORD length = GetModuleFileNameW(nullptr, pathBuffer.data(), static_cast<DWORD>(pathBuffer.size()));
-    if (length == 0 || length >= static_cast<DWORD>(pathBuffer.size()))
-    {
-        return {};
-    }
-    return std::filesystem::path(std::wstring_view(pathBuffer.data(), length)).parent_path();
-}
-
 // 校验设置文档固定外层协议；settings 内部 key 不设枚举或白名单。
 // 入参：document 为待校验的 JSON 文档。
 // 返回：版本为 1 且 settings 成员为对象时为 true；其他结构或异常为 false。
@@ -50,15 +33,22 @@ bool IsSettingsDocument(const nlohmann::json& document) noexcept
         }
         const nlohmann::json::const_iterator schemaIterator = document.find("schemaVersion");
         const nlohmann::json::const_iterator settingsIterator = document.find("settings");
-        return schemaIterator != document.end() && schemaIterator->is_number_integer() &&
-               schemaIterator->get<int>() == SETTINGS_SCHEMA_VERSION && settingsIterator != document.end() &&
-               settingsIterator->is_object();
+        return schemaIterator != document.end() && schemaIterator->is_number_integer() && *schemaIterator == 1 &&
+               settingsIterator != document.end() && settingsIterator->is_object();
     }
     catch (...)
     {
         return false;
     }
 }
+} // namespace open_st
+
+namespace
+{
+using open_st::IsSettingsDocument;
+
+constexpr std::string_view USER_SETTINGS_CARD_NAME = "settings.user";
+constexpr std::string_view DEFAULT_SETTINGS_CARD_NAME = "settings.default";
 
 class SettingsState final
 {
@@ -219,14 +209,21 @@ class SettingsState final
 
     // 按动态属性名读取有符号整数设置，用户值不可用时回退默认资源。
     // 入参：key 为 settings 对象中的动态设置属性名。
-    // 返回：用户配置或默认资源中的有效有符号整数值；均不可用或类型错误时为 std::nullopt。
+    // 返回：用户配置或默认资源中可由 int64_t 表示的整数；均缺失、类型错误或超范围时为 std::nullopt。
     std::optional<std::int64_t> Integer(std::string_view key) noexcept
     {
-        return this->ReadValue<std::int64_t>(key,
-                                             // 判断当前设置值是否符合整数读取接口要求的原始类型。
-                                             // 入参：value 为待判型的原始 JSON 设置值。
-                                             // 返回：value 是 JSON 整数类型时为 true，否则为 false。
-                                             [](const nlohmann::json& value) { return value.is_number_integer(); });
+        return this->ReadValue<std::int64_t>(
+            key,
+            // 先验证无符号数范围，防止转为 int64_t 时溢出并阻断默认值回退。
+            // 入参：value 为待校验的原始 JSON 设置值。
+            // 返回：整数可由 int64_t 表示时为 true；类型错误或超出范围时为 false。
+            [](const nlohmann::json& value)
+            {
+                return value.is_number_integer() &&
+                       (!value.is_number_unsigned() ||
+                        value.get<std::uint64_t>() <=
+                            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+            });
     }
 
     // 更新动态字符串 key；编辑写入会先检查外部变化并保留未知字段。
@@ -282,8 +279,10 @@ class SettingsState final
     }
 
     // 按用户优先、默认回退顺序读取指定类型的动态设置值。
-    // 入参：key 为 settings 对象中的动态设置属性名。predicate 为原始 JSON 类型判定器；模板 Value 为返回值类型，Predicate 为判定器类型。
-    // 返回：用户或默认文档中符合判定的 Value 副本；未初始化、读取失败或无有效字段时为 std::nullopt。
+    // 入参：key 为 settings 对象中的动态设置属性名。predicate 为原始 JSON 类型判定器；模板 Value
+    // 为返回值类型，Predicate 为判定器类型。
+    // 返回：用户或默认文档中符合判定的 Value
+    // 副本；未初始化、读取失败或无有效字段时为 std::nullopt。
     template <typename Value, typename Predicate>
     std::optional<Value> ReadValue(std::string_view key, Predicate predicate) noexcept
     {
@@ -321,8 +320,10 @@ class SettingsState final
     }
 
     // 从单份设置文档提取指定类型字段，供用户值和默认值读取共用。
-    // 入参：document 为候选设置文档；key 为动态字段名；predicate 判断原始类型；模板 Value 为转换目标类型，Predicate 为判定器类型。
-    // 返回：协议和字段类型匹配时返回 Value 副本；缺失或不匹配为 std::nullopt，转换异常由外层读取边界处理。
+    // 入参：document 为候选设置文档；key 为动态字段名；predicate 判断原始类型；模板 Value 为转换目标类型，Predicate
+    // 为判定器类型。
+    // 返回：协议和字段类型匹配时返回 Value 副本；缺失或不匹配为
+    // std::nullopt，转换异常由外层读取边界处理。
     template <typename Value, typename Predicate>
     static std::optional<Value> SettingsValue(const nlohmann::json& document, std::string_view key, Predicate predicate)
     {
@@ -428,7 +429,7 @@ bool InitializeSettings() noexcept
 {
     try
     {
-        const std::filesystem::path applicationDirectory = ExecutableDirectory();
+        const std::filesystem::path applicationDirectory = GetExecutableDirectory();
         return !applicationDirectory.empty() && InitializeSettings(applicationDirectory);
     }
     catch (...)
@@ -487,7 +488,7 @@ std::optional<bool> GetBoolSetting(std::string_view key) noexcept
 
 // 按动态属性名读取有符号整数设置，用户值不可用时回退默认资源。
 // 入参：key 为 settings 对象中的动态设置属性名。
-// 返回：用户配置或默认资源中的有效有符号整数值；均不可用或类型错误时为 std::nullopt。
+// 返回：用户配置或默认资源中可由 int64_t 表示的整数；均缺失、类型错误或超范围时为 std::nullopt。
 std::optional<std::int64_t> GetIntegerSetting(std::string_view key) noexcept
 {
     return GetSettingsState().Integer(key);
@@ -552,7 +553,7 @@ std::optional<std::string> ReadStartupLanguage() noexcept
 {
     try
     {
-        return ReadStartupLanguage(ExecutableDirectory());
+        return ReadStartupLanguage(GetExecutableDirectory());
     }
     catch (...)
     {

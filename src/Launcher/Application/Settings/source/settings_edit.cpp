@@ -8,16 +8,6 @@
 
 namespace
 {
-// 检查文档是否符合设置编辑协议，防止覆盖重建缺失或损坏配置。
-// 入参：document 为待检查的原始设置文档。
-// 返回：外层对象版本为 1 且 settings 为对象时为 true，否则为 false。
-bool IsEditableDocument(const nlohmann::json& document)
-{
-    return document.is_object() && document.contains("schemaVersion") &&
-           document.at("schemaVersion").is_number_integer() && document.at("schemaVersion") == 1 &&
-           document.contains("settings") && document.at("settings").is_object();
-}
-
 // 提取字段的原始持久化值，用于区分缺失、显式 null 和有效显示默认值。
 // 入参：document 为已通过编辑协议校验的设置文档；key 为动态字段名。
 // 返回：字段存在时返回保留原始类型的 JSON 副本，包括显式 null；缺失时返回 std::nullopt。
@@ -54,11 +44,11 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::
         }
         nlohmann::json user;
         nlohmann::json defaults;
-        if (!candidate.userFile_.Read(user) || !IsEditableDocument(user))
+        if (!candidate.userFile_.Read(user) || !IsSettingsDocument(user))
         {
             return false;
         }
-        const bool defaultsValid = candidate.defaultFile_.Read(defaults) && IsEditableDocument(defaults);
+        const bool defaultsValid = candidate.defaultFile_.Read(defaults) && IsSettingsDocument(defaults);
         std::vector<std::string> allKeys = keys;
         allKeys.insert(allKeys.end(), boolKeys.begin(), boolKeys.end());
         for (const std::string& key : allKeys)
@@ -141,7 +131,7 @@ bool SettingsEditSession::RestoreDefaults(const std::vector<std::string>& keys) 
     try
     {
         nlohmann::json defaults;
-        if (!this->ready_ || !this->defaultFile_.Read(defaults) || !IsEditableDocument(defaults))
+        if (!this->ready_ || !this->defaultFile_.Read(defaults) || !IsSettingsDocument(defaults))
         {
             return false;
         }
@@ -229,7 +219,7 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
             // 返回：文档合法且所有待写字段基线未冲突时更新候选并返回 true；否则记录失败类别并返回 false。
             [this, &failure, &needsWrite](std::optional<nlohmann::json>& document)
             {
-                if (!document.has_value() || !IsEditableDocument(*document))
+                if (!document.has_value() || !IsSettingsDocument(*document))
                 {
                     failure = SettingsCommitResult::ReadFailed;
                     return false;
@@ -282,7 +272,7 @@ SettingsCommitResult SettingsEditSession::VerifySavedString(std::string_view key
             return SettingsCommitResult::InvalidField;
         }
         nlohmann::json document;
-        if (!this->userFile_.Read(document) || !IsEditableDocument(document))
+        if (!this->userFile_.Read(document) || !IsSettingsDocument(document))
         {
             return SettingsCommitResult::ReadFailed;
         }
@@ -329,7 +319,7 @@ SettingsCommitResult SettingsEditSession::VerifySavedBool(std::string_view key, 
         if (!this->ready_ || !this->fields_.contains(key))
             return SettingsCommitResult::InvalidField;
         nlohmann::json document;
-        if (!this->userFile_.Read(document) || !IsEditableDocument(document))
+        if (!this->userFile_.Read(document) || !IsSettingsDocument(document))
             return SettingsCommitResult::ReadFailed;
         const std::optional<nlohmann::json> persisted = RawField(document, key);
         return persisted.has_value() && persisted->is_boolean() && persisted->get<bool>() == value

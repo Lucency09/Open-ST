@@ -86,6 +86,34 @@ bool ClipboardFailure(const wchar_t* operation, std::wstring& error)
     error = std::wstring(operation) + L" Win32=" + std::to_wstring(code);
     return false;
 }
+
+// 将已校验的图像直接写入完整 DIB 缓冲区，不分配临时像素副本。
+// 入参：image 为已通过 ValidateSdrImage 的视图；buffer 至少容纳位图头与紧凑像素。
+// 返回：无返回值；保留 RGB，翻转行序并清零 DIB 保留字节。
+void FillClipboardDib(const SdrImageView& image, std::uint8_t* buffer) noexcept
+{
+    const std::size_t rowBytes = static_cast<std::size_t>(image.width) * 4U;
+    BITMAPINFOHEADER header{};
+    header.biSize = sizeof(header);
+    header.biWidth = static_cast<LONG>(image.width);
+    header.biHeight = static_cast<LONG>(image.height);
+    header.biPlanes = 1U;
+    header.biBitCount = 32U;
+    header.biCompression = BI_RGB;
+    header.biSizeImage = static_cast<DWORD>(rowBytes * image.height);
+    std::memcpy(buffer, &header, sizeof(header));
+    for (std::uint32_t y = 0U; y < image.height; ++y)
+    {
+        const std::uint8_t* source = image.pixels.data() + static_cast<std::size_t>(y) * image.stride;
+        std::uint8_t* destination =
+            buffer + sizeof(header) + static_cast<std::size_t>(image.height - 1U - y) * rowBytes;
+        std::memcpy(destination, source, rowBytes);
+        for (std::uint32_t x = 0U; x < image.width; ++x)
+        {
+            destination[static_cast<std::size_t>(x) * 4U + 3U] = 0U;
+        }
+    }
+}
 } // namespace
 
 // 把 SDR 图像转换为可发布到剪贴板的底向上 32 位 BI_RGB DIB。
@@ -103,26 +131,7 @@ bool BuildClipboardDib(const SdrImageView& image, std::vector<std::uint8_t>& dib
         const std::size_t rowBytes = static_cast<std::size_t>(image.width) * 4U;
         const std::size_t pixelBytes = rowBytes * image.height;
         std::vector<std::uint8_t> candidate(sizeof(BITMAPINFOHEADER) + pixelBytes);
-        BITMAPINFOHEADER header{};
-        header.biSize = sizeof(header);
-        header.biWidth = static_cast<LONG>(image.width);
-        header.biHeight = static_cast<LONG>(image.height);
-        header.biPlanes = 1U;
-        header.biBitCount = 32U;
-        header.biCompression = BI_RGB;
-        header.biSizeImage = static_cast<DWORD>(pixelBytes);
-        std::memcpy(candidate.data(), &header, sizeof(header));
-        for (std::uint32_t y = 0U; y < image.height; ++y)
-        {
-            const std::uint8_t* source = image.pixels.data() + static_cast<std::size_t>(y) * image.stride;
-            std::uint8_t* destination =
-                candidate.data() + sizeof(header) + static_cast<std::size_t>(image.height - 1U - y) * rowBytes;
-            std::memcpy(destination, source, rowBytes);
-            for (std::uint32_t x = 0U; x < image.width; ++x)
-            {
-                destination[static_cast<std::size_t>(x) * 4U + 3U] = 0U;
-            }
-        }
+        FillClipboardDib(image, candidate.data());
         dib = std::move(candidate);
         return true;
     }
@@ -145,12 +154,12 @@ bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi&
         error = L"Clipboard owner is not a valid window";
         return false;
     }
-    std::vector<std::uint8_t> dib;
-    if (!BuildClipboardDib(image, dib, error))
+    if (!ValidateSdrImage(image, error))
     {
         return false;
     }
-    const HGLOBAL allocated = api.allocate(GMEM_MOVEABLE, dib.size());
+    const std::size_t dibBytes = sizeof(BITMAPINFOHEADER) + static_cast<std::size_t>(image.width) * 4U * image.height;
+    const HGLOBAL allocated = api.allocate(GMEM_MOVEABLE, dibBytes);
     if (allocated == nullptr)
     {
         return ClipboardFailure(L"Allocate clipboard memory", error);
@@ -161,7 +170,7 @@ bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi&
     {
         return ClipboardFailure(L"Lock clipboard memory", error);
     }
-    std::memcpy(destination, dib.data(), dib.size());
+    FillClipboardDib(image, static_cast<std::uint8_t*>(destination));
     SetLastError(ERROR_SUCCESS);
     if (api.unlock(allocated) == FALSE && GetLastError() != ERROR_SUCCESS)
     {

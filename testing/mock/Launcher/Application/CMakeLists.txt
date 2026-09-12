@@ -4,4 +4,3 @@
 # 真实 mock 到来时采用 include 与 source 目录，
 # 并在本文件创建 OpenST::<Module>Mocks target，私有链接 GTest::gmock。
 add_subdirectory(Export)
-add_subdirectory(Graphics)

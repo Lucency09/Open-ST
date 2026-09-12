@@ -3,6 +3,8 @@
 #include "capture_command_gate.h"
 #include "capture_completion.h"
 #include "capture_toolbar_monitor.h"
+#include "diagnostic_text.h"
+#include "save_directory.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
 #include <app.h>
@@ -145,32 +147,12 @@ class WindowDisableGuard final
     bool restore_;
 };
 
-// 将宽字符诊断转换为 UTF-8 供日志记录。
-// 入参：value：借用的 UTF-16 诊断文本。
-// 返回：转换后的 UTF-8 字符串；空文本、长度过大或系统转换失败时返回对应英文诊断占位文本。
-std::string WideToUtf8(std::wstring_view value) noexcept
+// 将转换结果转换为日志可用视图，并在空结果时提供静态兜底文本。
+// 入参：value：当前完整表达式内借用的转换结果。
+// 返回：非空时返回 value 的视图；空结果时返回不分配的静态英文诊断。
+std::string_view DiagnosticOrFallback(const std::string& value) noexcept
 {
-    if (value.empty())
-    {
-        return "<empty diagnostic>";
-    }
-    if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-    {
-        return "<diagnostic is too long>";
-    }
-
-    const int sourceLength = static_cast<int>(value.size());
-    const int requiredBytes =
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), sourceLength, nullptr, 0, nullptr, nullptr);
-    if (requiredBytes <= 0)
-    {
-        return "<failed to convert diagnostic to UTF-8>";
-    }
-
-    std::string result(static_cast<std::size_t>(requiredBytes), '\0');
-    const int convertedBytes = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), sourceLength,
-                                                   result.data(), requiredBytes, nullptr, nullptr);
-    return convertedBytes == requiredBytes ? result : "<failed to convert diagnostic to UTF-8>";
+    return value.empty() ? std::string_view{"<diagnostic unavailable>"} : std::string_view{value};
 }
 
 // 查询当前鼠标在虚拟桌面上的位置。
@@ -661,7 +643,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         std::wstring error;
         if (!this->outputRenderer_->Prepare(error))
         {
-            OPEN_ST_LOG_WARNING("HDR output warm-up failed. detail=", WideToUtf8(error));
+            OPEN_ST_LOG_WARNING("HDR output warm-up failed. detail=", DiagnosticOrFallback(WideToUtf8(error)));
         }
         return 0;
     }
@@ -791,7 +773,8 @@ void App::RefreshLocalizedUi()
         const ToolbarResult result = this->captureToolbar_->RefreshTexts();
         if (!result.success)
         {
-            OPEN_ST_LOG_WARNING("Failed to refresh capture toolbar texts. detail=", WideToUtf8(result.error));
+            OPEN_ST_LOG_WARNING("Failed to refresh capture toolbar texts. detail=",
+                                DiagnosticOrFallback(WideToUtf8(result.error)));
         }
     }
     if (this->settingsWindow_ != nullptr)
@@ -1083,7 +1066,8 @@ try
             nullptr, nullptr,
             // 收集当前枚举到的显示器以选择工具栏目标屏幕。
             // 入参：monitor：当前显示器；未命名
-            // HDC、LPRECT：本回调不使用的设备上下文与矩形；data：借用的显示器向量指针。 返回：追加成功 TRUE
+            // HDC、LPRECT：本回调不使用的设备上下文与矩形；data：借用的显示器向量指针。
+            // 返回：追加成功 TRUE
             // 继续枚举；内存分配等异常时 FALSE 终止枚举。
             [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL
             {
@@ -1137,14 +1121,15 @@ try
     if (!placed.success)
     {
         this->captureToolbar_->Hide();
-        OPEN_ST_LOG_WARNING("Failed to position capture toolbar. detail=", WideToUtf8(placed.error));
+        OPEN_ST_LOG_WARNING("Failed to position capture toolbar. detail=",
+                            DiagnosticOrFallback(WideToUtf8(placed.error)));
         return;
     }
     this->captureToolbar_->SetBusy(this->toolbarGate_->Pending());
     const ToolbarResult shown = this->captureToolbar_->Show(this->toolbarGate_->Token());
     if (!shown.success)
     {
-        OPEN_ST_LOG_WARNING("Failed to show capture toolbar. detail=", WideToUtf8(shown.error));
+        OPEN_ST_LOG_WARNING("Failed to show capture toolbar. detail=", DiagnosticOrFallback(WideToUtf8(shown.error)));
     }
 }
 catch (...)
@@ -1176,7 +1161,8 @@ void App::CreateCaptureToolbar() noexcept
         {
             return;
         }
-        OPEN_ST_LOG_WARNING("Failed to create capture toolbar. detail=", WideToUtf8(result.error));
+        OPEN_ST_LOG_WARNING("Failed to create capture toolbar. detail=",
+                            DiagnosticOrFallback(WideToUtf8(result.error)));
     }
     catch (...)
     {
@@ -1246,7 +1232,8 @@ try
     std::wstring pinError;
     if (this->pinManager_ && !this->pinManager_->BeginCapture(pinError))
     {
-        OPEN_ST_LOG_ERROR("Cannot pause existing pins before capture. detail=", WideToUtf8(pinError));
+        OPEN_ST_LOG_ERROR("Cannot pause existing pins before capture. detail=",
+                          DiagnosticOrFallback(WideToUtf8(pinError)));
         this->ShowCaptureError("capture.error.unknown");
         return;
     }
@@ -1257,7 +1244,7 @@ try
     std::wstring captureError;
     if (!capturer.Capture(*capturedFrame, captureError))
     {
-        OPEN_ST_LOG_ERROR("Desktop capture failed. detail=", WideToUtf8(captureError));
+        OPEN_ST_LOG_ERROR("Desktop capture failed. detail=", DiagnosticOrFallback(WideToUtf8(captureError)));
         this->ShowCaptureError("capture.error.unknown");
         return;
     }
@@ -1305,7 +1292,8 @@ try
         OutputPreviewFrame previewFrame;
         if (!BuildOutputPreview(plane, previewFrame, captureError))
         {
-            OPEN_ST_LOG_ERROR("Output preview generation failed. detail=", WideToUtf8(captureError));
+            OPEN_ST_LOG_ERROR("Output preview generation failed. detail=",
+                              DiagnosticOrFallback(WideToUtf8(captureError)));
             this->CloseOverlay();
             this->ShowCaptureError("capture.error.unknown");
             return;
@@ -1327,12 +1315,14 @@ try
         if (!output.renderer->Initialize(output.window, previewFrame, borderColor, captureError) ||
             !output.renderer->Render(this->selectionModel_->Snapshot(), captureError))
         {
-            OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=", WideToUtf8(captureError));
+            OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=",
+                              DiagnosticOrFallback(WideToUtf8(captureError)));
             this->CloseOverlay();
             this->ShowCaptureError("capture.error.unknown");
             return;
         }
-        OPEN_ST_LOG_INFO("Capture output prepared. display=", WideToUtf8(plane.ColorMetadata().deviceName.data()),
+        OPEN_ST_LOG_INFO("Capture output prepared. display=",
+                         DiagnosticOrFallback(WideToUtf8(plane.ColorMetadata().deviceName.data())),
                          ", format=", static_cast<int>(previewFrame.pixelFormat),
                          ", compatibility=", previewFrame.compatibilityMode,
                          ", ui_white_scale=", previewFrame.uiWhiteScale);
@@ -1431,7 +1421,8 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             const SelectionSnapshot snapshot = app->selectionModel_->Snapshot();
             if (!output->renderer->Render(snapshot, rendererError))
             {
-                OPEN_ST_LOG_ERROR("Capture overlay rendering failed. detail=", WideToUtf8(rendererError));
+                OPEN_ST_LOG_ERROR("Capture overlay rendering failed. detail=",
+                                  DiagnosticOrFallback(WideToUtf8(rendererError)));
                 app->CloseOverlay();
                 if (!app->completionBusy_)
                 {
@@ -1758,14 +1749,7 @@ try
         // 入参：无显式入参；捕获 owner，借用 target 和 error 作为选择结果和诊断输出。
         // 返回：ShowSaveImageDialog 的 Accepted、Cancelled 或 Failed 状态。
         actions.chooseSave = [owner, &target, &error]()
-        {
-            const std::optional<std::string> directory = GetStringSetting("capture.last_save_directory");
-            const std::filesystem::path last =
-                directory.has_value() ? std::filesystem::path(std::u8string_view(
-                                            reinterpret_cast<const char8_t*>(directory->data()), directory->size()))
-                                      : std::filesystem::path{};
-            return ShowSaveImageDialog(owner, last, target, error);
-        };
+        { return ShowSaveImageDialog(owner, LastSaveDirectory(), target, error); };
         // 将生成的 SDR 选区图像写入用户已确认的文件目标。
         // 入参：无显式入参；借用 frame、target、error，捕获 App 校验会话有效性。
         // 返回：会话有效且文件写入成功 true；会话失效或写入失败 false。
@@ -1779,13 +1763,7 @@ try
         // 记住成功保存截图的父目录以便下次打开保存对话框。
         // 入参：无显式入参；借用 target 获取父目录。
         // 返回：设置写入成功 true；写入失败 false，不撤销已保存的图片。
-        actions.rememberDirectory = [&target]()
-        {
-            const std::u8string directory = target.path.parent_path().u8string();
-            return SetStringSetting(
-                "capture.last_save_directory",
-                std::string_view(reinterpret_cast<const char*>(directory.data()), directory.size()));
-        };
+        actions.rememberDirectory = [&target]() { return RememberSaveDirectory(target.path); };
         result =
             save ? this->completion_->SaveSelection(true, actions) : this->completion_->CopySelection(true, actions);
     }
@@ -1800,7 +1778,7 @@ try
         !this->overlayInvalidated_)
     {
         OPEN_ST_LOG_ERROR("Capture completion failed. stage=", static_cast<int>(result),
-                          ", detail=", WideToUtf8(error));
+                          ", detail=", DiagnosticOrFallback(WideToUtf8(error)));
         const char* key = result == CompletionResult::ConversionFailed ? "export.generate_failed"
                           : result == CompletionResult::CopyFailed     ? "export.copy_failed"
                                                                        : "export.save_failed";
@@ -1971,7 +1949,7 @@ void App::ShowCleanup()
                                             (void)renderer.SetEnabled("deleteLogs", false);
                                             (void)renderer.RefreshTexts();
                                         }
-                                        if (deleteLogs && !Logger::ShutdownAndClear())
+                                        if (deleteLogs && !ShutdownAndClearLogging())
                                         {
                                             statusKey = "cleanup.logs_failed";
                                             (void)renderer.SetStatus(GetUiText(statusKey));

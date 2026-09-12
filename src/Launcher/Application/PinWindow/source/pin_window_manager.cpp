@@ -378,8 +378,13 @@ void PinWindowManager::RepairOrder() noexcept
         const PinWindow& pin = **iterator;
         if (pin.closing || !IsWindowVisible(pin.Handle()))
             continue;
-        if (!SetWindowPos(pin.Handle(), previous, 0, 0, 0, 0,
-                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
+        const HWND window = pin.Handle();
+        const HWND expectedPredecessor = previous == HWND_TOPMOST ? nullptr : previous;
+        const bool alreadyPlaced = (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0 &&
+                                   GetWindow(window, GW_HWNDPREV) == expectedPredecessor;
+        // 只跳过原生层级已经完全一致的操作，不能忽略夹在贴图之间的其他窗口或首图上方的窗口。
+        if (!alreadyPlaced &&
+            !SetWindowPos(window, previous, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER))
             OPEN_ST_LOG_ERROR("Cannot restore pin order. pin_id=", pin.Id(), " error=", GetLastError());
         previous = pin.Handle();
     }

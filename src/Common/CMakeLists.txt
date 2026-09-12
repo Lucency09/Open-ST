@@ -10,6 +10,7 @@ target_sources(open_st_common
     PRIVATE
         source/json_file.cpp
         source/logger.cpp
+        source/windows_util.cpp
         private/logger.h
         private/json_file_test_access.h
     PUBLIC
@@ -18,6 +19,8 @@ target_sources(open_st_common
         FILES
             include/json_file.h
             include/log.h
+            include/log_detail.h
+            include/windows_util.h
 )
 
 target_link_libraries(open_st_common

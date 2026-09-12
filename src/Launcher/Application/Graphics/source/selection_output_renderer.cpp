@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <color_conversion.h>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -15,13 +16,6 @@ namespace
 open_st::RectI Intersection(open_st::RectI a, open_st::RectI b) noexcept
 {
     return {std::max(a.left, b.left), std::max(a.top, b.top), std::min(a.right, b.right), std::min(a.bottom, b.bottom)};
-}
-// 将 SDR RGB10A2 通道量化为最终 8 位输出通道。
-// 入参：component：10 位 UNORM 通道值，范围 0 至 1023。
-// 返回：四舍五入后的 0 至 255 通道值。
-std::uint8_t Quantize(std::uint32_t component) noexcept
-{
-    return static_cast<std::uint8_t>((component * 255U + 511U) / 1023U);
 }
 } // namespace
 namespace open_st
@@ -41,8 +35,10 @@ void SelectionOutputRenderer::ReleaseImageResources() noexcept
     this->toneMapper_.ReleaseImageResources();
 }
 // 从冻结桌面裁切并拼接指定选区，将 HDR 区域转换为 SDR 供最终输出。
-// 入参：desktop：只读原生冻结桌面；selection：虚拟桌面物理像素半开选区；output：输出参数，接收完整 SDR 图像；errorMessage：输出参数，接收转换或几何错误原因。
-// 返回：整张选区完成时为 true；失败时为 false 且清空 output，不发布部分图像；显示器之间的空洞填不透明黑色。
+// 入参：desktop：只读原生冻结桌面；selection：虚拟桌面物理像素半开选区；output：输出参数，接收完整 SDR
+// 图像；errorMessage：输出参数，接收转换或几何错误原因。
+// 返回：整张选区完成时为 true；失败时为 false 且清空
+// output，不发布部分图像；显示器之间的空洞填不透明黑色。
 bool SelectionOutputRenderer::Render(const FrozenDesktopFrame& desktop, RectI selection, SdrSelectionFrame& output,
                                      std::wstring& errorMessage)
 try
@@ -144,9 +140,9 @@ try
                 {
                     std::uint32_t packed{};
                     std::memcpy(&packed, row + static_cast<std::size_t>(x) * 4U, 4U);
-                    destination[static_cast<std::size_t>(x) * 4U] = Quantize((packed >> 20U) & 1023U);
-                    destination[static_cast<std::size_t>(x) * 4U + 1] = Quantize((packed >> 10U) & 1023U);
-                    destination[static_cast<std::size_t>(x) * 4U + 2] = Quantize(packed & 1023U);
+                    destination[static_cast<std::size_t>(x) * 4U] = Unorm10ToByte((packed >> 20U) & 1023U);
+                    destination[static_cast<std::size_t>(x) * 4U + 1] = Unorm10ToByte((packed >> 10U) & 1023U);
+                    destination[static_cast<std::size_t>(x) * 4U + 2] = Unorm10ToByte(packed & 1023U);
                     destination[static_cast<std::size_t>(x) * 4U + 3] = 255U;
                 }
             }

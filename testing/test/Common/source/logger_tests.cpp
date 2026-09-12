@@ -273,9 +273,30 @@ TEST_F(LoggerTest, enforces_file_size_safety_limit)
     }
 }
 
-// 验证启动初始化会清理旧进程遗留文件，同时不删除不符合项目日志命名规范的文件。
+// 验证最小文件预算下超长源码路径保留元数据且不突破字节上限。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。
+TEST_F(LoggerTest, bounds_long_source_locations_at_minimum_file_size)
+{
+    open_st::LogOptions options;
+    options.maxFileBytes = 128;
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_, options));
+    const std::string source = std::string(512, 'a') + "/file.cpp";
+    open_st::Logger::WriteText(open_st::log_detail::LogLevel::Error, std::string(512, 'x'), source, 12345);
+    open_st::Logger::Shutdown();
+    const std::vector<std::filesystem::path> files = this->LogFiles();
+    ASSERT_EQ(files.size(), 1U);
+    const std::string record = ReadFile(files.front());
+    EXPECT_LE(record.size(), options.maxFileBytes);
+    EXPECT_EQ(CountLines(record), 1U);
+    EXPECT_NE(record.find("[ERROR] [..."), std::string::npos);
+    EXPECT_NE(record.find("/file.cpp:12345] "), std::string::npos);
+    EXPECT_TRUE(std::regex_search(record, std::regex(R"(^[0-9]{4}-[0-9]{2}-[0-9]{2} )")));
+}
+
+// 验证启动时清理旧会话遗留的日志并保留规定数量。
+// 入参：无运行入参；测试宏参数用于用例注册。
+// 返回：通过断言报告结果。
 TEST_F(LoggerTest, cleans_files_left_by_previous_processes)
 {
     const std::filesystem::path directory = this->root_ / "data" / "logs";
@@ -364,7 +385,7 @@ TEST_F(LoggerTest, shutdown_and_clear_preserves_unrelated_files)
     std::filesystem::create_directory(nested);
     std::ofstream(nested / "Open-ST-2020-01-02.log") << "nested";
     std::ofstream(directory / "Open-ST-2020-01-03.log") << "legacy";
-    ASSERT_TRUE(open_st::Logger::ShutdownAndClear());
+    ASSERT_TRUE(open_st::ShutdownAndClearLogging());
     EXPECT_EQ(this->ReadFile(settings), "settings");
     EXPECT_EQ(this->ReadFile(notes), "notes");
     EXPECT_EQ(this->ReadFile(malformed), "unrelated");
@@ -373,7 +394,7 @@ TEST_F(LoggerTest, shutdown_and_clear_preserves_unrelated_files)
     EXPECT_EQ(this->LogFiles().size(), 2U);
     OPEN_ST_LOG_ERROR("must stay stopped");
     EXPECT_EQ(this->LogFiles().size(), 2U);
-    EXPECT_TRUE(open_st::Logger::ShutdownAndClear());
+    EXPECT_TRUE(open_st::ShutdownAndClearLogging());
 }
 // 验证被其他进程打开且不共享删除的日志导致失败，释放后同一入口可重试。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。

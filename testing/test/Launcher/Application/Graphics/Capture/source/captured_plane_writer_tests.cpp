@@ -48,21 +48,65 @@ void ExpectPixelIds(const open_st::CapturedOutputPlane& plane, std::span<const s
 open_st::CapturedOutputPlane BuildBgraPlane(open_st::CapturedSurfaceRotation rotation, open_st::RectI bounds)
 {
     const std::vector<std::uint8_t> source = MakePaddedBgraSurface();
-    const open_st::MappedCaptureSurface surface{source.data(), 14U, 3, 2,
-                                                open_st::CapturedPixelFormat::Bgra8Unorm};
+    const open_st::MappedCaptureSurface surface{source.data(), 14U, 3, 2, open_st::CapturedPixelFormat::Bgra8Unorm};
     open_st::CapturedOutputPlane plane;
     std::wstring errorMessage;
     EXPECT_TRUE(open_st::BuildCapturedOutputPlane(surface, bounds, rotation,
-                                                  open_st::CapturedColorSpace::SdrGamma22P709, {},
-                                                  plane, errorMessage))
+                                                  open_st::CapturedColorSpace::SdrGamma22P709, {}, plane, errorMessage))
         << "Unexpected plane build failure";
     EXPECT_TRUE(errorMessage.empty());
     return plane;
 }
 } // namespace
 
+// 验证全部格式和旋转在多行非对齐 RowPitch 下保留每个通道位模式，包括 FP16 特殊值和原 alpha。
+// 入参：无运行入参；使用固定 3×2 像素排列和独立的预期索引表。
+// 返回：无返回值；逐字节断言输出紧凑且不含行填充。
+TEST(CapturedPlaneWriterTest, preserves_all_pixel_bytes_for_each_format_and_rotation)
+{
+    constexpr std::array<open_st::CapturedSurfaceRotation, 4> rotations{
+        open_st::CapturedSurfaceRotation::Identity, open_st::CapturedSurfaceRotation::Rotate90,
+        open_st::CapturedSurfaceRotation::Rotate180, open_st::CapturedSurfaceRotation::Rotate270};
+    constexpr std::array<std::array<std::size_t, 6>, 4> orders{
+        {{0, 1, 2, 3, 4, 5}, {3, 0, 4, 1, 5, 2}, {5, 4, 3, 2, 1, 0}, {2, 5, 1, 4, 0, 3}}};
+    for (const open_st::CapturedPixelFormat format :
+         {open_st::CapturedPixelFormat::Bgra8Unorm, open_st::CapturedPixelFormat::Rgb10A2Unorm,
+          open_st::CapturedPixelFormat::Rgba16FloatScRgb})
+    {
+        const std::size_t pixelBytes = open_st::CapturedBytesPerPixel(format);
+        const std::size_t rowPitch = 3U * pixelBytes + 5U;
+        std::vector<std::uint8_t> source(rowPitch * 2U, 0xEEU);
+        for (std::size_t index = 0; index < 6U; ++index)
+            for (std::size_t byte = 0; byte < pixelBytes; ++byte)
+                source[(index / 3U) * rowPitch + (index % 3U) * pixelBytes + byte] =
+                    static_cast<std::uint8_t>(index * 31U + byte * 17U);
+        const open_st::MappedCaptureSurface surface{source.data(), rowPitch, 3, 2, format};
+        for (std::size_t rotation = 0; rotation < rotations.size(); ++rotation)
+        {
+            const bool quarterTurn = rotation == 1U || rotation == 3U;
+            const open_st::RectI bounds{-5, -7, quarterTurn ? -3 : -2, quarterTurn ? -4 : -5};
+            const open_st::CapturedColorSpace colorSpace = format == open_st::CapturedPixelFormat::Rgba16FloatScRgb
+                                                               ? open_st::CapturedColorSpace::ScRgb
+                                                               : open_st::CapturedColorSpace::SdrGamma22P709;
+            open_st::CapturedOutputPlane plane;
+            std::wstring error;
+            ASSERT_TRUE(
+                open_st::BuildCapturedOutputPlane(surface, bounds, rotations[rotation], colorSpace, {}, plane, error));
+            ASSERT_EQ(plane.Pixels().size(), 6U * pixelBytes);
+            for (std::size_t target = 0; target < 6U; ++target)
+            {
+                const std::size_t sourceIndex = orders[rotation][target];
+                for (std::size_t byte = 0; byte < pixelBytes; ++byte)
+                    EXPECT_EQ(plane.Pixels()[target * pixelBytes + byte],
+                              source[(sourceIndex / 3U) * rowPitch + (sourceIndex % 3U) * pixelBytes + byte]);
+            }
+        }
+    }
+}
+
 // 验证 identity、90、180、270 度旋转都生成桌面方向紧凑像素，且丢弃 RowPitch padding。
-// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，normalizes_all_rotations_and_discards_row_padding 为用例名。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，normalizes_all_rotations_and_discards_row_padding
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, normalizes_all_rotations_and_discards_row_padding)
 {
@@ -89,7 +133,8 @@ TEST(CapturedPlaneWriterTest, normalizes_all_rotations_and_discards_row_padding)
 }
 
 // 验证 FP16 原始八字节像素逐字节保留，且无效 RowPitch 不发布部分 plane。
-// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_fp16_bits_and_rejects_short_row_pitch 为用例名。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_fp16_bits_and_rejects_short_row_pitch
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, preserves_fp16_bits_and_rejects_short_row_pitch)
 {
@@ -98,8 +143,7 @@ TEST(CapturedPlaneWriterTest, preserves_fp16_bits_and_rejects_short_row_pitch)
                                           open_st::CapturedPixelFormat::Rgba16FloatScRgb};
     open_st::CapturedOutputPlane plane;
     std::wstring errorMessage;
-    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {10, 20, 11, 21},
-                                                  open_st::CapturedSurfaceRotation::Identity,
+    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {10, 20, 11, 21}, open_st::CapturedSurfaceRotation::Identity,
                                                   open_st::CapturedColorSpace::ScRgb, {}, plane, errorMessage));
     EXPECT_EQ(std::vector<std::uint8_t>(plane.Pixels().begin(), plane.Pixels().end()),
               (std::vector<std::uint8_t>{1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U}));
@@ -120,26 +164,25 @@ TEST(CapturedPlaneWriterTest, preserves_fp16_bits_and_rejects_short_row_pitch)
 }
 
 // 验证 RGB10A2 的四字节位模式在去除 RowPitch padding 后保持逐字节一致。
-// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_rgb10_bits_while_discarding_padding 为用例名。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，preserves_rgb10_bits_while_discarding_padding
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, preserves_rgb10_bits_while_discarding_padding)
 {
-    constexpr std::array<std::uint8_t, 12> source{
-        1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 0xEEU, 0xEEU, 0xEEU, 0xEEU};
+    constexpr std::array<std::uint8_t, 12> source{1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 0xEEU, 0xEEU, 0xEEU, 0xEEU};
     const open_st::MappedCaptureSurface surface{source.data(), source.size(), 2, 1,
                                                 open_st::CapturedPixelFormat::Rgb10A2Unorm};
     open_st::CapturedOutputPlane plane;
     std::wstring errorMessage;
-    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 1},
-                                                  open_st::CapturedSurfaceRotation::Identity,
-                                                  open_st::CapturedColorSpace::Hdr10, {}, plane,
-                                                  errorMessage));
+    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 1}, open_st::CapturedSurfaceRotation::Identity,
+                                                  open_st::CapturedColorSpace::Hdr10, {}, plane, errorMessage));
     EXPECT_EQ(std::vector<std::uint8_t>(plane.Pixels().begin(), plane.Pixels().end()),
               (std::vector<std::uint8_t>{1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U}));
 }
 
 // 验证 FP16 的 8 Bpp 偏移在 90 度旋转时仍按完整像素搬运，不发生四字节错位。
-// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，rotates_fp16_pixels_using_eight_byte_offsets 为用例名。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，rotates_fp16_pixels_using_eight_byte_offsets
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, rotates_fp16_pixels_using_eight_byte_offsets)
 {
@@ -147,17 +190,14 @@ TEST(CapturedPlaneWriterTest, rotates_fp16_pixels_using_eight_byte_offsets)
     std::vector<std::uint8_t> source(rowPitch * 2U, 0xEEU);
     for (std::size_t index = 0U; index < 6U; ++index)
     {
-        source[(index / 3U) * rowPitch + (index % 3U) * 8U] =
-            static_cast<std::uint8_t>(index + 1U);
+        source[(index / 3U) * rowPitch + (index % 3U) * 8U] = static_cast<std::uint8_t>(index + 1U);
     }
     const open_st::MappedCaptureSurface surface{source.data(), rowPitch, 3, 2,
                                                 open_st::CapturedPixelFormat::Rgba16FloatScRgb};
     open_st::CapturedOutputPlane plane;
     std::wstring errorMessage;
-    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 3},
-                                                  open_st::CapturedSurfaceRotation::Rotate90,
-                                                  open_st::CapturedColorSpace::ScRgb, {}, plane,
-                                                  errorMessage));
+    ASSERT_TRUE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 3}, open_st::CapturedSurfaceRotation::Rotate90,
+                                                  open_st::CapturedColorSpace::ScRgb, {}, plane, errorMessage));
     constexpr std::array<std::uint8_t, 6> expected{4U, 1U, 5U, 2U, 6U, 3U};
     for (std::size_t index = 0U; index < expected.size(); ++index)
     {
@@ -166,32 +206,29 @@ TEST(CapturedPlaneWriterTest, rotates_fp16_pixels_using_eight_byte_offsets)
 }
 
 // 验证尺寸与旋转不匹配、未知旋转和未知格式均清空旧 output 并返回诊断。
-// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest 为测试套件，rejects_invalid_dimensions_rotation_and_format_atomically 为用例名。
-// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
+// 入参：无运行时形参；宏参数 CapturedPlaneWriterTest
+// 为测试套件，rejects_invalid_dimensions_rotation_and_format_atomically 为用例名。
+// 返回：无返回值；断言向 GoogleTest
+// 报告该用例通过或失败。
 TEST(CapturedPlaneWriterTest, rejects_invalid_dimensions_rotation_and_format_atomically)
 {
     const std::vector<std::uint8_t> source = MakePaddedBgraSurface();
-    open_st::MappedCaptureSurface surface{source.data(), 14U, 3, 2,
-                                          open_st::CapturedPixelFormat::Bgra8Unorm};
-    open_st::CapturedOutputPlane plane =
-        BuildBgraPlane(open_st::CapturedSurfaceRotation::Identity, {0, 0, 3, 2});
+    open_st::MappedCaptureSurface surface{source.data(), 14U, 3, 2, open_st::CapturedPixelFormat::Bgra8Unorm};
+    open_st::CapturedOutputPlane plane = BuildBgraPlane(open_st::CapturedSurfaceRotation::Identity, {0, 0, 3, 2});
     std::wstring errorMessage;
-    EXPECT_FALSE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 2},
-                                                   open_st::CapturedSurfaceRotation::Identity,
+    EXPECT_FALSE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 2, 2}, open_st::CapturedSurfaceRotation::Identity,
                                                    open_st::CapturedColorSpace::SdrGamma22P709, {}, plane,
                                                    errorMessage));
     EXPECT_FALSE(plane.IsValid());
 
-    EXPECT_FALSE(open_st::BuildCapturedOutputPlane(
-        surface, {0, 0, 3, 2}, static_cast<open_st::CapturedSurfaceRotation>(99),
-        open_st::CapturedColorSpace::SdrGamma22P709, {}, plane, errorMessage));
+    EXPECT_FALSE(
+        open_st::BuildCapturedOutputPlane(surface, {0, 0, 3, 2}, static_cast<open_st::CapturedSurfaceRotation>(99),
+                                          open_st::CapturedColorSpace::SdrGamma22P709, {}, plane, errorMessage));
     EXPECT_FALSE(plane.IsValid());
 
     surface.format = static_cast<open_st::CapturedPixelFormat>(99);
-    EXPECT_FALSE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 3, 2},
-                                                   open_st::CapturedSurfaceRotation::Identity,
-                                                   open_st::CapturedColorSpace::Unknown, {}, plane,
-                                                   errorMessage));
+    EXPECT_FALSE(open_st::BuildCapturedOutputPlane(surface, {0, 0, 3, 2}, open_st::CapturedSurfaceRotation::Identity,
+                                                   open_st::CapturedColorSpace::Unknown, {}, plane, errorMessage));
     EXPECT_FALSE(plane.IsValid());
     EXPECT_FALSE(errorMessage.empty());
 }

@@ -11,7 +11,7 @@
 
 namespace open_st
 {
-// 保存紧凑顶向下的 8 位 BGRA 像素；当前主要用于由原生冻结 plane 派生覆盖预览。
+// 保留紧凑顶向下的 8 位 BGRA 公共帧接口；当前产品预览使用 OutputPreviewFrame，不消费本类型。
 // 像素格式固定为 8 位 BGRA，按从上到下的行顺序连续存储；bounds 使用虚拟桌面物理像素。
 // 正式裁切输出必须读取 FrozenDesktopFrame，不能把已经转换过的覆盖预览当作源图。
 class BgraFrame final

@@ -8,6 +8,7 @@ target_sources(open_st_common_tests
     PRIVATE
         source/json_file_tests.cpp
         source/logger_tests.cpp
+        source/windows_util_tests.cpp
 )
 
 target_link_libraries(open_st_common_tests

@@ -3,6 +3,7 @@
 #include "save_image_dialog.h"
 #include "settings_internal.h"
 #include "simple_message_window.h"
+#include "ui_text_internal.h"
 #include <app.h>
 #include <array>
 #include <clipboard_writer.h>
@@ -15,6 +16,7 @@
 #include <pin_image.h>
 #include <pin_window_manager.h>
 #include <settings.h>
+#include <ui_text.h>
 #include <vector>
 
 namespace open_st
@@ -36,6 +38,7 @@ struct ExportProbe final
     std::function<void(HWND)> duringNotice;
     std::function<void()> duringCapture;
     std::filesystem::path target;
+    std::wstring noticeText;
 };
 ExportProbe probe;
 } // namespace
@@ -80,10 +83,11 @@ bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path
 // 入参：owner 为借用 HWND，其余文本、Renderer 与消息回调不在此替身中执行。
 // 返回：模拟提示正常关闭，不等待人工确认。
 bool TryShowSimpleMessageWindow(HWND owner, HICON, const std::function<std::wstring()>&,
-                                const std::function<std::wstring()>&, const std::function<std::wstring()>&,
+                                const std::function<std::wstring()>& message, const std::function<std::wstring()>&,
                                 WindowRenderer*&, const std::function<bool(MSG&)>&) noexcept
 {
     ++probe.notices;
+    probe.noticeText = message();
     EXPECT_TRUE(IsWindow(owner));
     if (probe.duringNotice)
         probe.duringNotice(owner);
@@ -174,6 +178,11 @@ class PinExportIntegrationTest : public testing::Test
         ASSERT_TRUE(JsonFileTestAccess::ReleaseFile("settings.user"));
         ASSERT_TRUE(JsonFileTestAccess::ReleaseFile("settings.default"));
         ASSERT_TRUE(InitializeSettings(this->root_));
+        ShutdownUiText();
+        ASSERT_TRUE(JsonFileTestAccess::ReleaseFile("localization.ui_text"));
+        std::ofstream(this->root_ / "resources/ui_text.json")
+            << R"({"schemaVersion":1,"languages":["en-US"],"texts":{"export.directory_failed":{"en-US":"Directory warning"},"export.save_failed":{"en-US":"Save failed"}}})";
+        ASSERT_TRUE(InitializeUiText(this->root_));
         probe.target = this->root_ / "capture.png";
         this->app_ = std::make_unique<App>(GetModuleHandleW(nullptr));
         ASSERT_TRUE(AppPinTestAccess::Initialize(*this->app_));
@@ -193,6 +202,8 @@ class PinExportIntegrationTest : public testing::Test
         this->app_.reset();
         this->image_.reset();
         ShutdownSettings();
+        ShutdownUiText();
+        EXPECT_TRUE(JsonFileTestAccess::ReleaseFile("localization.ui_text"));
         EXPECT_TRUE(JsonFileTestAccess::ReleaseFile("settings.user"));
         EXPECT_TRUE(JsonFileTestAccess::ReleaseFile("settings.default"));
         if (!this->root_.empty())
@@ -285,9 +296,30 @@ TEST_F(PinExportIntegrationTest, write_failure_keeps_pin_and_protects_error_owne
     EXPECT_EQ(probe.copies, 1);
 }
 
-// 验证对话框内关闭全部使 ID 失效，但 owner 必须存活至保存栈返回且不得写出。
+// 验证文件成功保存后目录编码异常只触发次要警告，贴图仍能继续复制。
 // 入参：无运行入参；宏参数用于测试注册。
 // 返回：无返回值。
+TEST_F(PinExportIntegrationTest, saved_image_survives_directory_conversion_exception)
+{
+    PinWindowManager& manager = AppPinTestAccess::Manager(*this->app_);
+    probe.choice = SaveChoice::Accepted;
+    probe.target = this->root_ / std::wstring(1, static_cast<wchar_t>(0xD800)) / L"capture.png";
+    EXPECT_THROW((void)probe.target.parent_path().u8string(), std::system_error);
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.writes, 1);
+    EXPECT_EQ(probe.notices, 1);
+    EXPECT_EQ(probe.noticeText, L"Directory warning");
+    EXPECT_EQ(manager.Image(this->id_), this->image_);
+    EXPECT_TRUE(IsWindowVisible(manager.Window(this->id_)));
+    EXPECT_FALSE(manager.IsBusy());
+    EXPECT_FALSE(GetStringSetting("capture.last_save_directory").has_value());
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Copy));
+    EXPECT_EQ(probe.pixels, (std::vector<std::uint8_t>(this->pixels_.begin(), this->pixels_.end())));
+}
+
+// 验证对话框内关闭全部使 ID 失效，但 owner 保留至保存栈返回且不得写出。
+// 入参：无运行入参；宏参数用于测试注册。
+// 返回：通过断言报告输出与窗口生命周期。
 TEST_F(PinExportIntegrationTest, close_all_during_save_defers_owner_and_discards_output)
 {
     PinWindowManager& manager = AppPinTestAccess::Manager(*this->app_);

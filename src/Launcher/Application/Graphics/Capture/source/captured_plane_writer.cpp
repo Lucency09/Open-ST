@@ -1,4 +1,4 @@
-// 文件职责：实现映射表面的旋转归一化与逐像素复制，移除驱动行填充并验证输入边界。
+// 文件职责：实现映射表面的旋转归一化与像素搬运，无旋转时按行复制，移除驱动填充并验证边界。
 
 #include "captured_plane_writer.h"
 
@@ -29,35 +29,43 @@ bool DimensionsMatch(const open_st::MappedCaptureSurface& surface, open_st::Rect
     return surface.width == bounds.Width() && surface.height == bounds.Height();
 }
 
-// 将桌面方向的目标像素位置反算为驱动表面中的源像素位置。
-// 入参：targetX、targetY：目标图像内像素坐标；sourceWidth、sourceHeight：未旋转源图像宽高；rotation：旋转方式；sourceX、sourceY：输出参数，写入源像素坐标。
-// 返回：旋转受支持且源坐标位于源图像内时为 true；未知旋转或映射越界为 false。
-bool MapTargetToSource(int targetX, int targetY, int sourceWidth, int sourceHeight,
-                       open_st::CapturedSurfaceRotation rotation, int& sourceX, int& sourceY) noexcept
+// 以编译期确定的旋转搬运完整像素，避免在每个像素中重复分派旋转。
+// 入参：surface：已验证尺寸及行跨度的源表面；bounds：匹配旋转后的边界；bytesPerPixel：像素字节数；target：足量紧凑目标内存。
+// 返回：无返回值；只复制原始位模式，不解码通道或复制行填充。
+template <open_st::CapturedSurfaceRotation ROTATION>
+void CopyRotatedPixels(const open_st::MappedCaptureSurface& surface, open_st::RectI bounds, std::size_t bytesPerPixel,
+                       std::uint8_t* target) noexcept
 {
-    switch (rotation)
+    const std::size_t targetStride = static_cast<std::size_t>(bounds.Width()) * bytesPerPixel;
+    for (int targetY = 0; targetY < bounds.Height(); ++targetY)
     {
-    case open_st::CapturedSurfaceRotation::Identity:
-        sourceX = targetX;
-        sourceY = targetY;
-        break;
-    case open_st::CapturedSurfaceRotation::Rotate90:
-        sourceX = targetY;
-        sourceY = sourceHeight - 1 - targetX;
-        break;
-    case open_st::CapturedSurfaceRotation::Rotate180:
-        sourceX = sourceWidth - 1 - targetX;
-        sourceY = sourceHeight - 1 - targetY;
-        break;
-    case open_st::CapturedSurfaceRotation::Rotate270:
-        sourceX = sourceWidth - 1 - targetY;
-        sourceY = targetX;
-        break;
-    default:
-        return false;
+        for (int targetX = 0; targetX < bounds.Width(); ++targetX)
+        {
+            int sourceX{};
+            int sourceY{};
+            if constexpr (ROTATION == open_st::CapturedSurfaceRotation::Rotate90)
+            {
+                sourceX = targetY;
+                sourceY = surface.height - 1 - targetX;
+            }
+            else if constexpr (ROTATION == open_st::CapturedSurfaceRotation::Rotate180)
+            {
+                sourceX = surface.width - 1 - targetX;
+                sourceY = surface.height - 1 - targetY;
+            }
+            else
+            {
+                static_assert(ROTATION == open_st::CapturedSurfaceRotation::Rotate270);
+                sourceX = surface.width - 1 - targetY;
+                sourceY = targetX;
+            }
+            std::memcpy(target + static_cast<std::size_t>(targetY) * targetStride +
+                            static_cast<std::size_t>(targetX) * bytesPerPixel,
+                        surface.pixels + static_cast<std::size_t>(sourceY) * surface.rowPitch +
+                            static_cast<std::size_t>(sourceX) * bytesPerPixel,
+                        bytesPerPixel);
+        }
     }
-
-    return sourceX >= 0 && sourceY >= 0 && sourceX < sourceWidth && sourceY < sourceHeight;
 }
 } // namespace
 
@@ -69,8 +77,7 @@ namespace open_st
 // 返回：完整复制并通过合法性检查时为 true；输入无效、旋转越界或分配失败为 false，output 保持无效且写入诊断。
 bool BuildCapturedOutputPlane(const MappedCaptureSurface& surface, RectI desktopBounds,
                               CapturedSurfaceRotation rotation, CapturedColorSpace pixelColorSpace,
-                              OutputColorMetadata metadata, CapturedOutputPlane& output,
-                              std::wstring& errorMessage)
+                              OutputColorMetadata metadata, CapturedOutputPlane& output, std::wstring& errorMessage)
 {
     output = {};
     errorMessage.clear();
@@ -102,26 +109,28 @@ bool BuildCapturedOutputPlane(const MappedCaptureSurface& surface, RectI desktop
     {
         const std::size_t targetStride = targetWidth * bytesPerPixel;
         std::vector<std::uint8_t> pixels(targetStride * targetHeight);
-        for (int targetY = 0; targetY < desktopBounds.Height(); ++targetY)
+        // 尺寸已与旋转匹配；每个分支都只访问有效源像素，未知枚举在发布候选前拒绝。
+        switch (rotation)
         {
-            for (int targetX = 0; targetX < desktopBounds.Width(); ++targetX)
+        case CapturedSurfaceRotation::Identity:
+            for (std::size_t targetY = 0; targetY < targetHeight; ++targetY)
             {
-                int sourceX{};
-                int sourceY{};
-                if (!MapTargetToSource(targetX, targetY, surface.width, surface.height, rotation, sourceX,
-                                       sourceY))
-                {
-                    errorMessage = L"旋转后的显示像素超出捕获表面范围。";
-                    return false;
-                }
-
-                const std::uint8_t* sourcePixel =
-                    surface.pixels + static_cast<std::size_t>(sourceY) * surface.rowPitch +
-                    static_cast<std::size_t>(sourceX) * bytesPerPixel;
-                std::uint8_t* targetPixel = pixels.data() + static_cast<std::size_t>(targetY) * targetStride +
-                                            static_cast<std::size_t>(targetX) * bytesPerPixel;
-                std::memcpy(targetPixel, sourcePixel, bytesPerPixel);
+                std::memcpy(pixels.data() + targetY * targetStride, surface.pixels + targetY * surface.rowPitch,
+                            targetStride);
             }
+            break;
+        case CapturedSurfaceRotation::Rotate90:
+            CopyRotatedPixels<CapturedSurfaceRotation::Rotate90>(surface, desktopBounds, bytesPerPixel, pixels.data());
+            break;
+        case CapturedSurfaceRotation::Rotate180:
+            CopyRotatedPixels<CapturedSurfaceRotation::Rotate180>(surface, desktopBounds, bytesPerPixel, pixels.data());
+            break;
+        case CapturedSurfaceRotation::Rotate270:
+            CopyRotatedPixels<CapturedSurfaceRotation::Rotate270>(surface, desktopBounds, bytesPerPixel, pixels.data());
+            break;
+        default:
+            errorMessage = L"旋转后的显示像素超出捕获表面范围。";
+            return false;
         }
 
         CapturedOutputPlane candidate(desktopBounds, surface.format, pixelColorSpace, metadata, std::move(pixels));

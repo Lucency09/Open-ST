@@ -2,7 +2,23 @@
 
 #pragma once
 
-#include "../private/logger.h"
+#include <log_detail.h>
+
+namespace open_st
+{
+// 初始化进程日志输出并应用文件轮转限制。
+// 入参：无。
+// 返回：初始化成功时为 true；路径、配置或文件访问失败时为 false，不向调用方传播异常。
+bool InitializeLogging() noexcept;
+// 刷新并关闭进程日志输出，结束本次日志会话。
+// 入参：无。
+// 返回：无返回值；保留已写日志，允许重复关闭。
+void ShutdownLogging() noexcept;
+// 停止日志输出并清理已识别的本程序日志，供退出清理流程调用。
+// 入参：无。
+// 返回：关闭和清理成功为 true；失败为 false，允许重试，不删除其他文件。
+bool ShutdownAndClearLogging() noexcept;
+} // namespace open_st
 
 // Release 中预处理器会完整移除 Debug 调用，传入表达式不会进入生成代码，也不会求值。
 #if defined(OPEN_ST_DEBUG_LOGS)

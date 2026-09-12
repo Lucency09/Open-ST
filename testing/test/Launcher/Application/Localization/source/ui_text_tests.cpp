@@ -97,6 +97,29 @@ std::vector<nlohmann::json> InvalidLanguageDocuments()
     return documents;
 }
 
+// 验证超范围及非整数版本不被窄化成 1，拒绝资源时仍保留此前生效文本。
+// 入参：无运行入参。
+// 返回：无返回值；通过 GoogleTest 断言记录版本边界和回退行为。
+TEST_F(UiTextTest, invalid_numeric_schema_keeps_last_valid_text)
+{
+    const std::vector<nlohmann::json> invalidVersions{4294967297ULL, -4294967295LL, 18446744073709551615ULL, -1, 1.0};
+    for (const nlohmann::json& version : invalidVersions)
+    {
+        SCOPED_TRACE(version.dump());
+        open_st::ShutdownUiText();
+        ASSERT_TRUE(open_st::JsonFileTestAccess::ReleaseFile("localization.ui_text"));
+        this->WriteTexts({{"sample", {{"en-US", "Accepted"}}}});
+        ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+        ASSERT_EQ(open_st::GetUiText("sample"), L"Accepted");
+        const nlohmann::json invalid{
+            {"schemaVersion", version}, {"languages", {"en-US"}}, {"texts", {{"sample", {{"en-US", "Rejected"}}}}}};
+        UiTextTest::WriteRaw(this->root_ / "resources" / "ui_text.json", invalid.dump());
+        EXPECT_EQ(open_st::GetUiText("sample"), L"Accepted");
+        EXPECT_TRUE(open_st::ConsumeUiTextReadWarning());
+        EXPECT_FALSE(open_st::ConsumeUiTextReadWarning());
+    }
+}
+
 // 验证初始化只建立懒加载句柄，动态文本 key 在第一次查询时才从 JSON 读取。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。
@@ -376,6 +399,46 @@ TEST_F(UiTextTest, read_warning_is_deduplicated_and_rearmed_after_recovery)
     EXPECT_EQ(open_st::GetUiText("sample"), L"Recovered");
     UiTextTest::WriteRaw(resourcePath, "{broken resource after recovery");
     EXPECT_EQ(open_st::GetUiText("sample"), L"Recovered");
+    EXPECT_TRUE(open_st::ConsumeUiTextReadWarning());
+}
+
+// 验证与已生效内容数值相等的浮点版本仍被拒绝，恢复相同文档后能够重新报告故障。
+// 入参：无运行入参。
+// 返回：无返回值；通过 GoogleTest 断言记录快速复用路径的类型边界及告警状态。
+TEST_F(UiTextTest, equal_content_schema_recovery_rearms_warning)
+{
+    const std::filesystem::path resourcePath = this->root_ / "resources" / "ui_text.json";
+    nlohmann::json document{{"schemaVersion", 1},
+                            {"languages", {"en-US", "fr-FR"}},
+                            {"texts", {{"sample", {{"en-US", "Accepted"}, {"fr-FR", "Accepte"}}}}}};
+    UiTextTest::WriteRaw(resourcePath, document.dump());
+    ASSERT_TRUE(open_st::InitializeUiText(this->root_));
+    ASSERT_TRUE(open_st::SetUiLanguage("fr-FR"));
+    ASSERT_EQ(open_st::GetUiText("sample"), L"Accepte");
+
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        document["schemaVersion"] = 1.0;
+        UiTextTest::WriteRaw(resourcePath, document.dump());
+        EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
+        EXPECT_TRUE(open_st::ConsumeUiTextReadWarning());
+        EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
+        EXPECT_FALSE(open_st::ConsumeUiTextReadWarning());
+
+        document["schemaVersion"] = 1;
+        UiTextTest::WriteRaw(resourcePath, document.dump());
+        EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
+        EXPECT_EQ(open_st::CurrentUiLanguageCode(), "fr-FR");
+        EXPECT_FALSE(open_st::ConsumeUiTextReadWarning());
+    }
+
+    UiTextTest::WriteRaw(resourcePath, "{broken after equal content");
+    EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
+    EXPECT_TRUE(open_st::ConsumeUiTextReadWarning());
+    UiTextTest::WriteRaw(resourcePath, document.dump());
+    EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
+    UiTextTest::WriteRaw(resourcePath, "{broken again after equal recovery");
+    EXPECT_EQ(open_st::GetUiText("sample"), L"Accepte");
     EXPECT_TRUE(open_st::ConsumeUiTextReadWarning());
 }
 

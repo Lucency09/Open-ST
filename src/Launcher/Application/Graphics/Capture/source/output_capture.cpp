@@ -7,6 +7,7 @@
 #include "output_capture_policy.h"
 
 #include <log.h>
+#include <windows_util.h>
 
 #include <d3d11.h>
 #include <dxgi1_6.h>
@@ -23,15 +24,7 @@ namespace
 {
 constexpr UINT CAPTURE_TIMEOUT_MILLISECONDS = 500;
 
-// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
-// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
-// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
-std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
-{
-    std::wostringstream stream;
-    stream << operation << L"失败，HRESULT=0x" << std::hex << std::uppercase << static_cast<unsigned long>(result);
-    return stream.str();
-}
+using open_st::FormatHResult;
 
 // 在所有退出路径上归还已经 AcquireNextFrame 的 Desktop Duplication 帧。
 class AcquiredFrameGuard final
@@ -174,9 +167,9 @@ bool CreateDuplication(IDXGIOutput* output, ID3D11Device* device, ComPtr<IDXGIOu
     if (SUCCEEDED(queryResult))
     {
         const std::span<const DXGI_FORMAT> supportedFormats = open_st::PreferredDuplicationFormats();
-        const HRESULT duplicateResult = output5->DuplicateOutput1(
-            device, 0U, static_cast<UINT>(supportedFormats.size()), supportedFormats.data(),
-            duplication.GetAddressOf());
+        const HRESULT duplicateResult =
+            output5->DuplicateOutput1(device, 0U, static_cast<UINT>(supportedFormats.size()), supportedFormats.data(),
+                                      duplication.GetAddressOf());
         if (SUCCEEDED(duplicateResult))
         {
             return true;
@@ -216,7 +209,8 @@ bool CreateDuplication(IDXGIOutput* output, ID3D11Device* device, ComPtr<IDXGIOu
 namespace open_st
 {
 // 捕获单显示输出并回读原生像素，形成不依赖 DXGI 资源的冻结 plane。
-// 入参：output：借用的显示输出；device：对应适配器的 D3D11 设备；context：该设备的立即上下文；capturedOutput：输出参数，接收自有原生
+// 入参：output：借用的显示输出；device：对应适配器的 D3D11
+// 设备；context：该设备的立即上下文；capturedOutput：输出参数，接收自有原生
 // plane；errorMessage：输出参数，接收失败诊断。
 // 返回：捕获、映射、复制及资源归还成功时为 true；失败为 false，capturedOutput 保持无效。
 bool CaptureSingleOutput(IDXGIOutput* output, ID3D11Device* device, ID3D11DeviceContext* context,
@@ -360,8 +354,8 @@ bool CaptureSingleOutput(IDXGIOutput* output, ID3D11Device* device, ID3D11Device
                                        static_cast<int>(textureDescription.Width),
                                        static_cast<int>(textureDescription.Height), format};
     const CapturedColorSpace pixelColorSpace = ResolveCapturedPixelColorSpace(format, metadata.displayColorSpace);
-    const bool copied = BuildCapturedOutputPlane(surface, bounds, rotation, pixelColorSpace, metadata,
-                                                 capturedOutput, errorMessage);
+    const bool copied =
+        BuildCapturedOutputPlane(surface, bounds, rotation, pixelColorSpace, metadata, capturedOutput, errorMessage);
     mappedGuard.Unmap();
     if (!frameGuard.Release(errorMessage))
     {

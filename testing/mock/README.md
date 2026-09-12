@@ -1,26 +1,21 @@
 # Open-ST Mock 目录
 
-`testing/mock/` 专门保存基于 GoogleMock 的测试替身，并完整镜像 `src/` 的相对目录依赖树及模块名称大小写。
+`testing/mock/` 保存测试替身，已有模块镜像 `src/` 的相对目录依赖树及模块名称大小写。
 模块目录使用 PascalCase，`mock`、`include`、`source` 等基础和职责目录保持小写；不预建没有实际用途的空模块。
 
-未来加入真实 mock 时采用以下结构；其中 `mock_desktop_output.h/.cpp` 仅为示例，当前尚未创建：
+当前只有 Export 系统边界替身，使用显式函数表和线程局部内存状态，不操作真实剪贴板或输出文件：
 
 ```text
 testing/mock/
-├── Common/
-│   └── CMakeLists.txt
+├── CMakeLists.txt
 └── Launcher/
     ├── CMakeLists.txt
     └── Application/
         ├── CMakeLists.txt
-        └── Graphics/
+        └── Export/
             ├── CMakeLists.txt
-            └── Capture/
-                ├── CMakeLists.txt
-                ├── include/
-                │   └── mock_desktop_output.h
-                └── source/
-                    └── mock_desktop_output.cpp
+            └── include/
+                └── export_system_fake.h
 ```
 
 规则：

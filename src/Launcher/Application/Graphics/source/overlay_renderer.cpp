@@ -1,9 +1,11 @@
 // 文件职责：实现每屏遮罩的 D3D/D2D 资源和绘制，保留选区原像素并检查显示配置失效。
 
-#include <overlay_renderer.h>
+#include <color_conversion.h>
 #include <desktop_preview.h>
 #include <display_color_state.h>
+#include <overlay_renderer.h>
 #include <selection_model.h>
+#include <windows_util.h>
 
 #include "outside_mask_layout.h"
 #include "overlay_settings.h"
@@ -16,12 +18,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cmath>
 #include <cstring>
 #include <cwchar>
-#include <sstream>
 
 using Microsoft::WRL::ComPtr;
 
@@ -40,8 +41,7 @@ float UiChannel(std::uint32_t channel, bool hdr, float whiteScale) noexcept
     {
         return encoded;
     }
-    const float linear = encoded <= 0.04045F ? encoded / 12.92F : std::pow((encoded + 0.055F) / 1.055F, 2.4F);
-    return linear * whiteScale;
+    return open_st::SrgbToLinear(encoded) * whiteScale;
 }
 
 // 将配置的 24 位 RGB 颜色转换为适合当前输出的 D2D 画刷颜色。
@@ -50,8 +50,7 @@ float UiChannel(std::uint32_t channel, bool hdr, float whiteScale) noexcept
 D2D1_COLOR_F ColorFromRgb(std::uint32_t color, bool hdr, float whiteScale) noexcept
 {
     return D2D1::ColorF(UiChannel((color >> 16U) & 0xFFU, hdr, whiteScale),
-                        UiChannel((color >> 8U) & 0xFFU, hdr, whiteScale),
-                        UiChannel(color & 0xFFU, hdr, whiteScale));
+                        UiChannel((color >> 8U) & 0xFFU, hdr, whiteScale), UiChannel(color & 0xFFU, hdr, whiteScale));
 }
 
 // 把全局选区或遮罩矩形换算为当前输出窗口的客户区坐标。
@@ -59,10 +58,9 @@ D2D1_COLOR_F ColorFromRgb(std::uint32_t color, bool hdr, float whiteScale) noexc
 // 返回：减去 frameBounds 左上原点后的 D2D 浮点矩形；渲染目标按 96 DPI 对应物理像素。
 D2D1_RECT_F ToClientRectangle(open_st::RectI rectangle, open_st::RectI frameBounds) noexcept
 {
-    return D2D1::RectF(static_cast<float>(rectangle.left - frameBounds.left),
-                       static_cast<float>(rectangle.top - frameBounds.top),
-                       static_cast<float>(rectangle.right - frameBounds.left),
-                       static_cast<float>(rectangle.bottom - frameBounds.top));
+    return D2D1::RectF(
+        static_cast<float>(rectangle.left - frameBounds.left), static_cast<float>(rectangle.top - frameBounds.top),
+        static_cast<float>(rectangle.right - frameBounds.left), static_cast<float>(rectangle.bottom - frameBounds.top));
 }
 
 // 用四个填充条带绘制一像素内描边，避免描边采样改变选区内部。
@@ -80,15 +78,6 @@ void FillOnePixelOutline(ID2D1DeviceContext* context, D2D1_RECT_F rectangle, ID2
     context->FillRectangle(D2D1::RectF(horizontalStart, rectangle.top, rectangle.right, rectangle.bottom), brush);
 }
 
-// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
-// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
-// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
-std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
-{
-    std::wostringstream stream;
-    stream << operation << L"失败，HRESULT=0x" << std::hex << std::uppercase << static_cast<unsigned long>(result);
-    return stream.str();
-}
 } // namespace
 
 namespace open_st
@@ -142,9 +131,9 @@ struct OverlayRenderer::Impl final
 
         // 交换链、客户区和冻结帧都以物理像素表示。固定 96 DPI 并配合 PIXELS unit mode，
         // 避免在高 DPI 显示器上把客户区像素再次当成 DIP 缩放。
-        const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
-            D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-            D2D1::PixelFormat(this->pixelFormat, D2D1_ALPHA_MODE_IGNORE), 96.0F, 96.0F);
+        const D2D1_BITMAP_PROPERTIES1 properties =
+            D2D1::BitmapProperties1(D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                                    D2D1::PixelFormat(this->pixelFormat, D2D1_ALPHA_MODE_IGNORE), 96.0F, 96.0F);
         result = this->d2dContext->CreateBitmapFromDxgiSurface(surface.Get(), &properties,
                                                                this->targetBitmap.GetAddressOf());
         if (FAILED(result))
@@ -169,19 +158,17 @@ OverlayRenderer::OverlayRenderer() : impl_(std::make_unique<Impl>()) {}
 OverlayRenderer::~OverlayRenderer() = default;
 
 // 为指定截图覆盖窗口建立绘制资源并上传该屏不可变预览。
-// 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选 #RRGGBB
-// 边框色，缺失或非法用黑色；errorMessage：输出参数，接收失败诊断。
+// 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选
+// #RRGGBB 边框色，缺失或非法用黑色；errorMessage：输出参数，接收失败诊断。
 // 返回：窗口、预览、显示身份和图形资源全部有效时为 true；输入校验或初始化失败时为 false。
 bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
-                                 std::optional<std::string_view> configuredBorderColor,
-                                 std::wstring& errorMessage)
+                                 std::optional<std::string_view> configuredBorderColor, std::wstring& errorMessage)
 {
     this->Reset();
     errorMessage.clear();
     const bool hdr = frame.pixelFormat == CapturedPixelFormat::Rgba16FloatScRgb;
     const std::size_t bytesPerPixel = hdr ? 8U : 4U;
-    if (window == nullptr || frame.bounds.IsEmpty() ||
-        (!hdr && frame.pixelFormat != CapturedPixelFormat::Bgra8Unorm) ||
+    if (window == nullptr || frame.bounds.IsEmpty() || (!hdr && frame.pixelFormat != CapturedPixelFormat::Bgra8Unorm) ||
         frame.stride != static_cast<std::size_t>(frame.bounds.Width()) * bytesPerPixel ||
         frame.pixels.size() != static_cast<std::size_t>(frame.stride) * frame.bounds.Height() ||
         !std::isfinite(frame.uiWhiteScale) || frame.uiWhiteScale <= 0.0F)
@@ -313,8 +300,8 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
 
     result = baseSwapChain.As(&this->impl_->swapChain);
-    const DXGI_COLOR_SPACE_TYPE colorSpace = hdr ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709
-                                                 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
+    const DXGI_COLOR_SPACE_TYPE colorSpace =
+        hdr ? DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
     UINT colorSpaceSupport{};
     if (SUCCEEDED(result))
     {
@@ -414,7 +401,7 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
 
     result = this->impl_->d2dContext->CreateSolidColorBrush(
         ColorFromRgb(ResolveSelectionBorderColor(configuredBorderColor), hdr, frame.uiWhiteScale),
-                                                            this->impl_->selectionBrush.GetAddressOf());
+        this->impl_->selectionBrush.GetAddressOf());
     if (FAILED(result))
     {
         errorMessage = FormatHResult(L"创建选区边框画刷", result);
@@ -469,14 +456,13 @@ bool OverlayRenderer::Render(SelectionSnapshot snapshot, std::wstring& errorMess
 bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::wstring& errorMessage)
 {
     errorMessage.clear();
-    if (!this->impl_->d2dContext || !this->impl_->frameBitmap || !this->impl_->targetBitmap ||
-        !this->impl_->dimBrush || !this->impl_->selectionBrush || !this->impl_->handleFillBrush)
+    if (!this->impl_->d2dContext || !this->impl_->frameBitmap || !this->impl_->targetBitmap || !this->impl_->dimBrush ||
+        !this->impl_->selectionBrush || !this->impl_->handleFillBrush)
     {
         errorMessage = L"覆盖渲染器尚未初始化。";
         return false;
     }
-    if (!this->impl_->dxgiFactory->IsCurrent() ||
-        !IsCapturedOutputColorStateCurrent(this->impl_->colorMetadata))
+    if (!this->impl_->dxgiFactory->IsCurrent() || !IsCapturedOutputColorStateCurrent(this->impl_->colorMetadata))
     {
         errorMessage = L"显示设备或高级颜色配置已变化，当前冻结截图会话必须重新建立。";
         return false;
@@ -515,16 +501,14 @@ bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::w
         BuildOutsideMaskLayout(this->impl_->frameBounds, snapshot.hasSelection, snapshot.rectangle);
     for (std::size_t index = 0U; index < maskLayout.count; ++index)
     {
-        const D2D1_RECT_F maskRectangle =
-            ToClientRectangle(maskLayout.rectangles[index], this->impl_->frameBounds);
+        const D2D1_RECT_F maskRectangle = ToClientRectangle(maskLayout.rectangles[index], this->impl_->frameBounds);
         this->impl_->d2dContext->FillRectangle(maskRectangle, this->impl_->dimBrush.Get());
     }
 
     if (snapshot.hasSelection)
     {
         // 保留完整全局选区轮廓，由呈现目标裁剪；不能先取本屏交集，否则拼缝会出现伪边框。
-        const D2D1_RECT_F selectionRectangle =
-            ToClientRectangle(snapshot.rectangle, this->impl_->frameBounds);
+        const D2D1_RECT_F selectionRectangle = ToClientRectangle(snapshot.rectangle, this->impl_->frameBounds);
         FillOnePixelOutline(this->impl_->d2dContext.Get(), selectionRectangle, this->impl_->selectionBrush.Get());
 
         if (snapshot.showHandles)

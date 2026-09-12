@@ -40,7 +40,7 @@ void ShutdownSettings() noexcept;
 [[nodiscard]] std::optional<bool> GetBoolSetting(std::string_view key) noexcept;
 // 按动态属性名读取有符号整数设置，用户值不可用时回退默认资源。
 // 入参：key 为 settings 对象中的动态设置属性名。
-// 返回：用户配置或默认资源中的有效有符号整数值；均不可用或类型错误时为 std::nullopt。
+// 返回：用户配置或默认资源中可由 int64_t 表示的整数；均缺失、类型错误或超范围时为 std::nullopt。
 [[nodiscard]] std::optional<std::int64_t> GetIntegerSetting(std::string_view key) noexcept;
 
 // 只更新指定动态 key，并保留文档中的其他设置和未知字段。

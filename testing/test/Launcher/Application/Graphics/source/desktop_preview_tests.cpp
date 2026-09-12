@@ -65,8 +65,9 @@ open_st::OutputColorMetadata HdrMetadata(float whiteNits = 160.0F)
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, preserves_sdr_bgra_bytes_and_output_coordinates)
 {
-    const std::vector<std::uint8_t> original{10U, 20U, 30U, 0U, 40U, 50U, 60U, 255U};
-    open_st::CapturedOutputPlane plane({-2, -1, 0, 0}, open_st::CapturedPixelFormat::Bgra8Unorm,
+    const std::vector<std::uint8_t> original{10U, 20U, 30U, 0U,   40U,  50U,  60U,  255U,
+                                             70U, 80U, 90U, 127U, 100U, 110U, 120U, 3U};
+    open_st::CapturedOutputPlane plane({-2, -1, 0, 1}, open_st::CapturedPixelFormat::Bgra8Unorm,
                                        open_st::CapturedColorSpace::SdrGamma22P709, {}, original);
     open_st::OutputPreviewFrame preview;
     std::wstring errorMessage;
@@ -81,16 +82,39 @@ TEST(DesktopPreviewTest, preserves_sdr_bgra_bytes_and_output_coordinates)
     EXPECT_TRUE(errorMessage.empty());
 }
 
+// 验证多行 FP16 预览保留 NaN 载荷、无穷、负零及次正规数，只规范化目标 alpha，不修改原图。
+// 入参：无运行入参；输入为 2×2 原始 binary16 位模式。
+// 返回：无返回值；逐位比对 RGB，逐像素检查目标不透明 alpha 和源数据不变。
+TEST(DesktopPreviewTest, preserves_multiline_half_special_bit_patterns)
+{
+    const std::vector<std::uint8_t> original =
+        MakeHalfPixels({0x7E01U, 0x7C00U, 0x8000U, 0x0000U, 0x0001U, 0xFC00U, 0x7D55U, 0x3800U, 0xBC00U, 0x4400U,
+                        0x3555U, 0x7C00U, 0x8001U, 0x03FFU, 0xFFFFU, 0x3C00U});
+    const open_st::CapturedOutputPlane plane({-2, -2, 0, 0}, open_st::CapturedPixelFormat::Rgba16FloatScRgb,
+                                             open_st::CapturedColorSpace::ScRgb, HdrMetadata(), original);
+    open_st::OutputPreviewFrame preview;
+    std::wstring error;
+    ASSERT_TRUE(open_st::BuildOutputPreview(plane, preview, error));
+    ASSERT_EQ(preview.pixels.size(), original.size());
+    EXPECT_EQ(preview.stride, 16U);
+    for (std::size_t pixel = 0; pixel < 4U; ++pixel)
+    {
+        EXPECT_EQ(std::memcmp(preview.pixels.data() + pixel * 8U, original.data() + pixel * 8U, 6U), 0);
+        EXPECT_FLOAT_EQ(ReadHalfChannel(preview, pixel * 4U + 3U), 1.0F);
+    }
+    EXPECT_EQ(std::vector<std::uint8_t>(plane.Pixels().begin(), plane.Pixels().end()), original);
+}
+
 // 验证 FP16 原生 RGB 位模式逐位保留，灰阶、负分量及高光不经过 ACES 或 SDR 白重复缩放。
-// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，preserves_native_half_rgb_bits_without_tone_mapping_or_white_scaling
-// 为用例名。
-// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest
+// 为测试套件，preserves_native_half_rgb_bits_without_tone_mapping_or_white_scaling 为用例名。
+// 返回：无返回值；断言向
+// GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, preserves_native_half_rgb_bits_without_tone_mapping_or_white_scaling)
 {
-    const std::vector<std::uint16_t> channels{
-        0x0000U, 0x0000U, 0x0000U, 0U, 0x3400U, 0x3400U, 0x3400U, 0U,
-        0x3800U, 0x3800U, 0x3800U, 0U, 0x3C00U, 0x3C00U, 0x3C00U, 0U,
-        0xBC00U, 0x4000U, 0x4400U, 0U};
+    const std::vector<std::uint16_t> channels{0x0000U, 0x0000U, 0x0000U, 0U,      0x3400U, 0x3400U, 0x3400U,
+                                              0U,      0x3800U, 0x3800U, 0x3800U, 0U,      0x3C00U, 0x3C00U,
+                                              0x3C00U, 0U,      0xBC00U, 0x4000U, 0x4400U, 0U};
     const std::vector<std::uint8_t> original = MakeHalfPixels(channels);
     open_st::CapturedOutputPlane plane({-5, 0, 0, 1}, open_st::CapturedPixelFormat::Rgba16FloatScRgb,
                                        open_st::CapturedColorSpace::ScRgb, HdrMetadata(), original);
@@ -114,7 +138,8 @@ TEST(DesktopPreviewTest, preserves_native_half_rgb_bits_without_tone_mapping_or_
 }
 
 // 验证 HDR10 PQ/BT.2020 红色进入 FP16 时保留负色域分量与高光，且不乘 SDR 白比例。
-// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，converts_hdr10_to_extended_linear_half_without_clipping 为用例名。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，converts_hdr10_to_extended_linear_half_without_clipping
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, converts_hdr10_to_extended_linear_half_without_clipping)
 {
@@ -134,7 +159,8 @@ TEST(DesktopPreviewTest, converts_hdr10_to_extended_linear_half_without_clipping
 }
 
 // 验证 HDR 屏幕的 BGRA 兼容数据只进行一次 sRGB 解码及 SDR 白缩放，并明确标记降级。
-// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，marks_hdr_bgra_compatibility_and_scales_sdr_white_once 为用例名。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，marks_hdr_bgra_compatibility_and_scales_sdr_white_once
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, marks_hdr_bgra_compatibility_and_scales_sdr_white_once)
 {
@@ -152,13 +178,13 @@ TEST(DesktopPreviewTest, marks_hdr_bgra_compatibility_and_scales_sdr_white_once)
 }
 
 // 验证 SDR RGB10 的正确通道量化，以及 SDR 屏幕上 FP16 数据不依赖 HDR 白值查询。
-// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，supports_sdr_rgb10_and_half_outputs_independently 为用例名。
+// 入参：无运行时形参；宏参数 DesktopPreviewTest 为测试套件，supports_sdr_rgb10_and_half_outputs_independently
+// 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(DesktopPreviewTest, supports_sdr_rgb10_and_half_outputs_independently)
 {
     open_st::CapturedOutputPlane rgb10({0, 0, 1, 1}, open_st::CapturedPixelFormat::Rgb10A2Unorm,
-                                       open_st::CapturedColorSpace::SdrGamma22P709, {},
-                                       MakeRgb10Pixel(0x000FFC00U));
+                                       open_st::CapturedColorSpace::SdrGamma22P709, {}, MakeRgb10Pixel(0x000FFC00U));
     open_st::CapturedOutputPlane half({1, 0, 2, 1}, open_st::CapturedPixelFormat::Rgba16FloatScRgb,
                                       open_st::CapturedColorSpace::ScRgb, {},
                                       MakeHalfPixels({0x3800U, 0x3800U, 0x3800U, 0x3C00U}));
@@ -179,7 +205,7 @@ TEST(DesktopPreviewTest, supports_sdr_rgb10_and_half_outputs_independently)
 TEST(DesktopPreviewTest, rejects_missing_or_invalid_hdr_white_metadata)
 {
     const std::array<float, 4U> invalidValues{0.0F, -80.0F, std::numeric_limits<float>::infinity(),
-                                            std::numeric_limits<float>::quiet_NaN()};
+                                              std::numeric_limits<float>::quiet_NaN()};
     for (const float whiteNits : invalidValues)
     {
         open_st::CapturedOutputPlane plane({0, 0, 1, 1}, open_st::CapturedPixelFormat::Rgba16FloatScRgb,

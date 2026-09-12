@@ -5,6 +5,7 @@
 #include "output_capture.h"
 
 #include <log.h>
+#include <windows_util.h>
 
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -13,7 +14,6 @@
 
 #include <array>
 #include <exception>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,21 +22,15 @@ using Microsoft::WRL::ComPtr;
 
 namespace
 {
-// 组合失败操作名称和 HRESULT，供上层定位图形或捕获故障。
-// 入参：operation：失败操作的宽字符名称；result：该操作返回的 HRESULT。
-// 返回：包含操作名称及十六进制 HRESULT 的诊断字符串。
-std::wstring FormatHResult(const wchar_t* operation, HRESULT result)
-{
-    std::wostringstream stream;
-    stream << operation << L"失败，HRESULT=0x" << std::hex << std::uppercase << static_cast<unsigned long>(result);
-    return stream.str();
-}
+using open_st::FormatHResult;
 
 // 为指定显示适配器建立桌面捕获所需的 D3D11 设备和立即上下文。
-// 入参：adapter：借用的目标适配器；device、context：输出参数，分别接收 D3D11 设备和立即上下文；errorMessage：输出参数，失败时写入诊断。
-// 返回：设备创建成功时为 true；D3D11 初始化失败时为 false 并写入 HRESULT 诊断。
-bool CreateDeviceForAdapter(IDXGIAdapter1* adapter, ComPtr<ID3D11Device>& device,
-                            ComPtr<ID3D11DeviceContext>& context, std::wstring& errorMessage)
+// 入参：adapter：借用的目标适配器；device、context：输出参数，分别接收 D3D11
+// 设备和立即上下文；errorMessage：输出参数，失败时写入诊断。
+// 返回：设备创建成功时为 true；D3D11 初始化失败时为 false
+// 并写入 HRESULT 诊断。
+bool CreateDeviceForAdapter(IDXGIAdapter1* adapter, ComPtr<ID3D11Device>& device, ComPtr<ID3D11DeviceContext>& context,
+                            std::wstring& errorMessage)
 {
     constexpr std::array featureLevels{D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     D3D_FEATURE_LEVEL selectedLevel{};

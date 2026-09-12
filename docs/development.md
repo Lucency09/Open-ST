@@ -98,6 +98,9 @@ src/
 - `localization` 是 `application` 的子模块，只通过 `GetUiText("text.key", ...)` 向业务代码提供用户可见文本；文本键和语言代码直接来自 JSON，不在 C++ 中维护枚举或注册表。
 - `Common` 承载 Logger 和通用 JSON 文件管理；具体文件路径、业务结构、默认值与字段规则归各业务模块。
   动态设置接口属于 `Settings`，不设置独立的 `foundation`、`logging` 或业务专用 JSON 目标。
+- Common 的 `windows_util.h` 只提供通用 EXE 目录查询和 HRESULT 文本格式化，资源路径拼接仍归业务模块。
+  日志宏及初始化、关闭、退出清理通过 `log.h` 使用；`log_detail.h` 仅承载宏必需的声明与模板，
+  `Logger`、`LogOptions` 和测试目录注入保持私有。退出清理入口 `ShutdownAndClearLogging()` 保留既有清理与重试语义。
 
 当前依赖方向为：
 
@@ -188,8 +191,12 @@ Application 从冻结选区生成贴图，以 `app_callbacks.cpp` 注入文字�
 ```
 
 - 第一个参数是模块名，第二个参数是 case 名；为空即扩大到全部范围。
+- 模块按测试名称前缀筛选，不按目录递归或 label 扩大范围；`graphics`、`selection`、`hdr` 分别选择各自前缀。
 - 测试脚本独立配置、构建并运行 CTest，不调用 `build.ps1`。
 - CMake、vcpkg 和测试二进制等全部测试产物写入 `testing/testoutput/Debug/`。
+- 性能基准可在该目录的 `benchmark-release/` 子目录独立配置 Release；不改变脚本默认 Debug 行为。
+  4K 内存基准用 `OPEN_ST_PIXEL_COPY_BENCHMARKS=1`、`OPEN_ST_EXPORT_BENCHMARKS=1` 分别启用，默认跳过，
+  不访问真实剪贴板、不设置机器相关耗时通过阈值；实际数值与测量范围记录在整改报告中。
 - `testing/testoutput/` 必须被 Git 忽略。
 
 ## 6. 测试与 Mock
@@ -215,10 +222,8 @@ testing/
 │           ├── Capture/
 │           └── HDR/
 └── mock/
-    ├── Common/
     └── Launcher/Application/
-        ├── Export/
-        └── Graphics/Capture/
+        └── Export/
 ```
 
 规则：

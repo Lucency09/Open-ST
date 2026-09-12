@@ -75,6 +75,45 @@ class SettingsEditTest : public testing::Test
     std::filesystem::path root_;
 };
 
+// 验证版本校验不窄化数值，并确保读取、直接写入和编辑会话一致拒绝非法版本。
+// 入参：无运行入参。
+// 返回：无返回值；通过 GoogleTest 断言记录回退及文件保留结果。
+TEST_F(SettingsEditTest, schema_numeric_boundaries_match_read_and_edit)
+{
+    const std::vector<nlohmann::json> invalidVersions{4294967297ULL, -4294967295LL, 18446744073709551615ULL, -1, 1.0};
+    for (const nlohmann::json& version : invalidVersions)
+    {
+        SCOPED_TRACE(version.dump());
+        open_st::ShutdownSettings();
+        ASSERT_TRUE(open_st::JsonFileTestAccess::ReleaseFile("settings.user"));
+        ASSERT_TRUE(open_st::JsonFileTestAccess::ReleaseFile("settings.default"));
+        const nlohmann::json document{{"schemaVersion", version},
+                                      {"settings", {{"ui.language", "ja-JP"}, {"unknown", 42}}}};
+        this->Write("data/settings.json", document.dump());
+        ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+        EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+        EXPECT_FALSE(open_st::SetStringSetting("ui.language", "zh-CN"));
+        open_st::SettingsEditSession session;
+        EXPECT_FALSE(session.Open({"ui.language"}));
+        EXPECT_EQ(this->ReadUser(), document);
+    }
+}
+
+// 验证合法无符号版本 1 可用于读取和编辑，提交继续保留未知设置字段。
+// 入参：无运行入参。
+// 返回：无返回值；通过 GoogleTest 断言记录有效版本的兼容性。
+TEST_F(SettingsEditTest, unsigned_schema_one_remains_readable_and_editable)
+{
+    const nlohmann::json document{{"schemaVersion", 1ULL}, {"settings", {{"ui.language", "ja-JP"}, {"unknown", 42}}}};
+    this->Write("data/settings.json", document.dump());
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+    EXPECT_EQ(this->ReadUser().at("settings").at("unknown"), 42);
+}
+
 // 验证缺失字段显示默认值但不补写，改回有效基线也必须保持文件缺失字段。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

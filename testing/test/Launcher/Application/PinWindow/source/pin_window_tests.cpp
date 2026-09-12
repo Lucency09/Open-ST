@@ -1,17 +1,26 @@
 // 使用隐藏真实 HWND 验证贴图稳定标识、图像所有权及跨模态关闭边界。
 
 #include "pin_window.h"
+#include <array>
 #include <dwmapi.h>
 #include <gtest/gtest.h>
 #include <objbase.h>
 #include <pin_image.h>
 #include <pin_window_manager.h>
+#include <type_traits>
 #include <vector>
 
 namespace open_st
 {
 struct PinWindowTestAccess final
 {
+    // 同步核对原生顺序，测量已正确排序时的冗余位置消息。
+    // 入参：manager 为被测管理器。
+    // 返回：无返回值；使用正式修复入口及其门禁。
+    static void Repair(PinWindowManager& manager)
+    {
+        manager.RepairOrder();
+    }
     // 请求管理器按稳定标识提升贴图，避免依赖隐藏窗口的系统排序。
     // 入参：manager 为被测管理器；id 为目标贴图。
     // 返回：无返回值；只改变产品已有的排序状态。
@@ -66,6 +75,65 @@ struct PinWindowTestAccess final
 
 namespace
 {
+// 只监视当前测试线程的两个自有 HWND，不修改窗口过程或产品状态。
+class WindowPositionCounter final
+{
+  public:
+    // 建立当前线程的同步消息计数钩子，每个测试作用域仅创建一个计数器。
+    // 入参：windows 为需要统计的两个贴图窗口。
+    // 返回：构造无返回值；安装结果通过 IsValid 查询。
+    explicit WindowPositionCounter(std::array<HWND, 2> windows) : windows_(windows)
+    {
+        WindowPositionCounter::active_ = this;
+        this->hook_ = SetWindowsHookExW(WH_CALLWNDPROC, WindowPositionCounter::Hook, nullptr, GetCurrentThreadId());
+    }
+    // 在断言提前退出时仍解除线程钩子，避免污染后续窗口测试。
+    // 入参：无。
+    // 返回：无返回值。
+    ~WindowPositionCounter()
+    {
+        if (this->hook_ != nullptr)
+            UnhookWindowsHookEx(this->hook_);
+        WindowPositionCounter::active_ = nullptr;
+    }
+    // 查询系统是否成功安装计数钩子。
+    // 入参：无。
+    // 返回：安装成功为 true。
+    bool IsValid() const noexcept
+    {
+        return this->hook_ != nullptr;
+    }
+    // 读取观察到的窗口位置改变请求数，包括设置位置但最终无变化的请求。
+    // 入参：无。
+    // 返回：自计数器建立以来的 WM_WINDOWPOSCHANGING 数量。
+    unsigned Count() const noexcept
+    {
+        return this->count_;
+    }
+
+  private:
+    // 统计被测 HWND 的同步位置消息，并保留系统钩子链原有处理。
+    // 入参：code、wParam、lParam 为 Windows 提供的钩子参数；lParam 在非负 code 时借用 CWPSTRUCT。
+    // 返回：后续钩子处理结果。
+    static LRESULT CALLBACK Hook(int code, WPARAM wParam, LPARAM lParam)
+    {
+        WindowPositionCounter* counter = WindowPositionCounter::active_;
+        if (code >= 0 && counter != nullptr)
+        {
+            const CWPSTRUCT& message = *reinterpret_cast<const CWPSTRUCT*>(lParam);
+            if (message.message == WM_WINDOWPOSCHANGING &&
+                (message.hwnd == counter->windows_[0] || message.hwnd == counter->windows_[1]))
+                ++counter->count_;
+        }
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    inline static thread_local WindowPositionCounter* active_{};
+    std::array<HWND, 2> windows_{};
+    HHOOK hook_{};
+    unsigned count_{};
+};
+
 class PinWindowTest : public testing::Test
 {
   protected:
@@ -148,6 +216,76 @@ TEST_F(PinWindowTest, hidden_prepare_snapshot_and_non_reused_ids)
     EXPECT_EQ(snapshot->Pixels()[0], 127);
     const open_st::PinId second = this->Prepare();
     EXPECT_GT(second, first);
+}
+
+// 验证重复同步修复不再向已正确排序的贴图发送位置请求，同时保留全局置顶属性。
+// 入参：无运行入参。
+// 返回：无返回值；断言消息数及两个窗口的真实原生前驱。
+TEST_F(PinWindowTest, repeated_correct_order_emits_no_position_requests)
+{
+    const open_st::PinId lower = this->Prepare();
+    const open_st::PinId upper = this->Prepare();
+    ASSERT_NE(lower, 0U);
+    ASSERT_NE(upper, 0U);
+    this->manager_->Show(lower);
+    this->manager_->Show(upper);
+    const HWND lowerWindow = this->manager_->Window(lower);
+    const HWND upperWindow = this->manager_->Window(upper);
+    ASSERT_EQ(GetWindow(upperWindow, GW_HWNDPREV), nullptr);
+    ASSERT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), upperWindow);
+    WindowPositionCounter counter({lowerWindow, upperWindow});
+    ASSERT_TRUE(counter.IsValid());
+    for (int attempt = 0; attempt < 10; ++attempt)
+        open_st::PinWindowTestAccess::Repair(*this->manager_);
+    EXPECT_EQ(counter.Count(), 0U);
+    EXPECT_NE(GetWindowLongPtrW(upperWindow, GWL_EXSTYLE) & WS_EX_TOPMOST, 0);
+    EXPECT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), upperWindow);
+}
+
+// 验证业务顺序正确但夹有其他窗口、顶部受遮挡或置顶标记丢失时，模态结束仍即时修复。
+// 入参：无运行入参。
+// 返回：无返回值；断言修复产生位置请求并恢复连续窗口顺序。
+TEST_F(PinWindowTest, modal_exit_repairs_external_window_interleaving)
+{
+    const open_st::PinId lower = this->Prepare();
+    const open_st::PinId upper = this->Prepare();
+    ASSERT_NE(lower, 0U);
+    ASSERT_NE(upper, 0U);
+    this->manager_->Show(lower);
+    this->manager_->Show(upper);
+    const HWND lowerWindow = this->manager_->Window(lower);
+    const HWND upperWindow = this->manager_->Window(upper);
+    const std::unique_ptr<std::remove_pointer_t<HWND>, decltype(&DestroyWindow)> external(
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"STATIC", L"pin order test", WS_POPUP, 0,
+                        0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr),
+        DestroyWindow);
+    ASSERT_NE(external, nullptr);
+    ASSERT_TRUE(this->manager_->BeginModal(upper));
+    ASSERT_TRUE(SetWindowPos(external.get(), upperWindow, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW));
+    ASSERT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), external.get());
+    WindowPositionCounter counter({lowerWindow, upperWindow});
+    ASSERT_TRUE(counter.IsValid());
+    this->manager_->EndModal();
+    EXPECT_GT(counter.Count(), 0U);
+    EXPECT_EQ(GetWindow(upperWindow, GW_HWNDPREV), nullptr);
+    EXPECT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), upperWindow);
+
+    ASSERT_TRUE(this->manager_->BeginModal(upper));
+    ASSERT_TRUE(SetWindowPos(external.get(), HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+    ASSERT_EQ(GetWindow(upperWindow, GW_HWNDPREV), external.get());
+    const unsigned beforeTopRepair = counter.Count();
+    this->manager_->EndModal();
+    EXPECT_GT(counter.Count(), beforeTopRepair);
+    EXPECT_EQ(GetWindow(upperWindow, GW_HWNDPREV), nullptr);
+    EXPECT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), upperWindow);
+
+    ASSERT_TRUE(this->manager_->BeginModal(lower));
+    ASSERT_TRUE(SetWindowPos(lowerWindow, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+    EXPECT_EQ(GetWindowLongPtrW(lowerWindow, GWL_EXSTYLE) & WS_EX_TOPMOST, 0);
+    this->manager_->EndModal();
+    EXPECT_NE(GetWindowLongPtrW(lowerWindow, GWL_EXSTYLE) & WS_EX_TOPMOST, 0);
+    EXPECT_EQ(GetWindow(lowerWindow, GW_HWNDPREV), upperWindow);
 }
 
 // 验证无效图像失败不发布半初始化窗口或增加贴图数量。

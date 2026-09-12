@@ -1,5 +1,6 @@
 // 将冻结选区接入独立贴图，并用稳定请求代次和模态快照协调复制保存。
 #include "capture_overlay_session.h"
+#include "save_directory.h"
 #include "save_image_dialog.h"
 #include <app.h>
 #include <clipboard_writer.h>
@@ -171,13 +172,8 @@ void App::DispatchPinCommand(PinCommand command, std::uint64_t request)
             }
             else if (command == PinCommand::Save)
             {
-                const std::optional<std::string> directory = GetStringSetting("capture.last_save_directory");
-                const std::filesystem::path last =
-                    directory ? std::filesystem::path(std::u8string_view(
-                                    reinterpret_cast<const char8_t*>(directory->data()), directory->size()))
-                              : std::filesystem::path{};
                 SaveImageTarget target;
-                const SaveChoice choice = ShowSaveImageDialog(owner, last, target, error);
+                const SaveChoice choice = ShowSaveImageDialog(owner, LastSaveDirectory(), target, error);
                 if (choice == SaveChoice::Failed)
                     failureKey = "export.save_failed";
                 if (choice == SaveChoice::Accepted && !this->shuttingDown_ && this->pinManager_->Window(id))
@@ -186,10 +182,7 @@ void App::DispatchPinCommand(PinCommand command, std::uint64_t request)
                         failureKey = "export.save_failed";
                     else
                     {
-                        const std::u8string path = target.path.parent_path().u8string();
-                        if (!SetStringSetting(
-                                "capture.last_save_directory",
-                                std::string_view(reinterpret_cast<const char*>(path.data()), path.size())))
+                        if (!RememberSaveDirectory(target.path))
                             failureKey = "export.directory_failed";
                     }
                 }

@@ -60,6 +60,7 @@ class RendererBindingTest : public testing::Test
     int actions_ = 0;
     bool longText_ = false;
     bool throwChange_ = false;
+    std::wstring infoText_;
     std::vector<open_st::RendererResult> errors_;
     // 注册可独立运行的草稿、选项和关闭动作。
     // 入参：document 为要加载的测试布局 JSON；默认包含两页和通用按钮。
@@ -73,6 +74,8 @@ class RendererBindingTest : public testing::Test
             // 返回：普通模式返回键名；长文本模式返回用于布局测量的重复 W 字符串。
             [this](std::string_view key)
             {
+                if (key == "longInfo" && !this->infoText_.empty())
+                    return this->infoText_;
                 return this->longText_ ? std::wstring(key == "longInfo" ? 2000 : 120, L'W')
                                        : std::wstring(key.begin(), key.end());
             }));
@@ -393,6 +396,58 @@ TEST_F(RendererBindingTest, long_footer_fits_small_client)
         buttons.push_back(rectangle);
     }
     EXPECT_EQ(buttons.size(), 2U);
+}
+// 验证长文首次引入滚动条后范围立即覆盖最终换行高度，恢复短文时移除滚动条且保留草稿。
+// 入参：无运行入参；测试使用隐藏的真实窗口及可变正文，避免依赖固定字体行高。
+// 返回：无返回值；通过 GoogleTest 断言检查首次排版、重复刷新及滚动到底部的几何。
+TEST_F(RendererBindingTest, scrollbar_range_matches_wrapped_content_on_first_refresh)
+{
+    nlohmann::json document = WindowDocument();
+    document["pages"][0]["content"]["children"].push_back(
+        {{"type", "text"}, {"id", "longInfo"}, {"textKey", "longInfo"}});
+    this->Prepare(std::move(document));
+    this->draft_ = "b";
+    this->Show();
+    const HWND combo = this->Combo();
+    ASSERT_NE(combo, nullptr);
+    const HWND viewport = GetParent(combo);
+    ASSERT_EQ(GetWindowLongPtrW(viewport, GWL_STYLE) & WS_VSCROLL, 0);
+    RECT fullView{};
+    ASSERT_TRUE(GetClientRect(viewport, &fullView));
+
+    for (int index = 0; index < 300; ++index)
+        this->infoText_ += L"Text wrapping sample ";
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    ASSERT_NE(GetWindowLongPtrW(viewport, GWL_STYLE) & WS_VSCROLL, 0);
+    const HWND text = FindWindowExW(viewport, nullptr, L"STATIC", this->infoText_.c_str());
+    ASSERT_NE(text, nullptr);
+    RECT bounds{};
+    ASSERT_TRUE(GetWindowRect(text, &bounds));
+    MapWindowPoints(nullptr, viewport, reinterpret_cast<POINT*>(&bounds), 2);
+    RECT view{};
+    ASSERT_TRUE(GetClientRect(viewport, &view));
+    ASSERT_LT(view.right, fullView.right);
+    SCROLLINFO initial{sizeof(initial), SIF_ALL};
+    ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &initial));
+    EXPECT_EQ(initial.nMax + 1, bounds.bottom);
+    EXPECT_EQ(initial.nPage, static_cast<UINT>(view.bottom));
+
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    SCROLLINFO repeated{sizeof(repeated), SIF_ALL};
+    ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &repeated));
+    EXPECT_EQ(repeated.nMax, initial.nMax);
+    SendMessageW(viewport, WM_VSCROLL, SB_BOTTOM, 0);
+    ASSERT_TRUE(GetWindowRect(text, &bounds));
+    MapWindowPoints(nullptr, viewport, reinterpret_cast<POINT*>(&bounds), 2);
+    EXPECT_EQ(bounds.bottom, view.bottom);
+
+    this->infoText_.clear();
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    EXPECT_EQ(GetWindowLongPtrW(viewport, GWL_STYLE) & WS_VSCROLL, 0);
+    EXPECT_EQ(this->renderer_.GetActivePageId(), "first");
+    EXPECT_EQ(SendMessageW(combo, CB_GETCURSEL, 0, 0), 1);
+    EXPECT_EQ(this->draft_, "b");
+    EXPECT_EQ(this->changes_, 0);
 }
 // 验证DPI 重排只改变几何与字体，144/192 DPI 下保持当前草稿及选择。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。

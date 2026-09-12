@@ -41,9 +41,7 @@ class SettingsWindow::Impl final
         }
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
-        this->ready_ = this->editSession_.Open({"ui.language"}, this->callbacks_.startupApplied
-                                                                    ? std::vector<std::string>{"startup.enabled"}
-                                                                    : std::vector<std::string>{});
+        this->ready_ = this->editSession_.Open({"ui.language"}, {"startup.enabled"});
         this->Require(this->renderer_->SetErrorHandler(
             // 将渲染器错误转为本地化字段或状态提示，未加载草稿时忽略选项缺失。
             // 入参：result 为渲染器报告的结构化错误，包含错误码及目标控件标识。
@@ -350,12 +348,13 @@ class SettingsWindow::Impl final
     bool ValidateLanguage(std::string_view language)
     {
         const RendererOptionsResult options = this->QueryLanguages();
-        const bool available = options.success && std::any_of(options.options.begin(), options.options.end(),
-                                                              // 以语言代码精确匹配动态选项，拒绝已从资源移除的语言。
-                                                              // 入参：option 为当前检查的语言选项，其 value 为稳定语言代码。
-                                                              // 返回：option.value 与捕获的目标语言一致为 true，否则为 false。
-                                                              [language](const RendererOption& option)
-                                                              { return option.value == language; });
+        const bool available =
+            options.success &&
+            std::any_of(options.options.begin(), options.options.end(),
+                        // 以语言代码精确匹配动态选项，拒绝已从资源移除的语言。
+                        // 入参：option 为当前检查的语言选项，其 value 为稳定语言代码。
+                        // 返回：option.value 与捕获的目标语言一致为 true，否则为 false。
+                        [language](const RendererOption& option) { return option.value == language; });
         this->languageErrorKey_ = available ? "" : "settings.language.unavailable";
         this->Require(this->renderer_->SetFieldError("languageSelector",
                                                      available ? L"" : this->Text("settings.language.unavailable")));

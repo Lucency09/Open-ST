@@ -1,6 +1,7 @@
 // 实现带线程同步、按日期和容量轮转及受限文件清理的本地日志服务。
 
 #include <log.h>
+#include <windows_util.h>
 
 #include "logger.h"
 
@@ -261,28 +262,6 @@ bool IsEnabled(open_st::log_detail::LogLevel level) noexcept
 #endif
 }
 
-// 查找日志默认存放位置所依赖的程序目录。
-// 入参：无。
-// 返回：当前可执行文件父目录；系统查询失败或路径超出缓冲区上限时返回空路径。
-std::filesystem::path ExecutableDirectory()
-{
-    std::vector<wchar_t> buffer(512);
-    while (buffer.size() <= 32768)
-    {
-        const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-        if (length == 0)
-        {
-            return {};
-        }
-        if (length < buffer.size() - 1)
-        {
-            return std::filesystem::path(buffer.data(), buffer.data() + length).parent_path();
-        }
-        buffer.resize(buffer.size() * 2);
-    }
-    return {};
-}
-
 class LoggerState final
 {
   public:
@@ -430,7 +409,8 @@ class LoggerState final
     }
 
     // 向进程日志服务提交文本并按日期、行数或容量轮转。
-    // 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置。
+    // 入参：level：记录级别；message：UTF-8
+    // 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置。
     // 返回：无返回值；未初始化或级别未启用时忽略，写入失败停止本次输出，Error/Fatal 立即刷新。
     void Write(open_st::log_detail::LogLevel level, const std::string& message, std::string_view sourceFile,
                std::uint_least32_t sourceLine) noexcept
@@ -704,7 +684,8 @@ class LoggerState final
     }
 
     // 生成带时间、级别及可选位置的单行日志记录。
-    // 入参：level：记录级别；message：UTF-8 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置；调用方须持有 mutex_。
+    // 入参：level：记录级别；message：UTF-8
+    // 日志正文；sourceFile：可选源码路径；sourceLine：源码行号，零表示不输出位置；调用方须持有 mutex_。
     // 返回：带末尾换行的日志字节串；移除回车、转义正文换行，按消息及文件字节预算截断正文，可能截断多字节字符。
     std::string BuildRecordLocked(open_st::log_detail::LogLevel level, const std::string& message,
                                   std::string_view sourceFile, std::uint_least32_t sourceLine) const
@@ -719,12 +700,27 @@ class LoggerState final
                << milliseconds.count() << " [" << LevelName(level) << "] ";
         if (!sourceFile.empty() && sourceLine > 0)
         {
-            prefix << '[' << RelativeSourcePath(sourceFile) << ':' << sourceLine << "] ";
+            std::string source = RelativeSourcePath(sourceFile);
+            const std::string suffix = ':' + std::to_string(sourceLine) + "] ";
+            const std::uintmax_t fixedBytes = prefix.str().size() + 1 + suffix.size() + 1;
+            const std::uintmax_t sourceBudget =
+                this->options_.maxFileBytes > fixedBytes ? this->options_.maxFileBytes - fixedBytes : 0;
+            if (source.size() > sourceBudget)
+            {
+                // 最小文件预算足以保留时间、级别、行号及省略标记，超长路径保留尾部。
+                const std::size_t tailBytes = static_cast<std::size_t>(sourceBudget > 3 ? sourceBudget - 3 : 0);
+                source = sourceBudget >= 3 ? "..." + source.substr(source.size() - tailBytes)
+                                           : source.substr(0, static_cast<std::size_t>(sourceBudget));
+            }
+            prefix << '[' << source << suffix;
         }
         const std::string prefixText = prefix.str();
         std::string record = prefixText;
-        const std::size_t availableByFile = static_cast<std::size_t>(this->options_.maxFileBytes - record.size() - 1);
-        const std::size_t messageLimit = std::min(MAX_MESSAGE_BYTES, availableByFile);
+        const std::uintmax_t usedBytes = record.size() + 1;
+        const std::uintmax_t availableByFile =
+            this->options_.maxFileBytes > usedBytes ? this->options_.maxFileBytes - usedBytes : 0;
+        const std::size_t messageLimit =
+            static_cast<std::size_t>(std::min<std::uintmax_t>(MAX_MESSAGE_BYTES, availableByFile));
 
         for (char character : message)
         {
@@ -817,7 +813,7 @@ bool Logger::Initialize() noexcept
 {
     try
     {
-        const std::filesystem::path applicationDirectory = ExecutableDirectory();
+        const std::filesystem::path applicationDirectory = GetExecutableDirectory();
         return !applicationDirectory.empty() && Logger::Initialize(applicationDirectory);
     }
     catch (...)
@@ -873,6 +869,14 @@ bool InitializeLogging() noexcept
 void ShutdownLogging() noexcept
 {
     Logger::Shutdown();
+}
+
+// 转发既有退出日志清理行为，使调用方无需访问私有 Logger。
+// 入参：无。
+// 返回：日志关闭及清理成功为 true；失败为 false，允许用户重试。
+bool ShutdownAndClearLogging() noexcept
+{
+    return Logger::ShutdownAndClear();
 }
 
 namespace log_detail

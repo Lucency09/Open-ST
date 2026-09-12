@@ -287,7 +287,8 @@ void CheckWritableExistingFile(const std::filesystem::path& path)
 
 // 通过同目录临时文件写入并刷新后替换目标，避免发布半份 JSON。
 // 入参：path：最终路径；bytes：完整序列化字节，长度已由调用方限制；replaceExisting：是否替换已有目标；baseline：替换前签名；writtenSignature：输出参数，接收已写临时文件签名。
-// 返回：无返回值；写入、刷新、基线复核或移动失败时抛出 FileFailure，未移动的临时文件由守卫清理；失败时 writtenSignature 可能已写入。
+// 返回：无返回值；写入、刷新、基线复核或移动失败时抛出 FileFailure，未移动的临时文件由守卫清理；失败时 writtenSignature
+// 可能已写入。
 void WriteBytesAtomically(const std::filesystem::path& path, std::string_view bytes, bool replaceExisting,
                           const FileSignature& baseline, FileSignature& writtenSignature)
 {
@@ -326,8 +327,7 @@ void WriteBytesAtomically(const std::filesystem::path& path, std::string_view by
     {
         throw FileFailure{"external_change_before_commit", ERROR_RETRY};
     }
-    const DWORD flags =
-        replaceExisting ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH : MOVEFILE_WRITE_THROUGH;
+    const DWORD flags = replaceExisting ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH : MOVEFILE_WRITE_THROUGH;
     if (MoveFileExW(temporaryPath.c_str(), path.c_str(), flags) == FALSE)
     {
         throw FileFailure{"commit", GetLastError()};
@@ -418,8 +418,10 @@ class JsonFileState final
         }
     }
     // 在同一文件锁内编辑当前 JSON 文档并原子提交。
-    // 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
-    // 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
+    // 入参：editor：同步编辑回调，接收 optional
+    // 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
+    // 返回：编辑接受且可提交时为
+    // true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
     bool Write(const JsonDocumentEditor& editor) noexcept
     {
         try
@@ -476,7 +478,8 @@ class JsonFileState final
     };
 
     // 对连续重复的 JSON 读写故障去重并记录诊断。
-    // 入参：writing：true 表示写故障，false 表示读故障；stage：具有稳定生命周期的阶段名；code：对应系统或解析错误码；调用方须持有文件锁。
+    // 入参：writing：true 表示写故障，false
+    // 表示读故障；stage：具有稳定生命周期的阶段名；code：对应系统或解析错误码；调用方须持有文件锁。
     // 返回：无返回值；同操作连续同阶段同错误码不重复记录，不阻止下一次文件重试。
     void ReportFailureLocked(bool writing, const char* stage, DWORD code) noexcept
     {
@@ -492,7 +495,8 @@ class JsonFileState final
 
     // 核对当前磁盘版本并在变化时刷新已解析 JSON 快照。
     // 入参：无；调用方须持有当前文件锁。
-    // 返回：目标缺失为 Missing，有效且已缓存或重新解析成功为 Present；访问、稳定性或解析失败抛出异常，不把旧缓存当作本次成功。
+    // 返回：目标缺失为 Missing，有效且已缓存或重新解析成功为
+    // Present；访问、稳定性或解析失败抛出异常，不把旧缓存当作本次成功。
     FileQueryStatus RefreshLocked()
     {
         FileSignature signature{};
@@ -530,7 +534,6 @@ class JsonFileState final
         this->validSignature_ = signature;
         this->hasValidSignature_ = true;
         this->hasInvalidSignature_ = false;
-        ++this->revision_;
         return FileQueryStatus::Present;
     }
 
@@ -549,8 +552,10 @@ class JsonFileState final
     }
 
     // 校验完整候选文档并提交文件及对应缓存版本。
-    // 入参：document：本次编辑后的完整 JSON；existed：编辑前文件是否存在；baseline：编辑前文件签名；调用方须持有文件锁。
-    // 返回：内容不变且可写或新内容提交成功时为 true；其他失败抛出异常，由上层转换为 false；提交成功后发布相同语义的缓存快照。
+    // 入参：document：本次编辑后的完整
+    // JSON；existed：编辑前文件是否存在；baseline：编辑前文件签名；调用方须持有文件锁。
+    // 返回：内容不变且可写或新内容提交成功时为 true；其他失败抛出异常，由上层转换为
+    // false；提交成功后发布相同语义的缓存快照。
     bool CommitLocked(const nlohmann::json& document, bool existed, const FileSignature& baseline)
     {
         std::string serialized = document.dump(2);
@@ -586,7 +591,6 @@ class JsonFileState final
         this->validSignature_ = written;
         this->hasValidSignature_ = true;
         this->hasInvalidSignature_ = false;
-        ++this->revision_;
         return true;
     }
 
@@ -598,7 +602,6 @@ class JsonFileState final
     FileSignature invalidSignature_{};
     bool hasValidSignature_{};
     bool hasInvalidSignature_{};
-    std::uint64_t revision_{};
     FailureRecord readFailure_;
     FailureRecord writeFailure_;
 };
