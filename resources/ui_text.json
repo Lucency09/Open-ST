@@ -1,6 +1,10 @@
 {
   "schemaVersion": 1,
-  "languages": ["zh-CN", "en-US", "ja-JP"],
+  "languages": [
+    "zh-CN",
+    "en-US",
+    "ja-JP"
+  ],
   "texts": {
     "capture.toolbar.pin": {
       "zh-CN": "固定到屏幕",
@@ -173,9 +177,9 @@
       "ja-JP": "Open-ST へようこそ"
     },
     "welcome.intro": {
-      "zh-CN": "按 Ctrl+Alt+Q 开始截图。确认后进入托盘运行。",
-      "en-US": "Press Ctrl+Alt+Q to capture. Confirm to continue in the notification area.",
-      "ja-JP": "Ctrl+Alt+Q でキャプチャします。確認後は通知領域で動作します。"
+      "zh-CN": "初始截图快捷键：{hotkey}。确认后尝试启用，并进入托盘运行。",
+      "en-US": "Initial capture shortcut: {hotkey}. After confirmation, registration will be attempted and the app will run in the tray.",
+      "ja-JP": "初期キャプチャキー：{hotkey}。確認後に登録を試み、トレイで動作します。"
     },
     "welcome.privacy": {
       "zh-CN": "当前截图在本机处理。后续 OCR 在本机执行；文字翻译上传文字，图片翻译上传处理后的图片。这些翻译能力尚未提供。",
@@ -268,9 +272,9 @@
       "ja-JP": "Open-ST はすでに実行されています。"
     },
     "hotkey.registration_failed": {
-      "zh-CN": "无法注册 Ctrl+Alt+Q；该快捷键可能已被占用。仍可从托盘启动截图。",
-      "en-US": "Could not register Ctrl+Alt+Q because it may already be in use. You can still start a capture from the notification area.",
-      "ja-JP": "Ctrl+Alt+Q を登録できませんでした。すでに使用されている可能性があります。通知領域からキャプチャを開始できます。"
+      "zh-CN": "无法注册 {hotkey}，该快捷键可能已被占用。仍可从托盘截图，并在设置中修改或重试。",
+      "en-US": "Could not register {hotkey}; it may be in use. Capture from the tray, or change the shortcut or retry in Settings.",
+      "ja-JP": "{hotkey} を登録できません。使用中の可能性があります。トレイからキャプチャするか、設定で変更・再試行してください。"
     },
     "common_resources.read_failed": {
       "zh-CN": "部分设置或界面资源暂时无法读取，应用将使用可用内容。请稍后重试。",
@@ -278,14 +282,14 @@
       "ja-JP": "一部の設定または画面リソースを読み込めませんでした。利用可能な内容を使用します。しばらくしてから再試行してください。"
     },
     "tray.tooltip": {
-      "zh-CN": "Open-ST - Ctrl+Alt+Q 截图",
-      "en-US": "Open-ST - Capture with Ctrl+Alt+Q",
-      "ja-JP": "Open-ST - Ctrl+Alt+Q でキャプチャ"
+      "zh-CN": "Open-ST - 截图：{hotkey}",
+      "en-US": "Open-ST - Capture: {hotkey}",
+      "ja-JP": "Open-ST - キャプチャ：{hotkey}"
     },
     "tray.capture": {
-      "zh-CN": "截图\tCtrl+Alt+Q",
-      "en-US": "Capture\tCtrl+Alt+Q",
-      "ja-JP": "キャプチャ\tCtrl+Alt+Q"
+      "zh-CN": "截图\t{hotkey}",
+      "en-US": "Capture\t{hotkey}",
+      "ja-JP": "キャプチャ\t{hotkey}"
     },
     "tray.settings": {
       "zh-CN": "设置",
@@ -496,6 +500,116 @@
       "zh-CN": "截图已保存，但无法记录上次保存目录。",
       "en-US": "The screenshot was saved, but the last save directory could not be recorded.",
       "ja-JP": "スクリーンショットを保存しましたが、前回の保存先を記録できませんでした。"
+    },
+    "settings.hotkeys": {
+      "zh-CN": "快捷键",
+      "en-US": "Keyboard shortcuts",
+      "ja-JP": "ショートカット"
+    },
+    "settings.hotkey.label": {
+      "zh-CN": "开始截图（全局）",
+      "en-US": "Start capture (global)",
+      "ja-JP": "キャプチャ開始（グローバル）"
+    },
+    "settings.hotkey.record": {
+      "zh-CN": "请按组合键",
+      "en-US": "Press a key combination",
+      "ja-JP": "キーの組み合わせを入力"
+    },
+    "settings.hotkey.help": {
+      "zh-CN": "仅全局截图键可修改。录入后点击“应用”保存并生效；启用失败时也可点击“应用”重试。Esc 撤销本次录入。",
+      "en-US": "Only the global capture shortcut is editable. Record a combination, then Apply to save and activate it. Apply also retries activation after a failure. Esc cancels the current recording.",
+      "ja-JP": "変更できるのはグローバルキーのみです。入力後「適用」で保存・有効化します。失敗時も「適用」で再試行できます。Esc で今回の入力を取り消します。"
+    },
+    "settings.hotkey.status": {
+      "zh-CN": "快捷键状态暂不可用",
+      "en-US": "Shortcut status unavailable",
+      "ja-JP": "ショートカットの状態を取得できません"
+    },
+    "settings.hotkey.invalid": {
+      "zh-CN": "此组合不受支持或与截图操作冲突，请重新录入。",
+      "en-US": "This combination is unsupported or conflicts with capture commands. Choose another.",
+      "ja-JP": "未対応の組み合わせ、またはキャプチャ操作と競合しています。別のキーを選択してください。"
+    },
+    "settings.hotkey.registration_failed": {
+      "zh-CN": "该快捷键无法启用，可能已被占用。请换一个组合，或解决占用后点击“应用”重试。",
+      "en-US": "The shortcut could not be activated; it may be in use. Choose another combination, or resolve the conflict and click Apply to retry.",
+      "ja-JP": "キーを有効にできません。使用中の可能性があります。別の組み合わせを選ぶか、競合を解消して「適用」で再試行してください。"
+    },
+    "settings.hotkey.cleanup_pending": {
+      "zh-CN": "快捷键切换尚未全部完成，请点击“应用”重试。",
+      "en-US": "The shortcut change has not fully completed. Click Apply to retry.",
+      "ja-JP": "キーの切り替えが完了していません。「適用」で再試行してください。"
+    },
+    "hotkey.unregistered": {
+      "zh-CN": "未注册",
+      "en-US": "Not registered",
+      "ja-JP": "未登録"
+    },
+    "hotkey.active": {
+      "zh-CN": "当前生效：{hotkey}",
+      "en-US": "Currently active: {hotkey}",
+      "ja-JP": "現在有効：{hotkey}"
+    },
+    "hotkey.cleanup_pending": {
+      "zh-CN": "当前生效：{hotkey}；切换尚未全部完成，请点击“应用”重试。",
+      "en-US": "Currently active: {hotkey}; the change has not fully completed. Click Apply to retry.",
+      "ja-JP": "現在有効：{hotkey}。切り替えが完了していません。「適用」で再試行してください。"
+    },
+    "hotkey.invalid_configuration": {
+      "zh-CN": "快捷键配置无效，已尝试使用有效默认值。请在设置中检查；仍可从托盘截图。",
+      "en-US": "The shortcut configuration is invalid. A valid default was attempted. Check Settings; capture remains available from the tray.",
+      "ja-JP": "ショートカット設定が無効です。有効な既定値で登録を試みました。設定を確認してください。トレイからは引き続きキャプチャできます。"
+    },
+    "cleanup.hotkey_failed": {
+      "zh-CN": "快捷键注销失败，请重试清理。",
+      "en-US": "Shortcut cleanup failed. Please retry.",
+      "ja-JP": "ショートカットの解放に失敗しました。再試行してください。"
+    },
+    "hotkey.configured": {
+      "zh-CN": "配置目标：{hotkey}",
+      "en-US": "Configured shortcut: {hotkey}",
+      "ja-JP": "設定されているキー：{hotkey}"
+    },
+    "settings.hotkey.copy": {
+      "zh-CN": "复制截图（截图中）",
+      "en-US": "Copy (during capture)",
+      "ja-JP": "コピー（キャプチャ中）"
+    },
+    "settings.hotkey.save": {
+      "zh-CN": "保存截图（截图中）",
+      "en-US": "Save (during capture)",
+      "ja-JP": "保存（キャプチャ中）"
+    },
+    "settings.hotkey.cancel": {
+      "zh-CN": "逐层取消（截图中）",
+      "en-US": "Cancel in stages (during capture)",
+      "ja-JP": "段階的に取消（キャプチャ中）"
+    },
+    "settings.hotkey.close_pin": {
+      "zh-CN": "关闭当前贴图",
+      "en-US": "Close focused pinned image",
+      "ja-JP": "フォーカス中の画像を閉じる"
+    },
+    "settings.hotkey.value.copy": {
+      "zh-CN": "Ctrl+C / Enter",
+      "en-US": "Ctrl+C / Enter",
+      "ja-JP": "Ctrl+C / Enter"
+    },
+    "settings.hotkey.value.save": {
+      "zh-CN": "Ctrl+S",
+      "en-US": "Ctrl+S",
+      "ja-JP": "Ctrl+S"
+    },
+    "settings.hotkey.value.cancel": {
+      "zh-CN": "Esc",
+      "en-US": "Esc",
+      "ja-JP": "Esc"
+    },
+    "settings.hotkey.value.close_pin": {
+      "zh-CN": "Esc",
+      "en-US": "Esc",
+      "ja-JP": "Esc"
     }
   }
 }

@@ -7,9 +7,11 @@ namespace open_st::renderer_detail
 enum class NodeType
 {
     Column,
+    Row,
     Text,
     Select,
     Checkbox,
+    KeyChord,
     Button
 };
 struct Node

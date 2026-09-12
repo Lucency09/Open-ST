@@ -29,6 +29,7 @@ class SingleInstance;
 class StartupRegistration;
 class WelcomeWindow;
 class WindowRenderer;
+class HotkeyManager;
 struct SettingsWindowCallbacks;
 
 // 进程级应用协调器：拥有隐藏消息窗口、托盘、全局热键和当前截图会话。
@@ -70,6 +71,7 @@ class App final
   private:
     friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
     friend struct AppPinTestAccess;
+    friend struct AppHotkeyTestAccess;
     struct PinOperation;
     // 集中组装贴图文本查询和异步业务命令回调。
     // 入参：无。
@@ -218,6 +220,35 @@ class App final
     // 返回：无返回值；成功关闭会话，取消或失败恢复仍有效的选区，布局失效则安全释放。
     void CompleteSelection(bool save);
 
+    // 读取初始组合并尝试注册，失败保持托盘可用。
+    // 入参：无。
+    // 返回：无；错误通过本地化提示报告。
+    void InitializeHotkeys();
+    // 取得当前活动组合或未注册状态的显示文字。
+    // 入参：无。
+    // 返回：当前语言的状态。
+    std::wstring HotkeyStatusText() const;
+    // 格式化带活动组合占位符的本地化文本。
+    // 入参：key 为文本资源键。
+    // 返回：已替换组合的显示文字。
+    std::wstring HotkeyText(std::string_view key) const;
+    // 处理已注册组合，校验身份、暂停和消息时间。
+    // 入参：id、data 为 WM_HOTKEY 参数；time 为消息生成时间。
+    // 返回：无。
+    void DispatchHotkey(WPARAM id, LPARAM data, DWORD time);
+    // 准备设置候选，失败不改变当前注册。
+    // 入参：value 为目标组合字符串。
+    // 返回：候选已就绪为 true。
+    bool PrepareHotkey(std::string_view value) noexcept;
+    // 无异常激活或回收候选，文字刷新由调用方在事务后执行。
+    // 入参：commit 为设置是否已保存。
+    // 返回：资源清理成功为 true。
+    bool FinishHotkey(bool commit) noexcept;
+
+    std::unique_ptr<HotkeyManager> hotkeys_;
+    bool hotkeyRecording_{};
+    bool hotkeyCleanupPending_{};
+    DWORD hotkeyBoundary_{};
     bool completionBusy_{}; // 包括错误弹窗在内的忙状态。
     bool dialogActive_{};   // 简单模态弹窗及其系统兜底期间禁止重新打开业务入口。
     bool welcoming_{};

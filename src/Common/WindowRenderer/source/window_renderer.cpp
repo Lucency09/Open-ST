@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <commctrl.h>
+#include <cstdint>
 #include <dwmapi.h>
 #include <map>
 #include <set>
@@ -35,6 +36,11 @@ struct WindowRenderer::Impl
         std::function<RendererChangeResult(std::string_view)> change;
         std::function<RendererBoolResult()> readBool;
         std::function<RendererChangeResult(bool)> changeBool;
+        std::function<RendererKeyChordResult()> readChord;
+        std::function<RendererChangeResult(RendererKeyChord)> changeChord;
+        std::function<std::wstring(RendererKeyChord)> formatChord;
+        std::function<RendererChangeResult()> rollbackChord;
+        RendererKeyChord chord;
         bool checked{};
         std::function<RendererOptionsResult()> query;
         std::function<void()> action;
@@ -46,6 +52,14 @@ struct WindowRenderer::Impl
     std::function<std::wstring(std::string_view)> text;
     std::function<void()> close;
     std::function<void(const RendererResult&)> errorHandler;
+    std::function<void(bool)> recordingHandler;
+    Control* recording{};
+    RendererKeyChord pendingChord;
+    RendererKeyChord initialChord;
+    bool recordingChanged{};
+    UINT recordingModifiers{};
+    DWORD recordingStarted{};
+    std::array<bool, 256> recordedKeys{};
     std::string defaultAction;
     HWND window{};
     HWND tabs{};
@@ -133,7 +147,7 @@ struct WindowRenderer::Impl
     void Index(const Node& node, const std::string& page)
     {
         this->nodes.emplace(node.id, &node);
-        if (node.type != NodeType::Column)
+        if (node.type != NodeType::Column && node.type != NodeType::Row)
         {
             Control control;
             control.node = &node;
@@ -178,6 +192,9 @@ struct WindowRenderer::Impl
             if (control.node->type == NodeType::Select && (!control.read || !control.change || !control.query))
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Checkbox && (!control.readBool || !control.changeBool))
+                return {"field_binding_missing", {}, id};
+            if (control.node->type == NodeType::KeyChord &&
+                (!control.readChord || !control.changeChord || !control.formatChord))
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Button && !control.action)
                 return {"action_missing", {}, id};
@@ -249,6 +266,10 @@ struct WindowRenderer::Impl
     // 只测量。
     // 返回：整棵节点占用的物理像素高度；放置时将 y 减去当前滚动偏移。
     int ArrangeNode(const Node& node, int x, int y, int width, bool place);
+    // 将横向子节点分配到固定宽度及均分剩余宽度的槽位。
+    // 入参：node 为行节点；x、y 为内容坐标；width 为可用像素宽度；place 为是否放置窗口。
+    // 返回：所有子节点最大高度加上下内边距，窄空间内所有槽位保持在可用范围。
+    int ArrangeRow(const Node& node, int x, int y, int width, bool place);
     // 重排底部按钮、状态、标签页及当前页面，并更新滚动范围。
     // 入参：无。
     // 返回：无返回值；窗口不存在或正在排版时不操作，按钮可换行，页面内容在独立视口内裁剪。
@@ -269,6 +290,27 @@ struct WindowRenderer::Impl
     // 入参：id：拟触发按钮的布局 ID。
     // 返回：无返回值；忙、禁用、未知 ID 或无动作时忽略；动作异常由外层消息边界处理。
     void Invoke(std::string_view id);
+    // 开始当前控件的组合键预览并通知宿主暂停外部触发。
+    // 入参：control 为具有焦点的组合键控件。
+    // 返回：无返回值；忙、禁用或重复开始时忽略。
+    void BeginRecording(Control& control);
+    // 结束录入并可靠恢复宿主触发状态。
+    // 入参：accept 为 true 时保留即时草稿，为 false 时恢复录入开始时的宿主原始值。
+    // 返回：无返回值；回调错误收敛并报告，状态始终退出录入。
+    void EndRecording(bool accept) noexcept;
+    // 在对话框导航和原生控件之前处理录入按键。
+    // 入参：message、key、data、time 为原始键盘消息及时间。
+    // 返回：录入或其尾部释放消息已消费时为 true；Tab 结束录入后返回 false 继续导航。
+    bool RecordMessage(UINT message, WPARAM key, LPARAM data, DWORD time);
+    // 更新候选显示并把完整且变化的组合交宿主校验，合法值立即写入草稿。
+    // 入参：chord 为完整或仅含修饰键的预览值。
+    // 返回：无返回值；格式化异常交给调用边界处理。
+    void PreviewChord(RendererKeyChord chord);
+    // 为组合键按钮补充焦点生命周期、系统键抑制和直接消息支持。
+    // 入参：标准控件子类过程参数；data 为借用 Impl 指针。
+    // 返回：已处理消息返回 0，其余交给原始控件过程。
+    static LRESULT CALLBACK ChordProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR subclassId,
+                                      DWORD_PTR data);
     // 恢复 HWND 关联的渲染器并在异常边界内处理主窗口消息。
     // 入参：window：目标窗口；message：Win32 消息编号；wParam、lParam：该消息的附加参数，创建时 lParam 提供借用 Impl
     // 指针。
@@ -284,6 +326,54 @@ struct WindowRenderer::Impl
     LRESULT Message(HWND target, UINT message, WPARAM wParam, LPARAM lParam);
 };
 
+// 将横向子节点分配到固定宽度及均分剩余宽度的槽位。
+// 入参：node 为行节点；x、y 为内容坐标；width 为可用像素宽度；place 为是否放置窗口。
+// 返回：所有子节点最大高度加上下内边距，窄空间内所有槽位保持在可用范围。
+int WindowRenderer::Impl::ArrangeRow(const Node& node, int x, int y, int width, bool place)
+{
+    const int padding = std::min(this->Scale(node.padding), width / 2);
+    const int available = std::max(0, width - 2 * padding);
+    const int count = static_cast<int>(node.children.size());
+    const int gap = count > 1 ? std::min(this->Scale(node.gap), available / (count - 1)) : 0;
+    const int content = available - gap * std::max(0, count - 1);
+    std::int64_t fixed = 0;
+    int flexible = 0;
+    for (const Node& child : node.children)
+    {
+        if (child.width > 0)
+            fixed += this->Scale(child.width);
+        else
+            ++flexible;
+    }
+    int remaining = fixed < content ? content - static_cast<int>(fixed) : 0;
+    std::int64_t fixedSeen = 0;
+    int fixedUsed = 0;
+    int cursor = padding;
+    int height = 0;
+    for (const Node& child : node.children)
+    {
+        int childWidth = 0;
+        if (child.width > 0)
+        {
+            const int desired = this->Scale(child.width);
+            fixedSeen += desired;
+            const int edge =
+                fixed > content ? static_cast<int>(fixedSeen * content / fixed) : static_cast<int>(fixedSeen);
+            childWidth = edge - fixedUsed;
+            fixedUsed = edge;
+        }
+        else
+        {
+            childWidth = flexible > 0 ? remaining / flexible : 0;
+            remaining -= childWidth;
+            --flexible;
+        }
+        height = std::max(height, this->ArrangeNode(child, x + cursor, y + padding, childWidth, place));
+        cursor += childWidth + gap;
+    }
+    return height + 2 * padding;
+}
+
 // 测量或放置一棵页面节点树，统一处理文字、输入框与字段错误。
 // 入参：node：待布局节点；x、y：未扣除滚动偏移的页面像素原点；width：可用物理像素宽度；place：true 放置控件，false
 // 只测量。
@@ -293,16 +383,18 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     int actualWidth = width;
     if (node.width > 0)
         actualWidth = std::min(width, this->Scale(node.width));
+    if (node.type == NodeType::Row)
+        return this->ArrangeRow(node, x, y, actualWidth, place);
     if (node.type == NodeType::Column)
     {
-        const int padding = this->Scale(node.padding);
+        const int padding = std::min(this->Scale(node.padding), actualWidth / 2);
         int cursor = padding;
         for (std::size_t index = 0; index < node.children.size(); ++index)
         {
             if (index != 0)
                 cursor += this->Scale(node.gap);
             cursor += this->ArrangeNode(node.children[index], x + padding, y + cursor,
-                                        std::max(1, actualWidth - 2 * padding), place);
+                                        std::max(0, actualWidth - 2 * padding), place);
         }
         return cursor + padding;
     }
@@ -310,6 +402,8 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     if (node.width == 0)
         actualWidth = std::min(width, std::max(this->Scale(80), this->TextWidth(control.text) + this->Scale(24)));
     int height = this->TextHeight(control.text, actualWidth);
+    if (node.type == NodeType::KeyChord && control.label == nullptr)
+        height = this->Scale(28);
     if (node.type == NodeType::Checkbox)
         height = std::max(this->Scale(24),
                           this->TextHeight(control.text, std::max(1, actualWidth - this->Scale(24))) + this->Scale(4));
@@ -317,14 +411,15 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
         height = std::max(this->Scale(28), height + this->Scale(10));
     if (place)
     {
-        const HWND textWindow = node.type == NodeType::Select ? control.label : control.window;
+        const HWND textWindow = control.label != nullptr ? control.label : control.window;
         MoveWindow(textWindow, x, y - this->scroll, actualWidth, height, TRUE);
     }
-    if (node.type == NodeType::Select)
+    if (node.type == NodeType::Select || (node.type == NodeType::KeyChord && control.label != nullptr))
     {
         const int fieldY = y + height + this->Scale(4);
         if (place)
-            MoveWindow(control.window, x, fieldY - this->scroll, actualWidth, this->Scale(180), TRUE);
+            MoveWindow(control.window, x, fieldY - this->scroll, actualWidth,
+                       this->Scale(node.type == NodeType::Select ? 180 : 28), TRUE);
         height += this->Scale(32);
     }
     const int errorHeight = this->TextHeight(control.error, actualWidth);
@@ -481,7 +576,7 @@ bool WindowRenderer::Impl::CreateControls()
         // 返回：当前节点及其子树全部创建成功时为 true；任一 HWND 创建失败时为 false，控件由 parent 管理。
         [this, instance, &controlId, &create](const Node& node, HWND parent)
     {
-        if (node.type == NodeType::Column)
+        if (node.type == NodeType::Column || node.type == NodeType::Row)
         {
             for (const Node& child : node.children)
                 if (!create(child, parent))
@@ -489,18 +584,28 @@ bool WindowRenderer::Impl::CreateControls()
             return true;
         }
         Control& control = this->controls.at(node.id);
-        control.text = this->text(node.textKey);
+        control.text = node.textKey.empty() ? std::wstring{} : this->text(node.textKey);
         const HMENU id = reinterpret_cast<HMENU>(static_cast<INT_PTR>(controlId++));
-        if (node.type == NodeType::Select)
+        if (node.type == NodeType::Select || node.type == NodeType::KeyChord)
         {
-            control.label = CreateWindowExW(0, L"STATIC", control.text.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0,
-                                            0, 1, 1, parent, nullptr, instance, nullptr);
-            control.window =
-                CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                0, 0, 100, 180, parent, id, instance, nullptr);
+            if (!node.textKey.empty())
+                control.label = CreateWindowExW(0, L"STATIC", control.text.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                                0, 0, 1, 1, parent, nullptr, instance, nullptr);
+            if (node.type == NodeType::Select)
+                control.window = CreateWindowExW(0, L"COMBOBOX", L"",
+                                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL, 0,
+                                                 0, 100, 180, parent, id, instance, nullptr);
+            else
+            {
+                control.window = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                                 0, 0, 100, 28, parent, id, instance, nullptr);
+                if (control.window == nullptr ||
+                    !SetWindowSubclass(control.window, ChordProc, 1, reinterpret_cast<DWORD_PTR>(this)))
+                    return false;
+            }
             control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
                                                   parent, nullptr, instance, nullptr);
-            if (!control.label || !control.errorWindow)
+            if ((!node.textKey.empty() && !control.label) || !control.errorWindow)
                 return false;
         }
         else if (node.type == NodeType::Checkbox)
@@ -536,7 +641,8 @@ bool WindowRenderer::Impl::CreateControls()
     this->RefreshFont();
     for (auto& [id, control] : this->controls)
     {
-        if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox)
+        if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox ||
+            control.node->type == NodeType::KeyChord)
         {
             const RendererResult result = this->RefreshControl(control);
             if (!result)
@@ -554,6 +660,26 @@ bool WindowRenderer::Impl::CreateControls()
 // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
+    if (control.node->type == NodeType::KeyChord)
+    {
+        try
+        {
+            if (this->recording == &control)
+                return {};
+            const RendererKeyChordResult value = control.readChord();
+            if (value.success)
+                control.chord = value.value;
+            SetWindowTextW(control.window, control.formatChord(control.chord).c_str());
+            control.error = value.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            return {};
+        }
+        catch (...)
+        {
+            this->Report({"callback_failed", {}, control.node->id});
+            return {"callback_failed", {}, control.node->id};
+        }
+    }
     if (control.node->type == NodeType::Checkbox)
     {
         try
@@ -709,6 +835,210 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
     }
 }
 
+// 开始当前控件的组合键预览并通知宿主暂停外部触发。
+// 入参：control 为具有焦点的组合键控件。
+// 返回：无返回值；忙、禁用或重复开始时忽略。
+void WindowRenderer::Impl::BeginRecording(Control& control)
+{
+    if (this->busy || !control.enabled || this->recording == &control)
+        return;
+    this->EndRecording(true);
+    this->recording = &control;
+    this->pendingChord = {};
+    this->initialChord = control.chord;
+    this->recordingChanged = false;
+    this->recordedKeys.fill(false);
+    this->recordingModifiers = 0;
+    if (GetKeyState(VK_CONTROL) < 0)
+        this->recordingModifiers |= MOD_CONTROL;
+    if (GetKeyState(VK_MENU) < 0)
+        this->recordingModifiers |= MOD_ALT;
+    if (GetKeyState(VK_SHIFT) < 0)
+        this->recordingModifiers |= MOD_SHIFT;
+    if (GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0)
+        this->recordingModifiers |= MOD_WIN;
+    this->recordingStarted = GetTickCount();
+    if (this->recordingHandler)
+        this->recordingHandler(true);
+    SendMessageW(control.window, BM_SETSTATE, TRUE, 0);
+}
+
+// 结束录入并可靠恢复宿主触发状态。
+// 入参：accept 为 true 时保留即时草稿，为 false 时恢复录入开始时的宿主原始值。
+// 返回：无返回值；回调错误收敛并报告，状态始终退出录入。
+void WindowRenderer::Impl::EndRecording(bool accept) noexcept
+{
+    Control* control = this->recording;
+    if (control == nullptr)
+        return;
+    const RendererKeyChord initial = this->initialChord;
+    const bool changed = this->recordingChanged;
+    this->recording = nullptr;
+    this->recordingChanged = false;
+    this->pendingChord = {};
+    this->recordingStarted = GetTickCount();
+    try
+    {
+        if (this->recordingHandler)
+            this->recordingHandler(false);
+    }
+    catch (...)
+    {
+        this->Report({"callback_failed", {}, control->node->id});
+    }
+    try
+    {
+        if (!accept && changed)
+        {
+            const RendererChangeResult result =
+                control->rollbackChord ? control->rollbackChord() : control->changeChord(initial);
+            control->error = result.error;
+            if (result.accepted)
+            {
+                control->chord = initial;
+                if (control->rollbackChord)
+                    (void)this->RefreshControl(*control);
+            }
+            if (!result.accepted)
+                this->Report({"rollback_rejected", {}, control->node->id});
+        }
+        SetWindowTextW(control->window, control->formatChord(control->chord).c_str());
+        SetWindowTextW(control->errorWindow, control->error.c_str());
+        SendMessageW(control->window, BM_SETSTATE, FALSE, 0);
+        this->Arrange();
+    }
+    catch (...)
+    {
+        this->Report({"callback_failed", {}, control->node->id});
+        this->RefreshControl(*control);
+        SendMessageW(control->window, BM_SETSTATE, FALSE, 0);
+    }
+}
+
+// 更新候选显示并把完整且变化的组合交宿主校验，合法值立即写入草稿。
+// 入参：chord 为完整或仅含修饰键的预览值。
+// 返回：无返回值；格式化异常交给调用边界处理。
+void WindowRenderer::Impl::PreviewChord(RendererKeyChord chord)
+{
+    if (this->recording == nullptr)
+        return;
+    this->pendingChord = chord;
+    Control& control = *this->recording;
+    if (chord.key != 0 && (chord.key != control.chord.key || chord.modifiers != control.chord.modifiers))
+    {
+        const RendererChangeResult result = control.changeChord(chord);
+        if (this->recording != &control)
+            return;
+        if (result.accepted)
+        {
+            control.chord = chord;
+            this->recordingChanged = true;
+        }
+        control.error = result.error;
+        SetWindowTextW(control.errorWindow, control.error.c_str());
+        this->Arrange();
+    }
+    if (this->recording == &control)
+        SetWindowTextW(control.window, control.formatChord(chord).c_str());
+}
+
+// 在对话框导航和原生控件之前处理录入按键。
+// 入参：message、key、data、time 为原始键盘消息及时间。
+// 返回：录入或其尾部释放消息已消费时为 true；Tab 结束录入后返回 false 继续导航。
+bool WindowRenderer::Impl::RecordMessage(UINT message, WPARAM key, LPARAM data, DWORD time)
+{
+    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+    const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
+    if (message == WM_CHAR || message == WM_SYSCHAR || message == WM_DEADCHAR || message == WM_SYSDEADCHAR)
+        return this->recording != nullptr;
+    if ((!down && !up) || key >= this->recordedKeys.size())
+        return false;
+    if (this->recording == nullptr)
+    {
+        const bool consumed = this->recordedKeys[key];
+        if (up)
+            this->recordedKeys[key] = false;
+        return consumed;
+    }
+    if (static_cast<LONG>(time - this->recordingStarted) < 0)
+        return true;
+    if (down && ((data & (static_cast<LPARAM>(1) << 30)) != 0 || this->recordedKeys[key]))
+        return true;
+    this->recordedKeys[key] = down;
+    UINT modifier = 0;
+    if (key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL)
+        modifier = MOD_CONTROL;
+    else if (key == VK_MENU || key == VK_LMENU || key == VK_RMENU)
+        modifier = MOD_ALT;
+    else if (key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT)
+        modifier = MOD_SHIFT;
+    else if (key == VK_LWIN || key == VK_RWIN)
+        modifier = MOD_WIN;
+    if (modifier != 0)
+    {
+        if (down)
+            this->recordingModifiers |= modifier;
+        else
+            this->recordingModifiers &= ~modifier;
+        if (this->pendingChord.key == 0)
+            this->PreviewChord({this->recordingModifiers, 0});
+        return true;
+    }
+    if (up)
+        return true;
+    if (key == VK_ESCAPE || key == VK_RETURN || key == VK_TAB)
+    {
+        this->EndRecording(key != VK_ESCAPE);
+        if (key == VK_TAB)
+        {
+            this->recordedKeys[key] = false;
+            return false;
+        }
+        return true;
+    }
+    this->PreviewChord({this->recordingModifiers, static_cast<UINT>(key)});
+    return true;
+}
+
+// 为组合键按钮补充焦点生命周期、系统键抑制和直接消息支持。
+// 入参：标准控件子类过程参数；data 为借用 Impl 指针。
+// 返回：已处理消息返回 0，其余交给原始控件过程。
+LRESULT CALLBACK WindowRenderer::Impl::ChordProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+                                                 UINT_PTR subclassId, DWORD_PTR data)
+{
+    Impl* impl = reinterpret_cast<Impl*>(data);
+    try
+    {
+        if (message == WM_SETFOCUS || message == WM_LBUTTONDOWN)
+        {
+            for (auto& [id, control] : impl->controls)
+                if (control.window == window)
+                {
+                    impl->BeginRecording(control);
+                    break;
+                }
+        }
+        if (message == WM_KILLFOCUS)
+            impl->EndRecording(GetForegroundWindow() == impl->window);
+        if (message == WM_NCDESTROY)
+        {
+            impl->EndRecording(false);
+            RemoveWindowSubclass(window, ChordProc, subclassId);
+        }
+        if (message == WM_GETDLGCODE && impl->recording != nullptr)
+            return DLGC_WANTCHARS | DLGC_WANTMESSAGE;
+        if (impl->RecordMessage(message, wParam, lParam, static_cast<DWORD>(GetMessageTime())))
+            return 0;
+    }
+    catch (...)
+    {
+        impl->EndRecording(false);
+        impl->Report({"callback_failed", {}, {}});
+        return 0;
+    }
+    return DefSubclassProc(window, message, wParam, lParam);
+}
+
 // 恢复 HWND 关联的渲染器并在异常边界内处理主窗口消息。
 // 入参：window：目标窗口；message：Win32 消息编号；wParam、lParam：该消息的附加参数，创建时 lParam 提供借用 Impl 指针。
 // 返回：返回实例或默认窗口过程的 LRESULT；处理异常时 WM_CREATE 返回 -1 取消创建，其余返回 0 并报告错误。
@@ -729,7 +1059,10 @@ LRESULT CALLBACK WindowRenderer::Impl::WindowProc(HWND window, UINT message, WPA
     {
         OutputDebugStringW(L"WindowRenderer: window callback failed.\n");
         if (impl != nullptr && message != WM_CREATE)
+        {
+            impl->EndRecording(false);
             impl->Report({"callback_failed", {}, {}});
+        }
         return message == WM_CREATE ? -1 : 0;
     }
 }
@@ -799,7 +1132,10 @@ LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARA
     {
         OutputDebugStringW(L"WindowRenderer: page callback failed.\n");
         if (impl != nullptr)
+        {
+            impl->EndRecording(false);
             impl->Report({"callback_failed", {}, {}});
+        }
         if (message == WM_MOUSEWHEEL)
             return 0;
     }
@@ -819,10 +1155,12 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
         this->Command(wParam, lParam);
         return 0;
     case WM_CLOSE:
+        this->EndRecording(false);
         if (!this->busy && this->close)
             this->close();
         return 0;
     case CLOSE_MESSAGE:
+        this->EndRecording(false);
         if (!this->busy)
         {
             if (this->modal)
@@ -843,6 +1181,7 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
             const int selected = TabCtrl_GetCurSel(this->tabs);
             if (selected >= 0 && static_cast<std::size_t>(selected) < this->layout.pages.size())
             {
+                this->EndRecording(true);
                 this->pageIndex = static_cast<std::size_t>(selected);
                 this->scroll = 0;
                 this->Arrange();
@@ -872,7 +1211,12 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
         this->Arrange();
         return 0;
     }
+    case WM_ACTIVATE:
+        if (LOWORD(wParam) == WA_INACTIVE)
+            this->EndRecording(false);
+        break;
     case WM_NCDESTROY:
+        this->EndRecording(false);
         this->window = nullptr;
         this->tabs = nullptr;
         this->viewport = nullptr;
@@ -897,6 +1241,7 @@ WindowRenderer::WindowRenderer() : impl_(std::make_unique<Impl>()) {}
 // 返回：析构函数无返回值；宿主借用的 HWND 在销毁后失效。
 WindowRenderer::~WindowRenderer()
 {
+    this->impl_->EndRecording(false);
     if (this->impl_->window != nullptr)
         DestroyWindow(this->impl_->window);
     if (this->impl_->font != nullptr && this->impl_->font != GetStockObject(DEFAULT_GUI_FONT))
@@ -984,6 +1329,79 @@ RendererResult WindowRenderer::BindBool(std::string_view id, std::function<Rende
     control->readBool = std::move(read);
     control->changeBool = std::move(change);
     return {};
+}
+
+// 把组合键控件连接到宿主数值草稿、校验和显示格式化操作。
+// 入参：id 为控件 ID；read 读取草稿；change 即时接受组合；format 提供显示；rollback 可选恢复原始草稿。
+// 返回：绑定成功返回空错误码；类型错误、空回调或重复绑定被拒绝。
+RendererResult WindowRenderer::BindKeyChord(std::string_view id, std::function<RendererKeyChordResult()> read,
+                                            std::function<RendererChangeResult(RendererKeyChord)> change,
+                                            std::function<std::wstring(RendererKeyChord)> format,
+                                            std::function<RendererChangeResult()> rollback)
+{
+    Impl::Control* control{};
+    const RendererResult found = this->impl_->Find(id, NodeType::KeyChord, control);
+    if (!found)
+        return found;
+    if (!read || !change || !format)
+        return {"empty_callback", {}, std::string(id)};
+    if (control->readChord || control->changeChord || control->formatChord)
+        return {"duplicate_binding", {}, std::string(id)};
+    control->readChord = std::move(read);
+    control->changeChord = std::move(change);
+    control->formatChord = std::move(format);
+    control->rollbackChord = std::move(rollback);
+    return {};
+}
+
+// 注册组合键录入生命周期通知，供宿主同步暂停及恢复外部动作。
+// 入参：callback 接收是否正在录入，回调移入渲染器。
+// 返回：成功返回空错误码；活动窗口、空回调或重复绑定被拒绝。
+RendererResult WindowRenderer::SetKeyRecordingHandler(std::function<void(bool)> callback)
+{
+    const RendererResult checked = this->impl_->Check(true);
+    if (!checked)
+        return checked;
+    if (!callback)
+        return {"empty_callback", {}, {}};
+    if (this->impl_->recordingHandler)
+        return {"duplicate_binding", {}, {}};
+    this->impl_->recordingHandler = std::move(callback);
+    return {};
+}
+
+// 查询当前是否存在活动组合键录入。
+// 入参：无。
+// 返回：所属 UI 线程存在录入控件时为 true，否则为 false。
+bool WindowRenderer::IsKeyRecording() const
+{
+    return this->impl_->Check() && this->impl_->recording != nullptr;
+}
+
+// 接收宿主已匹配活动注册的组合键消息，作为普通按键的补充来源。
+// 入参：modifiers 和 key 为数值组合；time 为原始消息时间。
+// 返回：当前录入控件具有前台焦点且时间有效时消费消息，否则返回 false。
+bool WindowRenderer::ProcessRecordedHotkey(UINT modifiers, UINT key, DWORD time)
+{
+    if (!this->impl_->Check() || this->impl_->recording == nullptr || key == 0 || key >= 256 ||
+        GetForegroundWindow() != this->impl_->window || GetFocus() != this->impl_->recording->window ||
+        static_cast<LONG>(time - this->impl_->recordingStarted) < 0 || static_cast<LONG>(GetTickCount() - time) < 0)
+        return false;
+    try
+    {
+        if (!this->impl_->recordedKeys[key])
+        {
+            this->impl_->recordedKeys[key] = true;
+            this->impl_->PreviewChord({modifiers, key});
+        }
+        return true;
+    }
+    catch (...)
+    {
+        this->impl_->EndRecording(false);
+        this->impl_->Report({"callback_failed", {}, {}});
+        return true;
+    }
 }
 
 // 为下拉框注册动态选项查询。
@@ -1263,7 +1681,8 @@ RendererResult WindowRenderer::RefreshValues()
     {
         for (auto& [id, control] : this->impl_->controls)
         {
-            if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox)
+            if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox &&
+                control.node->type != NodeType::KeyChord)
                 continue;
             const RendererResult result = this->impl_->RefreshControl(control);
             if (!result)
@@ -1305,8 +1724,14 @@ RendererResult WindowRenderer::RefreshTexts()
         }
         for (auto& [id, control] : this->impl_->controls)
         {
-            control.text = this->impl_->text(control.node->textKey);
-            SetWindowTextW(control.label != nullptr ? control.label : control.window, control.text.c_str());
+            control.text = control.node->textKey.empty() ? std::wstring{} : this->impl_->text(control.node->textKey);
+            if (!control.node->textKey.empty())
+                SetWindowTextW(control.label != nullptr ? control.label : control.window, control.text.c_str());
+            if (control.node->type == NodeType::KeyChord)
+                SetWindowTextW(
+                    control.window,
+                    control.formatChord(this->impl_->recording == &control ? this->impl_->pendingChord : control.chord)
+                        .c_str());
         }
         this->impl_->Arrange();
         return {};
@@ -1330,6 +1755,8 @@ RendererResult WindowRenderer::SetEnabled(std::string_view id, bool enabled)
     if (found == this->impl_->controls.end())
         return {"unknown_id", {}, std::string(id)};
     found->second.enabled = enabled;
+    if (!enabled && this->impl_->recording == &found->second)
+        this->impl_->EndRecording(false);
     if (found->second.window != nullptr)
         EnableWindow(found->second.window, enabled && !this->impl_->busy);
     return {};
@@ -1346,6 +1773,8 @@ RendererResult WindowRenderer::SetBusy(bool busy)
         return checked;
     if (busy && !this->impl_->busy)
         this->impl_->savedFocus = GetFocus();
+    if (busy)
+        this->impl_->EndRecording(true);
     this->impl_->busy = busy;
     for (auto& [id, control] : this->impl_->controls)
         if (control.window != nullptr)
@@ -1390,7 +1819,8 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
     const auto found = this->impl_->controls.find(id);
     if (found == this->impl_->controls.end())
         return {"unknown_id", {}, std::string(id)};
-    if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox)
+    if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox &&
+        found->second.node->type != NodeType::KeyChord)
         return {"wrong_control_type", {}, std::string(id)};
     found->second.error = std::move(text);
     if (found->second.errorWindow != nullptr)
@@ -1439,6 +1869,28 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
         return false;
     if (message.hwnd != this->impl_->window && !IsChild(this->impl_->window, message.hwnd))
         return false;
+    try
+    {
+        if (this->impl_->RecordMessage(message.message, message.wParam, message.lParam, message.time))
+            return true;
+        if (this->impl_->recording == nullptr && message.message == WM_KEYDOWN &&
+            (message.wParam == VK_RETURN || message.wParam == VK_SPACE))
+        {
+            for (auto& [id, control] : this->impl_->controls)
+                if (control.node->type == NodeType::KeyChord && control.window == GetFocus())
+                {
+                    this->impl_->BeginRecording(control);
+                    this->impl_->recordedKeys[message.wParam] = true;
+                    return true;
+                }
+        }
+    }
+    catch (...)
+    {
+        this->impl_->EndRecording(false);
+        this->impl_->Report({"callback_failed", {}, {}});
+        return true;
+    }
     if (message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE))
     {
         for (const auto& [id, control] : this->impl_->controls)

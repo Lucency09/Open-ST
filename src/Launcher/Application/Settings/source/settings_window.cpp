@@ -28,7 +28,9 @@ class SettingsWindow::Impl final
             return true;
         }
         if (instance == nullptr || !callbacks.text || !callbacks.currentLanguage || !callbacks.availableLanguages ||
-            !callbacks.languageApplied || !callbacks.startupApplied)
+            !callbacks.languageApplied || !callbacks.startupApplied || !callbacks.hotkeyDecode ||
+            !callbacks.hotkeyEncode || !callbacks.hotkeyFormat || !callbacks.hotkeyPrepare || !callbacks.hotkeyFinish ||
+            !callbacks.hotkeyStatus || !callbacks.hotkeyRecording)
         {
             return false;
         }
@@ -41,7 +43,7 @@ class SettingsWindow::Impl final
         }
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
-        this->ready_ = this->editSession_.Open({"ui.language"}, {"startup.enabled"});
+        this->ready_ = this->editSession_.Open({"ui.language", "capture.hotkey"}, {"startup.enabled"});
         this->Require(this->renderer_->SetErrorHandler(
             // 将渲染器错误转为本地化字段或状态提示，未加载草稿时忽略选项缺失。
             // 入参：result 为渲染器报告的结构化错误，包含错误码及目标控件标识。
@@ -67,6 +69,64 @@ class SettingsWindow::Impl final
         // 入参：key 为宿主提供的动态界面文本键。
         // 返回：宿主当前语言的界面文本；启动项状态键由宿主状态回调提供。
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
+        this->Require(this->renderer_->BindKeyChord(
+            "captureHotkey",
+            // 从草稿解析组合，不将非法配置改写为默认值。
+            // 入参：无。
+            // 返回：合法数值组合或本地化字段错误。
+            [this]()
+            {
+                const std::optional<std::string> value = this->ReadHotkey();
+                const std::optional<SettingsHotkeyChord> chord =
+                    value ? this->callbacks_.hotkeyDecode(*value) : std::nullopt;
+                this->hotkeyErrorKey_ = chord ? "" : "settings.hotkey.invalid";
+                return chord ? RendererKeyChordResult{true, {chord->modifiers, chord->key}, {}}
+                             : RendererKeyChordResult{false, {}, this->Text("settings.hotkey.invalid")};
+            },
+            // 将通用录入结果转换为业务 token，再更新草稿。
+            // 入参：chord 为输入控件的数值组合。
+            // 返回：合法且可编辑时接受，否则返回字段错误。
+            [this](RendererKeyChord chord)
+            {
+                const std::optional<std::string> value = this->callbacks_.hotkeyEncode({chord.modifiers, chord.key});
+                if (!value || !this->ChangeHotkey(*value))
+                {
+                    this->hotkeyErrorKey_ = "settings.hotkey.invalid";
+                    return RendererChangeResult{false, this->Text(this->hotkeyErrorKey_)};
+                }
+                return RendererChangeResult{};
+            },
+            // 按宿主提供的显示规则绘制录入预览。
+            // 入参：chord 为完整或未完成的数值组合。
+            // 返回：当前语言的组合显示文本。
+            [this](RendererKeyChord chord) { return this->callbacks_.hotkeyFormat({chord.modifiers, chord.key}); },
+            // 撤销本次录入时恢复原始草稿，包括原先尚未修复的非法 token。
+            // 入参：无。
+            // 返回：恢复成功的接受结果；失败交由渲染器异常边界报告。
+            [this]()
+            {
+                if (this->recordingOriginal_ &&
+                    !this->editSession_.ChangeString("capture.hotkey", *this->recordingOriginal_))
+                    throw std::runtime_error("Cannot restore hotkey draft");
+                const std::optional<std::string> value = this->ReadHotkey();
+                this->hotkeyErrorKey_ = value && this->callbacks_.hotkeyDecode(*value) ? "" : "settings.hotkey.invalid";
+                if (this->renderer_)
+                {
+                    this->UpdateButtons();
+                    this->RefreshTexts();
+                }
+                return RendererChangeResult{};
+            }));
+        // 通知宿主录入生命周期以暂停全局截图触发。
+        // 入参：recording 为当前是否录入。
+        // 返回：无。
+        this->Require(this->renderer_->SetKeyRecordingHandler(
+            [this](bool recording)
+            {
+                if (recording)
+                    this->recordingOriginal_ = this->ReadHotkey();
+                this->callbacks_.hotkeyRecording(recording);
+            }));
         this->Require(this->renderer_->BindString(
             "languageSelector",
             // 从编辑草稿读取当前语言，缺失时向下拉框提供空选项值。
@@ -205,6 +265,9 @@ class SettingsWindow::Impl final
         this->pendingStartup_.reset();
         this->statusKey_.clear();
         this->languageErrorKey_.clear();
+        this->hotkeyErrorKey_.clear();
+        this->hotkeyCleanupPending_ = false;
+        this->recordingOriginal_.reset();
         this->ready_ = false;
         this->busy_ = false;
     }
@@ -262,6 +325,8 @@ class SettingsWindow::Impl final
             this->Require(this->renderer_->SetStatus(this->statusKey_.empty() ? L"" : this->Text(this->statusKey_)));
             this->Require(this->renderer_->SetFieldError(
                 "languageSelector", this->languageErrorKey_.empty() ? L"" : this->Text(this->languageErrorKey_)));
+            this->Require(this->renderer_->SetFieldError(
+                "captureHotkey", this->hotkeyErrorKey_.empty() ? L"" : this->Text(this->hotkeyErrorKey_)));
         }
         catch (...)
         {
@@ -269,7 +334,76 @@ class SettingsWindow::Impl final
         }
     }
 
+    // 校验规范组合并更新草稿，不注册或写盘。
+    // 入参：value 为宿主生成的组合 token。
+    // 返回：验证和草稿更新成功时为 true。
+    bool ChangeHotkey(std::string_view value)
+    {
+        if (!this->ready_ || this->busy_ || !this->callbacks_.hotkeyDecode(value) ||
+            !this->editSession_.ChangeString("capture.hotkey", value))
+            return false;
+        this->hotkeyErrorKey_.clear();
+        this->Require(this->renderer_->SetFieldError("captureHotkey", {}));
+        this->SetStatus({});
+        this->UpdateButtons();
+        return true;
+    }
+
+    // 返回快捷键草稿副本，供状态与测试检查。
+    // 入参：无。
+    // 返回：可用的快捷键草稿，否则为空。
+    std::optional<std::string> ReadHotkey() const
+    {
+        return this->editSession_.ReadString("capture.hotkey");
+    }
+
+    // 转发宿主匹配过身份和时间的全局组合通知。
+    // 入参：modifiers、key 为组合；time 为原消息时间戳。
+    // 返回：录入控件接受通知时为 true。
+    bool ProcessRecordedHotkey(UINT modifiers, UINT key, DWORD time) noexcept
+    {
+        try
+        {
+            return this->renderer_ && this->renderer_->ProcessRecordedHotkey(modifiers, key, time);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
   private:
+    // 判断当前草稿是否仍需注册或清理，宿主未提供查询时仅消费本地清理状态。
+    // 入参：无。
+    // 返回：点击应用还需处理快捷键副作用时为 true。
+    bool HotkeyNeedsApply() const
+    {
+        const std::optional<std::string> value = this->ReadHotkey();
+        return this->hotkeyCleanupPending_ ||
+               (value && this->callbacks_.hotkeyNeedsApply && this->callbacks_.hotkeyNeedsApply(*value));
+    }
+    // 验证提交目标并保存可重新本地化的字段错误。
+    // 入参：value 为待提交的快捷键 token。
+    // 返回：组合有效时为 true。
+    bool ValidateHotkey(std::string_view value)
+    {
+        const bool valid = this->callbacks_.hotkeyDecode(value).has_value();
+        this->hotkeyErrorKey_ = valid ? "" : "settings.hotkey.invalid";
+        this->Require(this->renderer_->SetFieldError("captureHotkey", valid ? L"" : this->Text(this->hotkeyErrorKey_)));
+        if (!valid)
+            this->SetStatus("settings.hotkey.invalid");
+        return valid;
+    }
+
+    // 在注册事务完成后同步托盘与设置文字。
+    // 入参：无。
+    // 返回：无；宿主异常由统一忙状态边界处理。
+    void RefreshHotkeyUi()
+    {
+        if (this->callbacks_.hotkeyRefresh)
+            this->callbacks_.hotkeyRefresh();
+        this->RefreshTexts();
+    }
     // 检查渲染器操作是否成功，将布局或控件错误交给统一异常处理流程。
     // 入参：result 为需要检查的渲染器操作结果。
     // 返回：无返回值；结果失败时记录结构化定位并抛出异常，由外层窗口边界处理。
@@ -289,6 +423,8 @@ class SettingsWindow::Impl final
     {
         if (key == "settings.startup.status" && this->callbacks_.startupStatus)
             return this->callbacks_.startupStatus();
+        if (key == "settings.hotkey.status")
+            return this->callbacks_.hotkeyStatus();
         return this->callbacks_.text(key);
     }
 
@@ -309,10 +445,11 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled("languageSelector", this->ready_));
         if (this->callbacks_.startupApplied)
             this->Require(this->renderer_->SetEnabled("startupEnabled", this->ready_));
-        this->Require(this->renderer_->SetEnabled("applyButton", this->ready_ && (this->editSession_.IsDirty() ||
-                                                                                  this->pendingLanguage_.has_value() ||
-                                                                                  this->pendingStartup_.has_value())));
+        this->Require(this->renderer_->SetEnabled(
+            "applyButton", this->ready_ && (this->editSession_.IsDirty() || this->pendingLanguage_.has_value() ||
+                                            this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
         this->Require(this->renderer_->SetEnabled("startupRepairButton", this->ready_));
+        this->Require(this->renderer_->SetEnabled("captureHotkey", this->ready_));
         this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("restoreDefaultsButton", this->ready_));
     }
@@ -383,7 +520,8 @@ class SettingsWindow::Impl final
         {
             return;
         }
-        if (!this->editSession_.IsDirty() && !this->pendingLanguage_.has_value() && !this->pendingStartup_.has_value())
+        if (!this->editSession_.IsDirty() && !this->pendingLanguage_.has_value() &&
+            !this->pendingStartup_.has_value() && !this->HotkeyNeedsApply())
         {
             if (closeWhenDone)
             {
@@ -404,16 +542,76 @@ class SettingsWindow::Impl final
                 }
                 const bool languageChanged = this->editSession_.IsDirty("ui.language");
                 const bool startupChanged = this->editSession_.IsDirty("startup.enabled");
+                const bool hotkeyChanged = this->editSession_.IsDirty("capture.hotkey");
                 const std::optional<bool> startup = this->editSession_.ReadBool("startup.enabled");
-                if (this->editSession_.IsDirty())
+                const std::optional<std::string> hotkey = this->ReadHotkey();
+                if (!startup || !hotkey || !this->ValidateHotkey(*hotkey))
+                    return;
+                const bool dirty = this->editSession_.IsDirty();
+                const bool needsHotkey = hotkeyChanged || this->HotkeyNeedsApply();
+                if (dirty || needsHotkey)
                 {
                     std::optional<std::string> pendingLanguage = languageChanged ? language : this->pendingLanguage_;
                     std::optional<bool> pendingStartup = startupChanged ? startup : this->pendingStartup_;
-                    const SettingsCommitResult committed = this->editSession_.Commit();
+                    struct CandidateGuard final
+                    {
+                        SettingsWindowCallbacks& callbacks;
+                        bool& cleanupPending;
+                        bool prepared{};
+                        // 在提交失败或异常时撤销候选，保留旧活动注册。
+                        // 入参：无。
+                        // 返回：无；宿主契约要求 finish 不抛出，防御性捕获仍保留清理故障。
+                        ~CandidateGuard() noexcept
+                        {
+                            if (!this->prepared)
+                                return;
+                            try
+                            {
+                                this->cleanupPending = !this->callbacks.hotkeyFinish(false);
+                            }
+                            catch (...)
+                            {
+                                this->cleanupPending = true;
+                                OPEN_ST_LOG_ERROR("Hotkey candidate rollback failed.");
+                            }
+                        }
+                    } candidate{this->callbacks_, this->hotkeyCleanupPending_};
+                    if (needsHotkey)
+                    {
+                        if (!hotkeyChanged)
+                        {
+                            const SettingsCommitResult verified =
+                                this->editSession_.VerifyCurrentString("capture.hotkey", *hotkey);
+                            if (verified != SettingsCommitResult::Unchanged)
+                            {
+                                this->ReportCommitFailure(verified);
+                                return;
+                            }
+                        }
+                        if (!this->callbacks_.hotkeyPrepare(*hotkey))
+                        {
+                            this->SetStatus("settings.hotkey.registration_failed");
+                            return;
+                        }
+                        candidate.prepared = true;
+                    }
+                    const SettingsCommitResult committed =
+                        dirty ? this->editSession_.Commit() : SettingsCommitResult::Unchanged;
                     if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
                     {
+                        if (candidate.prepared)
+                        {
+                            candidate.prepared = false;
+                            this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(false);
+                        }
+                        this->RefreshHotkeyUi();
                         this->ReportCommitFailure(committed);
                         return;
+                    }
+                    if (candidate.prepared)
+                    {
+                        candidate.prepared = false;
+                        this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(true);
                     }
                     this->pendingLanguage_.swap(pendingLanguage);
                     this->pendingStartup_.swap(pendingStartup);
@@ -467,15 +665,17 @@ class SettingsWindow::Impl final
                     if (startupApplied)
                         this->pendingStartup_.reset();
                 }
-                this->Require(this->renderer_->RefreshTexts());
+                this->RefreshHotkeyUi();
                 if (verificationFailure != SettingsCommitResult::Unchanged)
                     this->ReportCommitFailure(verificationFailure);
                 else
-                    this->SetStatus(!languageApplied && !startupApplied ? "settings.effects_failed"
-                                    : !languageApplied                  ? "settings.language.apply_failed"
-                                    : !startupApplied                   ? "settings.startup.apply_failed"
-                                                                        : "settings.saved");
-                this->closeAfterBusy_ = this->closeAfterBusy_ || (languageApplied && startupApplied && closeWhenDone);
+                    this->SetStatus(this->hotkeyCleanupPending_           ? "settings.hotkey.cleanup_pending"
+                                    : !languageApplied && !startupApplied ? "settings.effects_failed"
+                                    : !languageApplied                    ? "settings.language.apply_failed"
+                                    : !startupApplied                     ? "settings.startup.apply_failed"
+                                                                          : "settings.saved");
+                this->closeAfterBusy_ = !this->hotkeyCleanupPending_ &&
+                                        (this->closeAfterBusy_ || (languageApplied && startupApplied && closeWhenDone));
             });
     }
 
@@ -499,8 +699,7 @@ class SettingsWindow::Impl final
     // 返回：无返回值。
     void RestoreDefaults()
     {
-        if (this->busy_ || !this->ready_ ||
-            this->renderer_->GetActivePageId() != this->renderer_->GetControlPageId("languageSelector"))
+        if (this->busy_ || !this->ready_)
         {
             return;
         }
@@ -514,23 +713,44 @@ class SettingsWindow::Impl final
                 {
                     return;
                 }
+                const std::string page = this->renderer_->GetActivePageId();
+                std::vector<std::string> fields;
+                if (page == this->renderer_->GetControlPageId("languageSelector"))
+                    fields.emplace_back("ui.language");
+                if (page == this->renderer_->GetControlPageId("startupEnabled"))
+                    fields.emplace_back("startup.enabled");
+                if (page == this->renderer_->GetControlPageId("captureHotkey"))
+                    fields.emplace_back("capture.hotkey");
                 SettingsEditSession candidate = this->editSession_;
-                if (!candidate.RestoreDefaults({"ui.language", "startup.enabled"}))
+                if (fields.empty() || !candidate.RestoreDefaults(fields))
                 {
                     this->SetStatus("settings.defaults_failed");
                     return;
                 }
-                const std::optional<std::string> language = candidate.ReadString("ui.language");
-                const RendererOptionsResult options = this->QueryLanguages();
-                if (!language.has_value() || !options.success ||
-                    !std::any_of(options.options.begin(), options.options.end(),
-                                 // 检查恢复出的默认语言是否仍在当前资源支持的选项中。
-                                 // 入参：option 为当前检查的语言选项，其 value 为稳定语言代码。
-                                 // 返回：option.value 与捕获的目标语言一致为 true，否则为 false。
-                                 [&language](const RendererOption& option) { return option.value == *language; }))
+                if (std::find(fields.begin(), fields.end(), "ui.language") != fields.end())
                 {
-                    this->SetStatus("settings.defaults_failed");
-                    return;
+                    const std::optional<std::string> language = candidate.ReadString("ui.language");
+                    const RendererOptionsResult options = this->QueryLanguages();
+                    if (!language.has_value() || !options.success ||
+                        !std::any_of(options.options.begin(), options.options.end(),
+                                     // 检查恢复出的默认语言是否仍在当前资源支持的选项中。
+                                     // 入参：option 为当前检查的语言选项，其 value 为稳定语言代码。
+                                     // 返回：option.value 与捕获的目标语言一致为 true，否则为 false。
+                                     [&language](const RendererOption& option) { return option.value == *language; }))
+                    {
+                        this->SetStatus("settings.defaults_failed");
+                        return;
+                    }
+                }
+                if (std::find(fields.begin(), fields.end(), "capture.hotkey") != fields.end())
+                {
+                    const std::optional<std::string> value = candidate.ReadString("capture.hotkey");
+                    if (!value || !this->callbacks_.hotkeyDecode(*value))
+                    {
+                        this->SetStatus("settings.defaults_failed");
+                        return;
+                    }
+                    this->hotkeyErrorKey_.clear();
                 }
                 this->editSession_ = std::move(candidate);
                 this->Require(this->renderer_->RefreshValues());
@@ -557,7 +777,7 @@ class SettingsWindow::Impl final
                 {
                     return;
                 }
-                this->ready_ = this->editSession_.Open({"ui.language"}, {"startup.enabled"});
+                this->ready_ = this->editSession_.Open({"ui.language", "capture.hotkey"}, {"startup.enabled"});
                 if (!this->ready_)
                 {
                     this->SetStatus("settings.edit_load_failed");
@@ -573,9 +793,12 @@ class SettingsWindow::Impl final
                 this->Require(this->renderer_->RefreshValues());
                 this->Require(this->renderer_->RefreshTexts());
                 this->languageErrorKey_.clear();
+                this->hotkeyErrorKey_.clear();
                 this->Require(this->renderer_->SetFieldError("languageSelector", {}));
+                this->Require(this->renderer_->SetFieldError("captureHotkey", {}));
                 this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
                                 : this->pendingStartup_            ? "settings.startup.apply_failed"
+                                : this->hotkeyCleanupPending_      ? "settings.hotkey.cleanup_pending"
                                                                    : "");
             });
     }
@@ -601,12 +824,15 @@ class SettingsWindow::Impl final
     // 返回：无返回值。
     void RunBusy(const std::function<void()>& operation)
     {
-        this->busy_ = true;
+        bool notified = false;
         this->closeAfterBusy_ = false;
-        this->NotifyBusy(true);
         try
         {
+            // 先结束完整录入，再进入业务忙状态，异常也经下方统一恢复。
             this->Require(this->renderer_->SetBusy(true));
+            this->busy_ = true;
+            this->NotifyBusy(true);
+            notified = true;
             operation();
         }
         catch (...)
@@ -625,7 +851,8 @@ class SettingsWindow::Impl final
             }
         }
         this->busy_ = false;
-        this->NotifyBusy(false);
+        if (notified)
+            this->NotifyBusy(false);
         this->Require(this->renderer_->SetBusy(false));
         this->UpdateButtons();
         if (this->closeAfterBusy_)
@@ -650,12 +877,15 @@ class SettingsWindow::Impl final
     std::unique_ptr<WindowRenderer> renderer_;
     std::optional<std::string> pendingLanguage_;
     std::optional<bool> pendingStartup_;
+    std::optional<std::string> recordingOriginal_;
     std::string statusKey_;
     std::string languageErrorKey_;
+    std::string hotkeyErrorKey_;
     std::function<bool()> confirmation_;
     bool ready_{};
     bool busy_{};
     bool closeAfterBusy_{};
+    bool hotkeyCleanupPending_{};
 };
 
 // 创建编排对象，不立即读取布局或创建窗口。
@@ -744,4 +974,29 @@ HWND SettingsWindow::NativeHandle() const noexcept
 {
     return this->impl_->NativeHandle();
 }
+
+// 转交宿主已验证的全局组合到当前录入控件。
+// 入参：modifiers、key 为组合；time 为原始消息时间。
+// 返回：录入控件已接受时为 true。
+bool SettingsWindow::ProcessRecordedHotkey(UINT modifiers, UINT key, DWORD time) noexcept
+{
+    return this->impl_->ProcessRecordedHotkey(modifiers, key, time);
+}
+
+// 通过业务验证入口更新测试草稿，不写文件或操作系统。
+// 入参：window 为被测窗口；value 为快捷键 token。
+// 返回：草稿接受时为 true。
+bool SettingsWindowTestAccess::ChangeHotkey(SettingsWindow& window, std::string_view value)
+{
+    return window.impl_->ChangeHotkey(value);
+}
+
+// 读取测试窗口的快捷键草稿。
+// 入参：window 为被测窗口。
+// 返回：快捷键草稿副本，编辑会话不可用时为空。
+std::optional<std::string> SettingsWindowTestAccess::ReadHotkey(const SettingsWindow& window)
+{
+    return window.impl_->ReadHotkey();
+}
+
 } // namespace open_st

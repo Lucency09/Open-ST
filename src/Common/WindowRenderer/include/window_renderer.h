@@ -42,6 +42,17 @@ struct RendererBoolResult
     bool value = false;
     std::wstring error;
 };
+struct RendererKeyChord
+{
+    UINT modifiers = 0;
+    UINT key = 0;
+};
+struct RendererKeyChordResult
+{
+    bool success = true;
+    RendererKeyChord value;
+    std::wstring error;
+};
 struct RendererOption
 {
     std::string value;
@@ -96,6 +107,25 @@ class WindowRenderer final
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；类型不符、空回调或重复绑定被拒绝。
     RendererResult BindBool(std::string_view id, std::function<RendererBoolResult()> read,
                             std::function<RendererChangeResult(bool)> change);
+    // 把组合键控件连接到宿主数值草稿、校验和显示格式化操作。
+    // 入参：id 为控件 ID；read 读取草稿；change 即时接受完整组合；format 提供显示；rollback 可选恢复宿主原始草稿。
+    // 返回：绑定成功返回空错误码；类型错误、空回调或重复绑定被拒绝。
+    RendererResult BindKeyChord(std::string_view id, std::function<RendererKeyChordResult()> read,
+                                std::function<RendererChangeResult(RendererKeyChord)> change,
+                                std::function<std::wstring(RendererKeyChord)> format,
+                                std::function<RendererChangeResult()> rollback = {});
+    // 注册组合键录入生命周期通知，供宿主同步暂停及恢复外部动作。
+    // 入参：callback 接收是否正在录入，回调移入渲染器。
+    // 返回：成功返回空错误码；活动窗口、空回调或重复绑定被拒绝。
+    RendererResult SetKeyRecordingHandler(std::function<void(bool)> callback);
+    // 查询当前是否存在活动组合键录入。
+    // 入参：无。
+    // 返回：所属 UI 线程存在录入控件时为 true，否则为 false。
+    bool IsKeyRecording() const;
+    // 接收宿主已匹配活动注册的组合键消息，作为普通按键的补充来源。
+    // 入参：modifiers 和 key 为数值组合；time 为原始消息时间。
+    // 返回：当前录入控件具有前台焦点且时间有效时消费消息，否则返回 false。
+    bool ProcessRecordedHotkey(UINT modifiers, UINT key, DWORD time);
     // 为下拉框注册动态选项查询。
     // 入参：id：布局中的下拉框 ID；query：返回稳定值和显示名称列表的回调，移入渲染器。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；选项值唯一性在实际读取选项时检查。

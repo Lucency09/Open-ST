@@ -44,7 +44,7 @@ class Parser
         {
             Page page;
             page.content = this->ParseNode(document["content"], "/content", 1);
-            if (page.content.type != NodeType::Column)
+            if (page.content.type != NodeType::Column && page.content.type != NodeType::Row)
                 this->Fail("invalid_page_content", "/content", page.content.id);
             layout.pages.push_back(std::move(page));
         }
@@ -62,7 +62,7 @@ class Parser
                 page.id = this->Id(source, path);
                 page.titleKey = this->String(source, "titleKey", path);
                 page.content = this->ParseNode(this->Required(source, "content", path), path + "/content", 1);
-                if (page.content.type != NodeType::Column)
+                if (page.content.type != NodeType::Column && page.content.type != NodeType::Row)
                     this->Fail("invalid_page_content", path + "/content", page.id);
                 layout.pages.push_back(std::move(page));
             }
@@ -170,9 +170,9 @@ class Parser
         const std::string type = this->String(source, "type", path);
         Node node;
         node.id = this->Id(source, path);
-        if (type == "column")
+        if (type == "column" || type == "row")
         {
-            node.type = NodeType::Column;
+            node.type = type == "row" ? NodeType::Row : NodeType::Column;
             this->Keys(source, {"type", "id", "padding", "gap", "width", "children"}, path);
             if (source.contains("padding"))
                 node.padding = this->Integer(source["padding"], path + "/padding", 0);
@@ -185,11 +185,14 @@ class Parser
                 node.children.push_back(
                     this->ParseNode(children[index], path + "/children/" + std::to_string(index), depth + 1));
         }
-        else if (type == "select" || type == "checkbox")
+        else if (type == "select" || type == "checkbox" || type == "keyChord")
         {
-            node.type = type == "select" ? NodeType::Select : NodeType::Checkbox;
+            node.type = type == "select"     ? NodeType::Select
+                        : type == "checkbox" ? NodeType::Checkbox
+                                             : NodeType::KeyChord;
             this->Keys(source, {"type", "id", "labelKey", "width"}, path);
-            node.textKey = this->String(source, "labelKey", path);
+            if (type != "keyChord" || source.contains("labelKey"))
+                node.textKey = this->String(source, "labelKey", path);
         }
         else if (type == "text" || type == "button")
         {

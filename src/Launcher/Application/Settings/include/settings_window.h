@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,12 @@
 
 namespace open_st
 {
+// Settings 自有组合值，由 Application 适配到输入与注册模块。
+struct SettingsHotkeyChord final
+{
+    UINT modifiers{};
+    UINT key{};
+};
 // 由上级 Application 提供本地化查询及保存通知，Settings 不依赖同级本地化模块。
 struct SettingsWindowCallbacks final
 {
@@ -45,6 +52,42 @@ struct SettingsWindowCallbacks final
     // 入参：std::string_view 为已保存的语言代码，只在本次调用期间有效。
     // 返回：运行期语言已生效时为 true，否则为 false。
     std::function<bool(std::string_view)> languageApplied;
+    // 解析并校验业务允许的组合字符串。
+    // 入参：string_view 为配置 token，仅本次调用借用。
+    // 返回：合法组合；无效或不支持时为空。
+    std::function<std::optional<SettingsHotkeyChord>(std::string_view)> hotkeyDecode;
+    // 校验录入并生成规范配置值。
+    // 入参：SettingsHotkeyChord 为录入的数值组合。
+    // 返回：规范字符串；无效组合为空。
+    std::function<std::optional<std::string>(SettingsHotkeyChord)> hotkeyEncode;
+    // 生成组合显示文字，不修改配置或注册。
+    // 入参：SettingsHotkeyChord 为待显示组合。
+    // 返回：可显示的组合名称。
+    std::function<std::wstring(SettingsHotkeyChord)> hotkeyFormat;
+    // 保存前准备候选注册并保留旧注册。
+    // 入参：string_view 为目标配置。
+    // 返回：候选准备成功为 true；失败不改变活动注册。
+    std::function<bool(std::string_view)> hotkeyPrepare;
+    // 查询草稿组合是否尚未生效，或是否仍有旧注册需要释放。
+    // 入参：string_view 为目标组合 token。
+    // 返回：需要通过应用完成注册或重试为 true；空回调视为没有待应用状态。
+    std::function<bool(std::string_view)> hotkeyNeedsApply;
+    // 无异常地发布或撤销已准备候选；宿主实现不得抛出异常。
+    // 入参：bool 为是否提交候选。
+    // 返回：资源清理成功为 true；false 表示注册仍需清理，提交的新组合已生效。
+    std::function<bool(bool)> hotkeyFinish;
+    // 查询活动注册及清理状态。
+    // 入参：无。
+    // 返回：本地化状态文字。
+    std::function<std::wstring()> hotkeyStatus;
+    // 通知宿主录入开始或结束，用于暂停截图并截断排队消息。
+    // 入参：bool 为是否正在录入。
+    // 返回：无。
+    std::function<void(bool)> hotkeyRecording;
+    // 在注册事务结束后刷新宿主提示，不参与无异常激活步骤。
+    // 入参：无。
+    // 返回：无；刷新失败不撤销已保存结果。
+    std::function<void()> hotkeyRefresh;
 };
 
 // 管理进程内唯一的非模态设置窗口；关闭窗口不会结束应用消息循环。
@@ -76,6 +119,10 @@ class SettingsWindow final
     // 入参：message 为应用消息循环取得的待处理消息。
     // 返回：消息已被窗口键盘导航处理为 true，否则为 false。
     [[nodiscard]] bool ProcessDialogMessage(MSG& message) const noexcept;
+    // 将本程序已注册组合转交仍有焦点的录入控件。
+    // 入参：modifiers、key 为组合；time 为原消息时间。
+    // 返回：控件接受消息为 true；无录入或过期消息为 false。
+    [[nodiscard]] bool ProcessRecordedHotkey(UINT modifiers, UINT key, DWORD time) noexcept;
     // 空闲时同步关闭并释放回调；忙时仅请求延迟关闭，回调保留至后续空闲 Close 或销毁。
     // 入参：无显式入参。
     // 返回：无返回值。

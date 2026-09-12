@@ -339,4 +339,37 @@ bool SettingsEditSession::IsDirty(std::string_view key) const noexcept
     const auto field = this->fields_.find(key);
     return field != this->fields_.end() && field->second.draft != field->second.baseline;
 }
+// 核验有效目标同时保留存在性和原始类型冲突检查，不创建缺失字段。
+// 入参：key 为已登记字符串字段；value 为期望目标。
+// 返回：基线和当前有效值一致为 Unchanged，否则为失败类别。
+SettingsCommitResult SettingsEditSession::VerifyCurrentString(std::string_view key,
+                                                              std::string_view value) const noexcept
+{
+    try
+    {
+        const auto field = this->fields_.find(key);
+        if (!this->ready_ || field == this->fields_.end())
+            return SettingsCommitResult::InvalidField;
+        nlohmann::json user;
+        if (!this->userFile_.Read(user) || !IsSettingsDocument(user))
+            return SettingsCommitResult::ReadFailed;
+        std::optional<nlohmann::json> effective = RawField(user, key);
+        if (!SameRaw(effective, field->second.raw))
+            return SettingsCommitResult::Conflict;
+        if (!effective || !effective->is_string())
+        {
+            nlohmann::json defaults;
+            if (!this->defaultFile_.Read(defaults) || !IsSettingsDocument(defaults))
+                return SettingsCommitResult::ReadFailed;
+            effective = RawField(defaults, key);
+        }
+        return effective && effective->is_string() && effective->get<std::string>() == value
+                   ? SettingsCommitResult::Unchanged
+                   : SettingsCommitResult::Conflict;
+    }
+    catch (...)
+    {
+        return SettingsCommitResult::ReadFailed;
+    }
+}
 } // namespace open_st

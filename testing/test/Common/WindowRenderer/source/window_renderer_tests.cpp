@@ -76,6 +76,9 @@ class RendererBindingTest : public testing::Test
             {
                 if (key == "longInfo" && !this->infoText_.empty())
                     return this->infoText_;
+                if (key == "description" && this->longText_)
+                    return std::wstring(L"This description contains several words and wraps across multiple lines "
+                                        L"inside the fixed width label while preserving the shortcut field position.");
                 return this->longText_ ? std::wstring(key == "longInfo" ? 2000 : 120, L'W')
                                        : std::wstring(key.begin(), key.end());
             }));
@@ -740,5 +743,372 @@ TEST_F(RendererBoolTest, disabled_and_busy_checkbox_do_not_dispatch)
     EXPECT_EQ(this->changes_, 0);
     ASSERT_TRUE(this->renderer_.SetBusy(false));
     EXPECT_TRUE(IsWindowEnabled(checkbox));
+}
+// 验证组合键字段拒绝空、重复和错误类型绑定，并要求完整回调。
+// 入参：无。
+// 返回：无返回值；通过断言记录绑定错误码。
+TEST_F(RendererBindingTest, key_chord_binding_checks_type_callbacks_and_uniqueness)
+{
+    nlohmann::json document = WindowDocument();
+    document["pages"][0]["content"]["children"].push_back(
+        {{"type", "keyChord"}, {"id", "chord"}, {"labelKey", "chord"}});
+    this->Prepare(document);
+    EXPECT_EQ(this->renderer_.ValidateBindings().code, "field_binding_missing");
+    EXPECT_EQ(this->renderer_.BindKeyChord("missing", {}, {}, {}).code, "unknown_id");
+    EXPECT_EQ(this->renderer_.BindKeyChord("choice", {}, {}, {}).code, "wrong_control_type");
+    EXPECT_EQ(this->renderer_.BindKeyChord("chord", {}, {}, {}).code, "empty_callback");
+    // 返回固定数值组合供绑定校验使用。
+    // 入参：无。
+    // 返回：成功结果。
+    const std::function<open_st::RendererKeyChordResult()> read = []()
+    { return open_st::RendererKeyChordResult{true, {0, VK_F8}, {}}; };
+    // 接受宿主传入的数值组合，不产生副作用。
+    // 入参：未命名组合参数为候选值。
+    // 返回：成功修改结果。
+    const std::function<open_st::RendererChangeResult(open_st::RendererKeyChord)> change = [](open_st::RendererKeyChord)
+    { return open_st::RendererChangeResult{}; };
+    // 提供固定格式文字供绑定校验使用。
+    // 入参：未命名组合参数为候选值。
+    // 返回：固定显示文字。
+    const std::function<std::wstring(open_st::RendererKeyChord)> format = [](open_st::RendererKeyChord)
+    { return std::wstring(L"F8"); };
+    ASSERT_TRUE(this->renderer_.BindKeyChord("chord", read, change, format));
+    EXPECT_TRUE(this->renderer_.ValidateBindings());
+    EXPECT_EQ(this->renderer_.BindKeyChord("chord", read, change, format).code, "duplicate_binding");
+    EXPECT_EQ(this->renderer_.SetKeyRecordingHandler({}).code, "empty_callback");
+}
+class RendererChordTest : public RendererBindingTest
+{
+  protected:
+    open_st::RendererKeyChord chord_{MOD_CONTROL, 'Q'};
+    bool rejectChord_{};
+    bool throwChord_{};
+    bool throwRecording_{};
+    bool endDuringChange_{};
+    int chordChanges_{};
+    int chordId_{101};
+    std::vector<bool> recordingEvents_;
+
+    // 在测试成员销毁前回收原生窗口，避免录入通知访问已析构容器。
+    // 入参：无。
+    // 返回：无返回值。
+    void TearDown() override
+    {
+        if (this->renderer_.NativeHandle() != nullptr)
+            DestroyWindow(this->renderer_.NativeHandle());
+    }
+
+    // 绑定通用数值组合与可注入的校验、录入通知，不使用业务快捷键模块。
+    // 入参：row 为是否使用横向无标签组合键布局；rollback 为可选的原始值恢复回调。
+    // 返回：无返回值；断言布局和绑定完整。
+    void PrepareChord(bool row = false, std::function<open_st::RendererChangeResult()> rollback = {})
+    {
+        nlohmann::json document = WindowDocument();
+        if (row)
+        {
+            this->chordId_ = 102;
+            document["pages"][0]["content"]["children"].push_back(
+                {{"type", "row"},
+                 {"id", "chordRow"},
+                 {"gap", 12},
+                 {"children",
+                  nlohmann::json::array(
+                      {{{"type", "text"}, {"id", "description"}, {"textKey", "description"}, {"width", 200}},
+                       {{"type", "keyChord"}, {"id", "chord"}, {"width", "fill"}}})}});
+        }
+        else
+            document["pages"][0]["content"]["children"].push_back(
+                {{"type", "keyChord"}, {"id", "chord"}, {"labelKey", "chord"}});
+        this->Prepare(document);
+        ASSERT_TRUE(this->renderer_.BindKeyChord(
+            "chord",
+            // 读取测试宿主保留的数值草稿。
+            // 入参：无。
+            // 返回：成功结果及当前组合。
+            [this]() { return open_st::RendererKeyChordResult{true, this->chord_, {}}; },
+            // 接受或拒绝完整候选，记录实际提交次数。
+            // 入参：value 为候选数值组合。
+            // 返回：成功或带字段错误的拒绝；异常开关开启时抛出异常。
+            [this](open_st::RendererKeyChord value)
+            {
+                if (this->throwChord_)
+                    throw std::runtime_error("chord change");
+                if (this->rejectChord_)
+                    return open_st::RendererChangeResult{false, L"Rejected chord"};
+                this->chord_ = value;
+                ++this->chordChanges_;
+                if (this->endDuringChange_)
+                    (void)this->renderer_.SetBusy(true);
+                return open_st::RendererChangeResult{};
+            },
+            // 将原始数值转换为可断言文字，避免依赖本地化业务。
+            // 入参：value 为完整或仅含修饰键的组合。
+            // 返回：修饰键和主键的十进制表示。
+            [](open_st::RendererKeyChord value)
+            { return std::to_wstring(value.modifiers) + L":" + std::to_wstring(value.key); }, std::move(rollback)));
+        ASSERT_TRUE(this->renderer_.SetKeyRecordingHandler(
+            // 记录开始和结束通知，并可注入开始阶段异常。
+            // 入参：recording 表示是否进入录入。
+            // 返回：无返回值；开关启用且开始录入时抛出异常。
+            [this](bool recording)
+            {
+                this->recordingEvents_.push_back(recording);
+                if (recording && this->throwRecording_)
+                    throw std::runtime_error("recording start");
+            }));
+        this->Show();
+    }
+
+    // 从已知布局顺序定位组合键按钮。
+    // 入参：无。
+    // 返回：借用的控件句柄。
+    HWND Chord()
+    {
+        return GetDlgItem(GetParent(this->Combo()), this->chordId_);
+    }
+
+    // 通过原生焦点消息开始录入，不发送真实桌面输入。
+    // 入参：无。
+    // 返回：无返回值；由后续断言验证录入状态。
+    void Begin()
+    {
+        SendMessageW(this->Chord(), WM_SETFOCUS, 0, 0);
+    }
+
+    // 模拟本线程取得的键盘消息并走真实对话框优先处理路径。
+    // 入参：message 为键消息类型；key 为虚拟键；data 为重复等原始标志。
+    // 返回：渲染器是否消费本条消息。
+    bool Key(UINT message, UINT key, LPARAM data = 0)
+    {
+        MSG input{};
+        input.hwnd = this->Chord();
+        input.message = message;
+        input.wParam = key;
+        input.lParam = data;
+        input.time = GetTickCount();
+        return this->renderer_.ProcessDialogMessage(input);
+    }
+};
+
+// 验证完整组合立即更新草稿，Enter、重复键、系统字符和尾部释放不重复修改或确认。
+// 入参：无。
+// 返回：无返回值；通过断言记录消息优先级和生命周期结果。
+TEST_F(RendererChordTest, enter_accepts_once_and_consumes_system_and_repeat_messages)
+{
+    this->PrepareChord();
+    this->Begin();
+    ASSERT_TRUE(this->renderer_.IsKeyRecording());
+    EXPECT_TRUE(this->Key(WM_SYSKEYDOWN, VK_MENU));
+    EXPECT_TRUE(this->Key(WM_SYSKEYDOWN, VK_F10));
+    EXPECT_TRUE(this->Key(WM_SYSKEYDOWN, VK_F10, static_cast<LPARAM>(1) << 30));
+    EXPECT_TRUE(this->Key(WM_SYSCHAR, 'X'));
+    EXPECT_TRUE(this->Key(WM_SYSKEYUP, VK_F10));
+    EXPECT_TRUE(this->Key(WM_SYSKEYUP, VK_MENU));
+    EXPECT_EQ(this->chordChanges_, 1);
+    EXPECT_EQ(this->chord_.key, VK_F10);
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_RETURN));
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_RETURN, static_cast<LPARAM>(1) << 30));
+    EXPECT_TRUE(this->Key(WM_KEYUP, VK_RETURN));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chord_.key, VK_F10);
+    EXPECT_EQ(this->chord_.modifiers, MOD_ALT);
+    EXPECT_EQ(this->chordChanges_, 1);
+    EXPECT_EQ(this->actions_, 0);
+    EXPECT_EQ(this->recordingEvents_, (std::vector<bool>{true, false}));
+}
+
+// 验证 Esc 撤销候选且保留窗口，纯修饰键结束不提交空组合。
+// 入参：无。
+// 返回：无返回值；通过断言记录草稿和窗口状态。
+TEST_F(RendererChordTest, escape_cancels_without_closing_and_modifier_only_keeps_draft)
+{
+    this->PrepareChord();
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F8));
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_ESCAPE));
+    EXPECT_TRUE(this->Key(WM_KEYUP, VK_ESCAPE));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_TRUE(IsWindow(this->renderer_.NativeHandle()));
+    EXPECT_EQ(this->chord_.key, 'Q');
+    EXPECT_EQ(this->chordChanges_, 2);
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_SHIFT));
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    wchar_t preview[64]{};
+    GetWindowTextW(this->Chord(), preview, 64);
+    EXPECT_STREQ(preview, L"4:0");
+    EXPECT_TRUE(this->Key(WM_KEYUP, VK_SHIFT));
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_RETURN));
+    EXPECT_EQ(this->chordChanges_, 2);
+    EXPECT_EQ(this->chord_.key, 'Q');
+}
+
+// 验证 Tab 结束录入不再次提交，文字刷新不回写或清除即时草稿。
+// 入参：无。
+// 返回：无返回值；通过断言记录提交次数和值。
+TEST_F(RendererChordTest, tab_accepts_and_text_refresh_preserves_candidate)
+{
+    this->PrepareChord();
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F8));
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    ASSERT_TRUE(this->renderer_.RefreshValues());
+    EXPECT_EQ(this->chordChanges_, 1);
+    this->Key(WM_KEYDOWN, VK_TAB);
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chordChanges_, 1);
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    EXPECT_EQ(this->actions_, 0);
+}
+
+// 验证拒绝和异常均恢复原草稿，并结束宿主暂停状态。
+// 入参：无。
+// 返回：无返回值；通过断言记录视觉值、异常报告及录入通知。
+TEST_F(RendererChordTest, rejected_and_throwing_changes_restore_draft_and_end_recording)
+{
+    this->PrepareChord();
+    this->rejectChord_ = true;
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F9));
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_RETURN));
+    EXPECT_EQ(this->chord_.key, 'Q');
+    wchar_t text[64]{};
+    GetWindowTextW(this->Chord(), text, 64);
+    EXPECT_STREQ(text, L"2:81");
+    this->rejectChord_ = false;
+    this->throwChord_ = true;
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F9));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chordChanges_, 0);
+    ASSERT_FALSE(this->errors_.empty());
+    EXPECT_EQ(this->errors_.back().code, "callback_failed");
+    GetWindowTextW(this->Chord(), text, 64);
+    EXPECT_STREQ(text, L"2:81");
+    EXPECT_EQ(this->recordingEvents_, (std::vector<bool>{true, false, true, false}));
+}
+
+// 验证页面切换接受完整草稿，失活与关闭均可靠退出录入。
+// 入参：无。
+// 返回：无返回值；通过断言记录页面、草稿和最终通知。
+TEST_F(RendererChordTest, page_change_accepts_and_deactivation_and_close_cancel)
+{
+    this->PrepareChord();
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F8));
+    const HWND tabs = FindWindowExW(this->renderer_.NativeHandle(), nullptr, WC_TABCONTROLW, nullptr);
+    ASSERT_NE(tabs, nullptr);
+    TabCtrl_SetCurSel(tabs, 1);
+    NMHDR notification{tabs, 0, TCN_SELCHANGE};
+    SendMessageW(this->renderer_.NativeHandle(), WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&notification));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    TabCtrl_SetCurSel(tabs, 0);
+    SendMessageW(this->renderer_.NativeHandle(), WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&notification));
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F9));
+    SendMessageW(this->renderer_.NativeHandle(), WM_ACTIVATE, WA_INACTIVE, 0);
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    this->Begin();
+    ASSERT_TRUE(this->Key(WM_KEYDOWN, VK_F9));
+    DestroyWindow(this->renderer_.NativeHandle());
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    EXPECT_EQ(this->recordingEvents_, (std::vector<bool>{true, false, true, false, true, false}));
+}
+
+// 验证开始通知异常会回收录入状态，非前台及过期转发不会形成草稿。
+// 入参：无。
+// 返回：无返回值；通过断言记录异常收敛和无效消息过滤。
+TEST_F(RendererChordTest, start_failure_and_inactive_hotkey_do_not_leave_recording)
+{
+    this->PrepareChord();
+    EXPECT_FALSE(this->renderer_.ProcessRecordedHotkey(MOD_ALT, VK_F8, GetTickCount()));
+    this->throwRecording_ = true;
+    this->Begin();
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->recordingEvents_, (std::vector<bool>{true, false}));
+    this->throwRecording_ = false;
+    this->Begin();
+    EXPECT_FALSE(this->renderer_.ProcessRecordedHotkey(MOD_ALT, VK_F8, GetTickCount() - 1000));
+    EXPECT_FALSE(this->renderer_.ProcessRecordedHotkey(MOD_ALT, VK_F8, GetTickCount()));
+    EXPECT_EQ(this->chordChanges_, 0);
+    EXPECT_TRUE(this->renderer_.SetEnabled("chord", false));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+}
+// 验证横向固定描述宽度和剩余输入宽度，省标签不会留下顶部间距，窄窗口不越界。
+// 入参：无。
+// 返回：无；通过真实控件矩形断言排版边界。
+TEST_F(RendererChordTest, row_uses_fixed_description_and_unlabelled_field_within_viewport)
+{
+    this->PrepareChord(true);
+    const HWND viewport = GetParent(this->Combo());
+    const HWND description = GetDlgItem(viewport, 101);
+    ASSERT_NE(description, nullptr);
+    RECT label{};
+    RECT chord{};
+    RECT view{};
+    GetWindowRect(description, &label);
+    GetWindowRect(this->Chord(), &chord);
+    GetWindowRect(viewport, &view);
+    const UINT dpi = GetDpiForWindow(this->renderer_.NativeHandle());
+    EXPECT_EQ(label.right - label.left, MulDiv(200, static_cast<int>(dpi), 96));
+    EXPECT_EQ(chord.left - label.right, MulDiv(12, static_cast<int>(dpi), 96));
+    EXPECT_EQ(chord.top, label.top);
+    EXPECT_LE(chord.right, view.right);
+    EXPECT_GT(chord.right - chord.left, 0);
+    this->longText_ = true;
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    GetWindowRect(description, &label);
+    GetWindowRect(this->Chord(), &chord);
+    EXPECT_GT(label.bottom - label.top, chord.bottom - chord.top);
+    SCROLLINFO scroll{sizeof(scroll), SIF_RANGE | SIF_POS};
+    ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &scroll));
+    EXPECT_GE(scroll.nMax + 1, label.bottom - view.top + scroll.nPos);
+    SetWindowPos(this->renderer_.NativeHandle(), nullptr, 0, 0, 180, 400, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    GetWindowRect(description, &label);
+    GetWindowRect(this->Chord(), &chord);
+    GetWindowRect(viewport, &view);
+    EXPECT_GE(label.left, view.left);
+    EXPECT_LE(label.right, view.right);
+    EXPECT_GE(chord.left, label.right);
+    EXPECT_LE(chord.right, view.right);
+}
+
+// 验证宿主在即时变更回调中结束录入时，不解引用已清空的录入对象。
+// 入参：无。
+// 返回：无；断言草稿接受、忙状态及录入结束通知。
+TEST_F(RendererChordTest, change_callback_can_end_recording_without_accessing_cleared_state)
+{
+    this->PrepareChord();
+    this->endDuringChange_ = true;
+    this->Begin();
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_F8));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_FALSE(IsWindowEnabled(this->Chord()));
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    EXPECT_EQ(this->chordChanges_, 1);
+    EXPECT_EQ(this->recordingEvents_, (std::vector<bool>{true, false}));
+    EXPECT_TRUE(this->errors_.empty());
+}
+
+// 验证后续非法组合被拒绝时保留本次已接受草稿，忙前结束不回滚也不再次提交。
+// 入参：无。
+// 返回：无；断言最近合法值和通知次数。
+TEST_F(RendererChordTest, rejected_candidate_keeps_latest_valid_draft_and_busy_accepts_it)
+{
+    this->PrepareChord();
+    this->Begin();
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_F8));
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    this->rejectChord_ = true;
+    EXPECT_TRUE(this->Key(WM_KEYDOWN, VK_F9));
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    this->rejectChord_ = false;
+    EXPECT_TRUE(this->renderer_.SetBusy(true));
+    EXPECT_FALSE(this->renderer_.IsKeyRecording());
+    EXPECT_EQ(this->chord_.key, VK_F8);
+    EXPECT_EQ(this->chordChanges_, 1);
 }
 } // namespace

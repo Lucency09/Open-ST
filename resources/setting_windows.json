@@ -50,6 +50,122 @@
           }
         ]
       }
+    },
+    {
+      "id": "hotkeys",
+      "titleKey": "settings.hotkeys",
+      "content": {
+        "type": "column",
+        "id": "hotkeysContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "row",
+            "id": "captureHotkeyRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "captureHotkeyLabel",
+                "textKey": "settings.hotkey.label",
+                "width": 200
+              },
+              {
+                "type": "keyChord",
+                "id": "captureHotkey",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "copyHotkeyRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "copyHotkeyLabel",
+                "textKey": "settings.hotkey.copy",
+                "width": 200
+              },
+              {
+                "type": "text",
+                "id": "copyHotkeyValue",
+                "textKey": "settings.hotkey.value.copy",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "saveHotkeyRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "saveHotkeyLabel",
+                "textKey": "settings.hotkey.save",
+                "width": 200
+              },
+              {
+                "type": "text",
+                "id": "saveHotkeyValue",
+                "textKey": "settings.hotkey.value.save",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "cancelHotkeyRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "cancelHotkeyLabel",
+                "textKey": "settings.hotkey.cancel",
+                "width": 200
+              },
+              {
+                "type": "text",
+                "id": "cancelHotkeyValue",
+                "textKey": "settings.hotkey.value.cancel",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "closePinHotkeyRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "closePinHotkeyLabel",
+                "textKey": "settings.hotkey.close_pin",
+                "width": 200
+              },
+              {
+                "type": "text",
+                "id": "closePinHotkeyValue",
+                "textKey": "settings.hotkey.value.close_pin",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "id": "hotkeyHelp",
+            "textKey": "settings.hotkey.help"
+          },
+          {
+            "type": "text",
+            "id": "hotkeyStatus",
+            "textKey": "settings.hotkey.status"
+          }
+        ]
+      }
     }
   ],
   "footer": {

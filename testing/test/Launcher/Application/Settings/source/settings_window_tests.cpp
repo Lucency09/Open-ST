@@ -4,6 +4,7 @@
 #include "settings_internal.h"
 #include "settings_window_test_access.h"
 #include <array>
+#include <commctrl.h>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -72,12 +73,12 @@ class SettingsWindowTest : public testing::Test
         std::filesystem::create_directories(this->root_ / "data");
         std::filesystem::copy_file(OPEN_ST_SETTINGS_LAYOUT_PATH, this->root_ / "resources/setting_windows.json",
                                    std::filesystem::copy_options::overwrite_existing);
-        this->Write(
-            "resources/default_settings.json",
-            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
-        this->Write(
-            "data/settings.json",
-            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,"onboarding.completed":false}})");
+        this->Write("resources/default_settings.json",
+                    R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+                    R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q"}})");
+        this->Write("data/settings.json",
+                    R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+                    R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q"}})");
         ASSERT_TRUE(open_st::InitializeSettings(this->root_));
         open_st::SettingsWindowTestAccess::SetConfirmation(this->window_,
                                                            // 记录恢复默认确认次数，并返回用例指定的确认结果。
@@ -156,6 +157,7 @@ class SettingsWindowTest : public testing::Test
         // 返回：applySucceeds_，表示模拟运行期语言应用结果。
         callbacks.languageApplied = [this](std::string_view language)
         {
+            this->hotkeyEvents_.push_back("language");
             ++this->appliedCount_;
             this->savedAtNotification_ = open_st::GetStringSetting("ui.language").value_or("");
             if (this->applySucceeds_)
@@ -168,6 +170,80 @@ class SettingsWindowTest : public testing::Test
             }
             return this->applySucceeds_;
         };
+        // 仅识别测试实际使用的两个值，将产品解析规则留给 Hotkeys 模块测试。
+        // 入参：value 为待验证的配置字符串。
+        // 返回：测试允许的数值组合；其他字符串为空。
+        callbacks.hotkeyDecode = [](std::string_view value) -> std::optional<open_st::SettingsHotkeyChord>
+        {
+            if (value == "Ctrl+Alt+Q")
+                return open_st::SettingsHotkeyChord{MOD_CONTROL | MOD_ALT, 'Q'};
+            if (value == "Ctrl+Shift+F8")
+                return open_st::SettingsHotkeyChord{MOD_CONTROL | MOD_SHIFT, VK_F8};
+            return std::nullopt;
+        };
+        // 将测试组合转换为固定 token，不引入 Settings 对 Hotkeys 的兄弟依赖。
+        // 入参：value 为录入控件的数值组合。
+        // 返回：测试允许组合的 token，其余为空。
+        callbacks.hotkeyEncode = [](open_st::SettingsHotkeyChord value) -> std::optional<std::string>
+        {
+            if (value.modifiers == (MOD_CONTROL | MOD_ALT) && value.key == 'Q')
+                return "Ctrl+Alt+Q";
+            if (value.modifiers == (MOD_CONTROL | MOD_SHIFT) && value.key == VK_F8)
+                return "Ctrl+Shift+F8";
+            return std::nullopt;
+        };
+        // 为测试录入控件提供稳定显示值，不依赖机器键盘布局。
+        // 入参：value 为待显示的组合。
+        // 返回：对应组合的测试显示名称。
+        callbacks.hotkeyFormat = [](open_st::SettingsHotkeyChord value)
+        { return value.key == VK_F8 ? L"Ctrl+Shift+F8" : L"Ctrl+Alt+Q"; };
+        // 模拟候选注册并记录准备时磁盘旧值，不调用真实 RegisterHotKey。
+        // 入参：value 为即将提交的快捷键目标。
+        // 返回：hotkeyPrepareSucceeds_ 控制准备成功或失败。
+        callbacks.hotkeyPrepare = [this](std::string_view value)
+        {
+            ++this->hotkeyPrepareCount_;
+            this->hotkeyEvents_.push_back("prepare");
+            this->hotkeyAtPrepare_ = open_st::GetStringSetting("capture.hotkey").value_or("");
+            if (this->hotkeyPrepareSucceeds_)
+                this->preparedHotkey_ = value;
+            return this->hotkeyPrepareSucceeds_;
+        };
+        // 记录发布或撤销，核验已保存值先于活动组合切换。
+        // 入参：commit 为发布候选或撤销候选的标志。
+        // 返回：hotkeyCleanupSucceeds_ 控制注销资源清理结果。
+        callbacks.hotkeyFinish = [this](bool commit)
+        {
+            this->hotkeyEvents_.push_back(commit ? "activate" : "cancel");
+            if (commit)
+            {
+                ++this->hotkeyActivateCount_;
+                this->hotkeyAtActivation_ = open_st::GetStringSetting("capture.hotkey").value_or("");
+                this->activeHotkey_.swap(this->preparedHotkey_);
+            }
+            else
+                ++this->hotkeyCancelCount_;
+            this->preparedHotkey_.clear();
+            return this->hotkeyCleanupSucceeds_;
+        };
+        // 返回模拟活动组合，供正式布局查询动态状态。
+        // 入参：无。
+        // 返回：当前测试活动快捷键的宽字符串。
+        callbacks.hotkeyStatus = [this]()
+        { return std::wstring(this->activeHotkey_.begin(), this->activeHotkey_.end()); };
+        // 比较目标与实际活动组合，使未注册状态无需制造草稿变化即可应用。
+        // 入参：value 为当前待应用的组合 token。
+        // 返回：活动目标不同或清理未完成时为 true。
+        callbacks.hotkeyNeedsApply = [this](std::string_view value)
+        { return value != this->activeHotkey_ || !this->hotkeyCleanupSucceeds_; };
+        // 测试不注入实际键盘录入，此回调仅满足生产绑定契约。
+        // 入参：未命名 bool 为录入开始或结束状态。
+        // 返回：无。
+        callbacks.hotkeyRecording = [](bool) {};
+        // 在测试中刷新设置文本，模拟 App 保存完成后的界面同步。
+        // 入参：无。
+        // 返回：无。
+        callbacks.hotkeyRefresh = [this]() { this->window_.RefreshTexts(); };
         return callbacks;
     }
 
@@ -250,6 +326,33 @@ class SettingsWindowTest : public testing::Test
         this->Pump();
     }
 
+    // 发送原生页签通知，使恢复默认使用真实当前页面。
+    // 入参：index 为从零开始的布局页面索引。
+    // 返回：无，GoogleTest 断言记录控件或切换失败。
+    void SelectPage(int index)
+    {
+        const HWND tabs = this->Control(WC_TABCONTROLW);
+        ASSERT_NE(tabs, nullptr);
+        TabCtrl_SetCurSel(tabs, index);
+        NMHDR notification{tabs, static_cast<UINT_PTR>(GetDlgCtrlID(tabs)), TCN_SELCHANGE};
+        SendMessageW(this->window_.NativeHandle(), WM_NOTIFY, notification.idFrom,
+                     reinterpret_cast<LPARAM>(&notification));
+        this->Pump();
+    }
+
+    // 将组合按键送入真实设置消息导航，验证控件录入到业务草稿的完整链路。
+    // 入参：control 为组合控件句柄；message 为键盘消息类型；key 为虚拟键码。
+    // 返回：该输入被设置窗口消费时为 true。
+    bool ChordKey(HWND control, UINT message, UINT key)
+    {
+        MSG input{};
+        input.hwnd = control;
+        input.message = message;
+        input.wParam = key;
+        input.time = GetTickCount();
+        return this->window_.ProcessDialogMessage(input);
+    }
+
     // 展开通知刷新选项，不实际弹出下拉窗口。
     // 入参：无显式入参。
     // 返回：无返回值。
@@ -282,6 +385,16 @@ class SettingsWindowTest : public testing::Test
     bool applySucceeds_{true};
     bool queryThrows_{};
     bool closeInCallback_{};
+    bool hotkeyPrepareSucceeds_{true};
+    bool hotkeyCleanupSucceeds_{true};
+    int hotkeyPrepareCount_{};
+    int hotkeyActivateCount_{};
+    int hotkeyCancelCount_{};
+    std::string activeHotkey_{"Ctrl+Alt+Q"};
+    std::string preparedHotkey_;
+    std::string hotkeyAtPrepare_;
+    std::string hotkeyAtActivation_;
+    std::vector<std::string> hotkeyEvents_;
     open_st::SettingsWindow window_;
 };
 
@@ -792,5 +905,256 @@ TEST_F(SettingsWindowTest, busy_notifications_are_paired_after_failure)
     EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
     this->Click("settings.cancel");
     EXPECT_FALSE(this->window_.IsOpen());
+}
+// 验证全局组合占用时整批草稿不保存，语言与原活动快捷键均保持原状。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查配置、活动组合与候选生命周期。
+TEST_F(SettingsWindowTest, hotkey_prepare_failure_prevents_all_settings_commit)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->hotkeyPrepareSucceeds_ = false;
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Alt+Q");
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Alt+Q");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_EQ(this->appliedCount_, 0);
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "Ctrl+Shift+F8");
+}
+
+// 验证注册候选成功后遇到同键外部冲突，候选撤销且整批语言草稿不落盘。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查撤销次数、旧组合和未知字段保留。
+TEST_F(SettingsWindowTest, hotkey_commit_conflict_cancels_prepared_candidate)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->Write("data/settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","capture.hotkey":"F9","other":42}})");
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Alt+Q");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "F9");
+    EXPECT_NE(this->Control(L"Static", L"settings.conflict"), nullptr);
+}
+
+// 验证只读文件使条件提交失败时回收候选，恢复可写后原草稿可直接重试。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查失败和后续成功的注册生命周期。
+TEST_F(SettingsWindowTest, hotkey_write_failure_cancels_candidate_and_keeps_draft)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Alt+Q");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Alt+Q");
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_NORMAL), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Shift+F8");
+}
+
+// 验证准备先于保存、激活读取到新配置且早于其他语言副作用，不重复激活。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查实际磁盘观察和回调顺序。
+TEST_F(SettingsWindowTest, hotkey_commit_activates_before_language_effect)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyAtPrepare_, "Ctrl+Alt+Q");
+    EXPECT_EQ(this->hotkeyAtActivation_, "Ctrl+Shift+F8");
+    EXPECT_EQ(this->hotkeyEvents_, (std::vector<std::string>{"prepare", "activate", "language"}));
+    this->Click("settings.ok");
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_FALSE(this->window_.IsOpen());
+}
+
+// 验证未注册且无草稿变化时应用可用，只读文件也可完成注册而不重复写盘。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查按钮状态、注册次数和正常生效后的按钮禁用。
+TEST_F(SettingsWindowTest, hotkey_apply_without_changes_registers_without_writing)
+{
+    this->activeHotkey_.clear();
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(this->appliedCount_, 0);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+}
+
+// 验证显式重试先核验磁盘目标，外部同键修改后不再准备旧目标。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查没有任何系统注册副作用。
+TEST_F(SettingsWindowTest, hotkey_retry_rejects_external_change)
+{
+    this->activeHotkey_.clear();
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_TRUE(open_st::SetStringSetting("capture.hotkey", "Ctrl+Shift+F8"));
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_TRUE(this->activeHotkey_.empty());
+    EXPECT_NE(this->Control(L"Static", L"settings.conflict"), nullptr);
+}
+
+// 验证旧用户文件缺少新键时按未变默认值重试成功，仍不补写用户文件。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查注册成功和磁盘字段保持缺失。
+TEST_F(SettingsWindowTest, hotkey_retry_accepts_unchanged_missing_field_default)
+{
+    this->activeHotkey_.clear();
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    nlohmann::json document;
+    std::ifstream input(this->root_ / "data/settings.json");
+    input >> document;
+    EXPECT_FALSE(document.at("settings").contains("capture.hotkey"));
+}
+
+// 验证用户字段缺失时重试仍检查默认资源，默认被外部改变后不能注册旧显示目标。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查默认变化不会触发系统注册。
+TEST_F(SettingsWindowTest, hotkey_retry_rejects_changed_missing_field_default)
+{
+    this->activeHotkey_.clear();
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
+    ASSERT_NE(this->Open(), nullptr);
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"capture.hotkey":"Ctrl+Shift+F8"}})");
+    this->Click("settings.apply");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_NE(this->Control(L"Static", L"settings.conflict"), nullptr);
+}
+
+// 验证快捷键默认资源语义非法时保留整份草稿，不替换为不可录入的组合。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查默认失败提示和原快捷键草稿。
+TEST_F(SettingsWindowTest, hotkey_invalid_default_preserves_current_draft)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"capture.hotkey":"invalid-token"}})");
+    this->SelectPage(1);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "Ctrl+Shift+F8");
+    EXPECT_NE(this->Control(L"Static", L"settings.defaults_failed"), nullptr);
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+}
+
+// 验证快捷键页恢复默认只修改该页草稿，取消不覆盖已保存组合或语言。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查页面范围、草稿与取消无副作用。
+TEST_F(SettingsWindowTest, hotkey_page_defaults_preserve_other_page_and_cancel)
+{
+    ASSERT_TRUE(open_st::SetStringSetting("capture.hotkey", "Ctrl+Shift+F8"));
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->SelectPage(1);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_EQ(this->confirmationCount_, 1);
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "Ctrl+Alt+Q");
+    EXPECT_EQ(SendMessageW(this->Control(L"ComboBox"), CB_GETCURSEL, 0, 0), 1);
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Shift+F8");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+}
+
+// 验证已保存并激活的新组合不因旧注册清理失败而回滚，但确定仍保留窗口供重试。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查持久化、活动组合和可重试窗口。
+TEST_F(SettingsWindowTest, hotkey_cleanup_failure_preserves_saved_active_combination)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->hotkeyCleanupSucceeds_ = false;
+    this->Click("settings.ok");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Shift+F8");
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Shift+F8");
+    EXPECT_TRUE(this->window_.IsOpen());
+    this->hotkeyCleanupSucceeds_ = true;
+    this->Click("settings.apply");
+    this->Click("settings.ok");
+    EXPECT_FALSE(this->window_.IsOpen());
+}
+// 验证真实录入完整组合后立即点亮应用，无须先 Enter 或离开录入控件。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查按键、草稿、按钮和最终保存注册链路。
+TEST_F(SettingsWindowTest, complete_chord_input_immediately_enables_apply)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(1);
+    const HWND apply = this->Control(L"Button", this->Text("settings.apply"));
+    ASSERT_NE(apply, nullptr);
+    EXPECT_EQ(IsWindowEnabled(apply), FALSE);
+    const HWND chord = this->Control(L"Button", L"Ctrl+Alt+Q");
+    ASSERT_NE(chord, nullptr);
+    SendMessageW(chord, WM_SETFOCUS, 0, 0);
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_CONTROL));
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_SHIFT));
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_F8));
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "Ctrl+Shift+F8");
+    EXPECT_NE(IsWindowEnabled(apply), FALSE);
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Alt+Q");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Shift+F8");
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Shift+F8");
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_EQ(IsWindowEnabled(apply), FALSE);
+}
+
+// 验证即时录入被 Esc 撤销时恢复原始非法 token，不将取消误当作修复保存。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查原始草稿和持久化都保持非法原值、窗口仍存在。
+TEST_F(SettingsWindowTest, escape_after_live_chord_restores_invalid_original_token)
+{
+    ASSERT_TRUE(open_st::SetStringSetting("capture.hotkey", "invalid-original"));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(1);
+    const HWND chord = this->Control(L"Button", L"Ctrl+Alt+Q");
+    ASSERT_NE(chord, nullptr);
+    SendMessageW(chord, WM_SETFOCUS, 0, 0);
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_CONTROL));
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_SHIFT));
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_F8));
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "Ctrl+Shift+F8");
+    ASSERT_TRUE(this->ChordKey(chord, WM_KEYDOWN, VK_ESCAPE));
+    EXPECT_EQ(open_st::SettingsWindowTestAccess::ReadHotkey(this->window_), "invalid-original");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "invalid-original");
+    EXPECT_TRUE(this->window_.IsOpen());
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+}
+
+// 验证应用在重试未改的快捷键目标时仍将其他字段草稿作为同一批设置提交。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查语言提交、快捷键激活及副作用顺序。
+TEST_F(SettingsWindowTest, hotkey_apply_retry_commits_other_field_drafts)
+{
+    this->activeHotkey_.clear();
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "zh-CN");
+    EXPECT_EQ(this->activeHotkey_, "Ctrl+Alt+Q");
+    EXPECT_EQ(this->hotkeyEvents_, (std::vector<std::string>{"prepare", "activate", "language"}));
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
 }
 } // namespace

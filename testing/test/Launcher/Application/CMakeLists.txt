@@ -6,6 +6,7 @@ add_subdirectory(Localization)
 add_subdirectory(PinWindow)
 add_subdirectory(Export)
 add_subdirectory(Graphics)
+add_subdirectory(Hotkeys)
 add_subdirectory(Settings)
 add_subdirectory(SystemIntegration)
 
@@ -14,6 +15,10 @@ add_executable(open_st_application_tests source/capture_overlay_session_tests.cp
 target_sources(open_st_application_tests PRIVATE source/simple_message_window_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/capture_toolbar_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/pin_window_integration_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/hotkey_integration_tests.cpp)
+target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys)
+target_include_directories(open_st_application_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Hotkeys/private")
 target_link_libraries(open_st_application_tests PRIVATE OpenST::PinWindow)
 target_include_directories(open_st_application_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/PinWindow/private")

@@ -14,6 +14,7 @@
 #include <desktop_capturer.h>
 #include <desktop_preview.h>
 #include <frozen_desktop_frame.h>
+#include <hotkeys.h>
 #include <image_file_writer.h>
 #include <log.h>
 #include <overlay_renderer.h>
@@ -62,7 +63,6 @@ constexpr UINT PIN_STOPPED_MESSAGE = WM_APP + 6;
 constexpr UINT PREPARE_OUTPUT_MESSAGE = WM_APP + 2;
 constexpr UINT TRAY_MESSAGE = WM_APP + 1;
 constexpr UINT TRAY_ID = 1;
-constexpr int CAPTURE_HOTKEY_ID = 1;
 
 // 让包含本地化错误弹窗在内的同步完成流程在所有异常路径恢复 busy。
 class CompletionBusyGuard final
@@ -279,7 +279,9 @@ App::~App()
     }
     if (this->messageWindow_ != nullptr)
     {
-        UnregisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID);
+        if (this->hotkeys_ && !this->hotkeys_->Shutdown())
+            OPEN_ST_LOG_WARNING("Hotkey shutdown cleanup failed. win32_error=", this->hotkeys_->LastError());
+        this->hotkeys_.reset();
         DestroyWindow(this->messageWindow_);
     }
     this->completion_.reset();
@@ -449,14 +451,7 @@ int App::Run(int)
         }
     }
     (void)PostMessageW(this->messageWindow_, PREPARE_OUTPUT_MESSAGE, 0, 0);
-    if (!RegisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, 'Q'))
-    {
-        const DWORD error = GetLastError();
-        OPEN_ST_LOG_WARNING("Failed to register the capture hotkey. win32_error=", error);
-        const std::wstring message = GetUiText("hotkey.registration_failed");
-        const std::wstring title = GetUiText("app.title");
-        (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
-    }
+    this->InitializeHotkeys();
 
     this->ReportDataReadWarnings();
     this->UpdateCaptureGate();
@@ -649,7 +644,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
     }
     // RegisterHotKey 注册的全局快捷键被触发；wParam 是快捷键 ID，lParam 包含修饰键和虚拟键码。
     case WM_HOTKEY:
-        this->StartCapture();
+        this->DispatchHotkey(wParam, lParam, static_cast<DWORD>(GetMessageTime()));
         return 0;
     // 菜单项产生的命令消息；LOWORD(wParam) 是资源文件中定义的菜单命令 ID。
     case WM_COMMAND:
@@ -735,7 +730,7 @@ void App::AddTrayIcon()
     }
     // 加载失败时借用系统图标维持托盘入口，不把共享句柄放入自有成员。
     data.hIcon = this->smallIcon_ != nullptr ? this->smallIcon_ : LoadIconW(nullptr, IDI_APPLICATION);
-    const std::wstring tooltip = GetUiText("tray.tooltip");
+    const std::wstring tooltip = this->HotkeyText("tray.tooltip");
     (void)wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
     this->trayAdded_ = Shell_NotifyIconW(NIM_ADD, &data) != FALSE;
     if (!this->trayAdded_)
@@ -809,7 +804,7 @@ void App::RefreshLocalizedUi()
         data.hWnd = this->messageWindow_;
         data.uID = TRAY_ID;
         data.uFlags = NIF_TIP;
-        const std::wstring tooltip = GetUiText("tray.tooltip");
+        const std::wstring tooltip = this->HotkeyText("tray.tooltip");
         (void)wcsncpy_s(data.szTip, tooltip.c_str(), _TRUNCATE);
         if (Shell_NotifyIconW(NIM_MODIFY, &data) == FALSE)
         {
@@ -827,7 +822,7 @@ void App::ShowTrayMenu()
     POINT cursor{};
     GetCursorPos(&cursor);
     HMENU menu = CreatePopupMenu();
-    const std::wstring captureText = GetUiText("tray.capture");
+    const std::wstring captureText = this->HotkeyText("tray.capture");
     const std::wstring settingsText = GetUiText("tray.settings");
     const std::wstring aboutText = GetUiText("tray.about");
     const std::wstring exitText = GetUiText("tray.exit");
@@ -939,8 +934,9 @@ HWND App::DialogOwner() const noexcept
 // 返回：无返回值；原子更新暂停标记和代次，使较早排队的截图请求失效。
 void App::UpdateCaptureGate() noexcept
 {
-    const bool paused =
-        this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_;
+    const bool paused = this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+                        this->settingsBusy_ || this->hotkeyRecording_;
+    this->hotkeyBoundary_ = GetTickCount();
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
     if (paused)
@@ -1200,7 +1196,8 @@ void App::CreateCaptureToolbar() noexcept
 void App::StartCapture()
 try
 {
-    if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_)
+    if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+        this->settingsBusy_ || this->hotkeyRecording_)
     {
         return;
     }
@@ -1550,33 +1547,25 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         }
         return 0;
     case WM_KEYDOWN:
-        if (app != nullptr && (lParam & (static_cast<LPARAM>(1) << 30)) == 0 && (GetKeyState(VK_MENU) & 0x8000) == 0 &&
-            (GetKeyState(VK_SHIFT) & 0x8000) == 0)
+        if (app != nullptr)
         {
-            const bool control = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            if ((wParam == VK_RETURN && !control) || (wParam == 'C' && control))
+            const UINT modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0U) |
+                                   ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0U) |
+                                   ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0U);
+            const SessionKeyCommand command = MatchSessionKey(wParam, lParam, modifiers);
+            if (command == SessionKeyCommand::Cancel)
             {
-                if (app->toolbarGate_ != nullptr &&
-                    app->toolbarGate_->AcceptsInput(static_cast<DWORD>(GetMessageTime())))
-                {
-                    (void)app->PostToolbarCommand(CaptureToolbarCommand::Copy, app->toolbarGate_->Token());
-                }
+                app->CancelSelectionOrClose();
                 return 0;
             }
-            if (wParam == 'S' && control)
+            if (command == SessionKeyCommand::Copy || command == SessionKeyCommand::Save)
             {
-                if (app->toolbarGate_ != nullptr &&
-                    app->toolbarGate_->AcceptsInput(static_cast<DWORD>(GetMessageTime())))
-                {
-                    (void)app->PostToolbarCommand(CaptureToolbarCommand::Save, app->toolbarGate_->Token());
-                }
+                if (app->toolbarGate_ && app->toolbarGate_->AcceptsInput(static_cast<DWORD>(GetMessageTime())))
+                    (void)app->PostToolbarCommand(command == SessionKeyCommand::Copy ? CaptureToolbarCommand::Copy
+                                                                                     : CaptureToolbarCommand::Save,
+                                                  app->toolbarGate_->Token());
                 return 0;
             }
-        }
-        if (wParam == VK_ESCAPE && app != nullptr)
-        {
-            app->CancelSelectionOrClose();
-            return 0;
         }
         break;
     case WM_RBUTTONUP:
@@ -1940,7 +1929,6 @@ void App::ShowCleanup()
                                                 this->settingsWindow_->Close();
                                             }
                                             this->CloseOverlay();
-                                            UnregisterHotKey(this->messageWindow_, CAPTURE_HOTKEY_ID);
                                             if (!deleteLogs)
                                             {
                                                 ShutdownLogging();
@@ -1948,6 +1936,13 @@ void App::ShowCleanup()
                                             stopped = true;
                                             (void)renderer.SetEnabled("deleteLogs", false);
                                             (void)renderer.RefreshTexts();
+                                        }
+                                        if (this->hotkeys_ && !this->hotkeys_->Shutdown())
+                                        {
+                                            this->hotkeyCleanupPending_ = true;
+                                            statusKey = "cleanup.hotkey_failed";
+                                            (void)renderer.SetStatus(GetUiText(statusKey));
+                                            return;
                                         }
                                         if (deleteLogs && !ShutdownAndClearLogging())
                                         {

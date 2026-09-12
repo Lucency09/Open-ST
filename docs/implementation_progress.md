@@ -4,6 +4,43 @@
 当前开发版本：`0.3.0`；已发布版本：[v0.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.2.0)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
+## 2026-09-12 快捷键页体验修正
+
+- [x] 修复录入仅改变预览而不更新草稿、导致“应用”保持禁用的问题。完整合法组合立即更新草稿并点亮按钮；
+  注册与保存仍只由“应用／确定”执行。Enter/失焦不重复通知，Esc 恢复录入开始前的原始草稿，包括非法 token。
+- [x] 按用户要求改成左侧描述、右侧快捷键的五行布局。用户明确确认只有全局截图键可编辑，其余四行只展示。
+- [x] 按用户选择删除独立“重试注册／清理”按钮，由“应用”统一重试。没有字段修改时核验目标并注册，不写盘；
+  其他字段有修改时按同一次提交保存。提示不再要求用户理解注册清理操作。
+- [x] Debug /W4 /WX 与 Release 构建通过；相关回归合计 191 项：189 通过、2 人工跳过、0 失败。
+  其中 Renderer 52 通过/1 跳过，Settings 69 通过/1 跳过，Application 54 通过，Hotkeys 14 通过。
+  新增真实控件录入后立即可应用、取消恢复、统一重试，以及左右布局/换行/窄宽和回调重入验证。
+- [ ] 用户复核真实交互与视觉效果；本轮没有重跑无关全量，上一轮贴图桌面层级测试问题仍保留在下方记录。
+- 日志：`build/hotkeys-ui-debug.log`、`build/hotkeys-ui-release.log`、
+  `testing/testoutput/hotkeys-ui-settings.log`、`testing/testoutput/hotkeys-ui-renderer-final.log`、
+  `testing/testoutput/hotkeys-ui-related.log`。
+
+## 2026-09-12 独立快捷键与设置页
+
+- [x] 用户批准 [快捷键设计](design/hotkeys-v0.3.md)，已完成独立 Hotkeys、App 适配、通用 keyChord 录入及快捷键设置页。
+- [x] 默认 Ctrl+Alt+Q；新组合先注册候选，一次条件保存成功才激活，准备/保存失败保留旧活动注册。
+  注销失败保留不可分派记录供重试；注册 ID 进程内单调不复用，忙/录入前后丢弃过期按键。
+- [x] 恢复本页默认、取消、重载、无修改注册重试、缺字段默认回退及非法类型提示已接入；
+  托盘、欢迎及设置状态显示实际组合。局部 Ctrl+C/Enter、Ctrl+S、分层 Esc 和贴图 Esc 保持原行为。
+- [x] 最终 Debug /W4 /WX、Release 构建通过，三份发布 JSON 与源码 SHA-256 一致，无新增第三方依赖。
+- [x] Application 54 项、Hotkeys 14 项通过；Settings 66 项通过/1 项人工跳过；WindowRenderer 49 项通过/1 项人工跳过。
+  本轮新增共 39 项自动测试（Hotkeys 14、Renderer 8、Settings 14、Application 3）。
+- [ ] 全量仍未全绿：最终 409 项中 398 项通过、9 项条件跳过、2 项既有 PinWindow 层级测试失败。
+  失败为 repeated_correct_order_emits_no_position_requests 与 modal_exit_repairs_external_window_interleaving，
+  均在“整个桌面没有更前窗口”的断言处失败。一次实时观察的独立同进程复测为 2/2 通过，未改代码。
+  观察到测试进程自身的隐藏置顶 IME 窗口，原失败前驱句柄已失效，无法追认归属，不能断言是外部应用。
+  PinWindow 及其 Common 基础依赖无本轮源码变化；保留该桌面状态敏感问题，不将复测替代最终全量结果。
+- [ ] 产品人工验收：真实录入旧组合不误截图、外部占用提示、重启持久化、中英日、跨屏及混合 DPI。
+  自动窗口跳过与已有贴图前置验收不代替本轮人工确认。
+- 日志：`build/hotkeys-debug.log`、`build/hotkeys-release.log`、
+  `testing/testoutput/hotkeys-full-test.log`、`testing/testoutput/hotkeys-app-test.log`、
+  `testing/testoutput/hotkeys-final-ctest.log`、`testing/testoutput/hotkeys-pin-recheck.log`。
+  独立同进程通过的实时观察证据在子 Agent 工具输出，未另存日志文件。
+
 ## 2026-09-12 非功能整改
 
 - [x] 按用户批准的整改表分步协同实施；17 项完成，R-15 完成剪贴板优化并保留显示上传实现，R-16 保留公开兼容接口。
@@ -167,8 +204,8 @@
 2. [x] 欢迎流程与当前用户开机启动代码已完成：告知后默认开启、设置开关、路径修复、失败重试与退出清理；
    每用户单实例及启动命令已接入。真实登录、自启禁用、跨会话及视觉验收待人工确认，最终构建状态见上方本轮记录。
 3. [ ] 截图固定到屏幕：先完成置顶贴图、多窗口及已有贴图交互需求，已批准方案见 [贴图设计](design/pin-window-v0.2.md)；代码已接入，完整产品验收待完成。
-4. [ ] 独立快捷键管理模块：统一全局与会话快捷键的注册、监听、作用域、冲突及命令分派；
-   接入快捷键设置页、按键录入、冲突检测和恢复默认，失败时保留原可用快捷键。
+4. [x] 独立快捷键管理模块与设置页代码已完成：全局注册、会话按键匹配、录入、冲突提示、恢复默认及失败保留旧注册。
+   已批准设计及本轮测试记录见上方；产品人工确认及全量中既有层级测试问题继续保留待办。
 5. [ ] 截图与存储设置：接入选框颜色、默认保存格式、JPEG 质量等已有业务设置，保证复制/保存实际消费配置。
    冻结鼠标指针另行提交捕获、热点/位置和最终合成设计，通过后实现 HIDDEN/FROZEN 并接入设置，不能只提供无效开关。
 6. [ ] 日志与维护设置：打开日志目录、清理日志、恢复默认确认，并与正在写入的日志及退出清理流程协调。

@@ -349,4 +349,63 @@ TEST_F(SettingsTest, startup_language_reads_without_initialization_or_writes)
     EXPECT_EQ(open_st::ReadStartupLanguage(this->root_), "en-US");
     EXPECT_FALSE(open_st::IsSettingsPersistenceAvailable());
 }
+// 验证默认专用 getter 不返回用户覆盖值，默认资源外改后读取新值且不写用户文件。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查默认来源、实时读取和磁盘内容保持。
+TEST_F(SettingsTest, default_string_getter_ignores_user_override_and_observes_resource)
+{
+    this->WriteDefault("en-US");
+    const std::filesystem::path userPath = this->root_ / "data" / "settings.json";
+    const std::string user = R"({"schemaVersion":1,"settings":{"ui.language":"zh-CN"}})";
+    SettingsTest::WriteRaw(userPath, user);
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(open_st::GetDefaultStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "zh-CN");
+    this->WriteDefault("ja-JP");
+    EXPECT_EQ(open_st::GetDefaultStringSetting("ui.language"), "ja-JP");
+    EXPECT_EQ(SettingsTest::ReadRaw(userPath), user);
+    SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json", "{broken");
+    EXPECT_FALSE(open_st::GetDefaultStringSetting("ui.language"));
+    EXPECT_TRUE(open_st::ConsumeSettingsReadWarning());
+    EXPECT_FALSE(open_st::GetDefaultStringSetting("ui.language"));
+    EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
+}
+
+// 验证来源重载区分缺失与类型非法，回退结果相同也不能丢失非法字段信息。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查数字、null、缺失和有效字符串的来源标记。
+TEST_F(SettingsTest, string_getter_reports_invalid_type_without_marking_missing_field)
+{
+    this->WriteDefault("en-US");
+    const std::filesystem::path userPath = this->root_ / "data" / "settings.json";
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"ui.language":123}})");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    bool invalidUser = false;
+    EXPECT_EQ(open_st::GetStringSetting("ui.language", invalidUser), "en-US");
+    EXPECT_TRUE(invalidUser);
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"ui.language":null}})");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language", invalidUser), "en-US");
+    EXPECT_TRUE(invalidUser);
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{}})");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language", invalidUser), "en-US");
+    EXPECT_FALSE(invalidUser);
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP"}})");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language", invalidUser), "ja-JP");
+    EXPECT_FALSE(invalidUser);
+}
+
+// 验证默认专用 getter 严格拒绝默认类型错误，不以合法用户值冒充默认或改写原文件。
+// 入参：无运行入参；GoogleTest 注册本用例。
+// 返回：无，断言检查默认字段类型以及正常用户读取仍可用。
+TEST_F(SettingsTest, default_string_getter_rejects_wrong_type_without_using_user_value)
+{
+    this->WriteDefault("en-US");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json",
+                           R"({"schemaVersion":1,"settings":{"ui.language":false}})");
+    EXPECT_FALSE(open_st::GetDefaultStringSetting("ui.language"));
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_FALSE(open_st::GetDefaultStringSetting("missing"));
+    EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
+}
 } // namespace

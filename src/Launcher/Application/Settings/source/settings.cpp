@@ -186,14 +186,38 @@ class SettingsState final
     }
 
     // 按动态属性名读取字符串设置，用户值不可用时回退默认资源。
-    // 入参：key 为 settings 对象中的动态设置属性名。
+    // 入参：key 为 settings 对象中的动态设置属性名；invalidUser 可选输出用户字段类型错误。
     // 返回：用户配置或默认资源中的有效字符串值；均不可用或类型错误时为 std::nullopt。
-    std::optional<std::string> String(std::string_view key) noexcept
+    std::optional<std::string> String(std::string_view key, bool* invalidUser = nullptr) noexcept
     {
         // 判断当前设置值是否符合字符串读取接口要求的原始类型。
         // 入参：value 为待判型的原始 JSON 设置值。
         // 返回：value 是 JSON 字符串类型时为 true，否则为 false。
-        return this->ReadValue<std::string>(key, [](const nlohmann::json& value) { return value.is_string(); });
+        return this->ReadValue<std::string>(
+            key, [](const nlohmann::json& value) { return value.is_string(); }, invalidUser);
+    }
+
+    // 只查询默认资源中的字符串，不把业务非法用户值当作默认值。
+    // 入参：key 为动态设置名。
+    // 返回：默认值；读取或字段无效时为空。
+    std::optional<std::string> DefaultString(std::string_view key) noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            nlohmann::json document;
+            if (!this->initialized_ || !this->ReadDocument(this->defaultFile_, document, this->defaultReadFailed_))
+                return std::nullopt;
+            // 验证默认字段原始类型。
+            // 入参：value 为原始 JSON 字段。
+            // 返回：字符串为 true。
+            return SettingsValue<std::string>(document, key,
+                                              [](const nlohmann::json& value) { return value.is_string(); });
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
     }
 
     // 按动态属性名读取布尔设置，用户值不可用时回退默认资源。
@@ -280,12 +304,14 @@ class SettingsState final
 
     // 按用户优先、默认回退顺序读取指定类型的动态设置值。
     // 入参：key 为 settings 对象中的动态设置属性名。predicate 为原始 JSON 类型判定器；模板 Value
-    // 为返回值类型，Predicate 为判定器类型。
+    // 为返回值类型，Predicate 为判定器类型；invalidUser 可选输出用户字段类型无效状态。
     // 返回：用户或默认文档中符合判定的 Value
     // 副本；未初始化、读取失败或无有效字段时为 std::nullopt。
     template <typename Value, typename Predicate>
-    std::optional<Value> ReadValue(std::string_view key, Predicate predicate) noexcept
+    std::optional<Value> ReadValue(std::string_view key, Predicate predicate, bool* invalidUser = nullptr) noexcept
     {
+        if (invalidUser)
+            *invalidUser = false;
         try
         {
             if (key.empty())
@@ -301,6 +327,9 @@ class SettingsState final
             nlohmann::json userDocument;
             if (this->ReadDocument(this->userFile_, userDocument, this->userReadFailed_))
             {
+                const auto raw = userDocument.at("settings").find(key);
+                if (invalidUser && raw != userDocument.at("settings").end() && !predicate(*raw))
+                    *invalidUser = true;
                 const std::optional<Value> userValue = SettingsValue<Value>(userDocument, key, predicate);
                 if (userValue.has_value())
                 {
@@ -406,6 +435,14 @@ SettingsState& GetSettingsState()
 
 namespace open_st
 {
+// 读取默认资源，不改变已保存配置或运行时业务状态。
+// 入参：key 为动态设置名。
+// 返回：有效默认字符串或空值。
+std::optional<std::string> GetDefaultStringSetting(std::string_view key) noexcept
+{
+    return GetSettingsState().DefaultString(key);
+}
+
 // 为私有编辑会话复制已初始化的文件入口。
 // 入参：userFile 输出用户设置文件句柄；defaultFile 输出默认资源句柄；二者共享 Common 管理的文件状态。
 // 返回：业务已初始化并复制两个句柄时为 true；未初始化时为 false 且输出保持原值。
@@ -476,6 +513,14 @@ bool ConsumeSettingsReadWarning() noexcept
 std::optional<std::string> GetStringSetting(std::string_view key) noexcept
 {
     return GetSettingsState().String(key);
+}
+
+// 读取有效字符串同时保留类型非法的来源信息，供宿主明确提示回退。
+// 入参：key 为动态设置名；invalidUser 输出用户原始类型是否合法。
+// 返回：有效用户值或默认值；均无效时为空。
+std::optional<std::string> GetStringSetting(std::string_view key, bool& invalidUser) noexcept
+{
+    return GetSettingsState().String(key, &invalidUser);
 }
 
 // 按动态属性名读取布尔设置，用户值不可用时回退默认资源。

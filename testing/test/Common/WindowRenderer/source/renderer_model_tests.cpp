@@ -53,6 +53,24 @@ TEST(RendererParserTest, checkbox_requires_label_and_rejects_embedded_value)
     node.erase("labelKey");
     EXPECT_EQ(ParseLayout(document, layout).code, "missing_property");
 }
+// 验证组合键节点只接受通用标签协议，不接受业务 token 或内嵌值。
+// 入参：无。
+// 返回：无返回值；通过断言记录类型、标签和未知属性校验。
+TEST(RendererParserTest, key_chord_allows_no_label_and_rejects_business_value)
+{
+    nlohmann::json document = Document();
+    nlohmann::json& node = document["pages"][0]["content"]["children"][0];
+    node["type"] = "keyChord";
+    Layout layout;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_EQ(layout.pages[0].content.children[0].type, open_st::renderer_detail::NodeType::KeyChord);
+    node["value"] = "Ctrl+Alt+Q";
+    EXPECT_EQ(ParseLayout(document, layout).code, "unknown_property");
+    node.erase("value");
+    node.erase("labelKey");
+    EXPECT_TRUE(ParseLayout(document, layout));
+    EXPECT_TRUE(layout.pages[0].content.children[0].textKey.empty());
+}
 // 验证页面与底部按钮共享 ID 空间，重复时附带定位并保留旧输出。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

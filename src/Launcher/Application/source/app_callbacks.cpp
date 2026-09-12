@@ -1,7 +1,9 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
 #include <app.h>
+#include <hotkeys.h>
 #include <pin_window_manager.h>
+#include <settings.h>
 #include <settings_window.h>
 #include <ui_text.h>
 #include <vector>
@@ -42,7 +44,21 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     // 为子窗口提供指定键的当前语言文本。
     // 入参：key：布局或工具栏请求的本地化文本键。
     // 返回：GetUiText 返回的本地化宽字符串。
-    callbacks.text = [](std::string_view key) { return GetUiText(key); };
+    callbacks.text = [](std::string_view key)
+    {
+        if (key == "welcome.intro")
+        {
+            std::optional<std::string> value = GetStringSetting("capture.hotkey");
+            HotkeyChord chord;
+            if (!value || !ParseHotkey(*value, chord))
+                value = GetDefaultStringSetting("capture.hotkey");
+            const std::wstring display = value && ParseHotkey(*value, chord)
+                                             ? std::wstring(value->begin(), value->end())
+                                             : GetUiText("hotkey.unregistered");
+            return GetUiText(key, {{L"hotkey", display}});
+        }
+        return GetUiText(key);
+    };
     // 向设置窗口提供当前生效的语言代码。
     // 入参：无。
     // 返回：当前运行时语言代码，用于设置缺失时的默认选择。
@@ -79,6 +95,68 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
         this->settingsBusy_ = busy;
         this->UpdateCaptureGate();
     };
+    // 将配置解析为 Settings 自有数值类型。
+    // 入参：value 为组合 token。
+    // 返回：有效组合或空值。
+    callbacks.hotkeyDecode = [](std::string_view value) -> std::optional<SettingsHotkeyChord>
+    {
+        HotkeyChord chord;
+        if (!ParseHotkey(value, chord))
+            return std::nullopt;
+        return SettingsHotkeyChord{chord.modifiers, chord.key};
+    };
+    // 将录入值验证并序列化为稳定配置。
+    // 入参：value 为 Settings 录入组合。
+    // 返回：规范 token；非法组合为空。
+    callbacks.hotkeyEncode = [](SettingsHotkeyChord value) -> std::optional<std::string>
+    {
+        const HotkeyChord chord{value.modifiers, value.key};
+        if (!IsSupportedHotkey(chord))
+            return std::nullopt;
+        return SerializeHotkey(chord);
+    };
+    // 格式化组合预览，尚未完成的组合显示本地化录入提示。
+    // 入参：value 为当前预览值。
+    // 返回：可显示组合或录入提示。
+    callbacks.hotkeyFormat = [](SettingsHotkeyChord value)
+    {
+        const std::string token = SerializeHotkey({value.modifiers, value.key});
+        return token.empty() ? GetUiText("settings.hotkey.record") : std::wstring(token.begin(), token.end());
+    };
+    // 在保存前保留旧注册并准备新组合。
+    // 入参：value 为目标 token。
+    // 返回：候选准备成功为 true。
+    callbacks.hotkeyPrepare = [this](std::string_view value) { return this->PrepareHotkey(value); };
+    // 将实际注册与目标组合比较，决定无草稿变动时是否仍允许应用。
+    // 入参：value 为当前草稿或保存目标。
+    // 返回：没有活动注册、组合不同或释放待重试时为 true。
+    callbacks.hotkeyNeedsApply = [this](std::string_view value)
+    {
+        HotkeyChord chord;
+        if (!this->hotkeys_ || this->hotkeyCleanupPending_ || !ParseHotkey(value, chord))
+            return true;
+        return this->hotkeys_->Active() != chord;
+    };
+    // 完成无异常注册切换，不执行界面刷新。
+    // 入参：commit 为配置是否已保存。
+    // 返回：清理成功为 true。
+    callbacks.hotkeyFinish = [this](bool commit) noexcept { return this->FinishHotkey(commit); };
+    // 查询实际活动与清理状态。
+    // 入参：无。
+    // 返回：当前语言状态。
+    callbacks.hotkeyStatus = [this]() { return this->HotkeyStatusText(); };
+    // 同步录入暂停及前后排队消息边界。
+    // 入参：recording 为是否开始录入。
+    // 返回：无。
+    callbacks.hotkeyRecording = [this](bool recording)
+    {
+        this->hotkeyRecording_ = recording;
+        this->UpdateCaptureGate();
+    };
+    // 在事务后刷新托盘和已有窗口文字。
+    // 入参：无。
+    // 返回：无。
+    callbacks.hotkeyRefresh = [this]() { this->RefreshLocalizedUi(); };
     return callbacks;
 }
 

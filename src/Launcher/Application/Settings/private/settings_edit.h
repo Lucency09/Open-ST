@@ -72,6 +72,11 @@ class SettingsEditSession final
     // 返回：磁盘字段仍等于目标时为 Unchanged；字段不合法为 InvalidField，读取失败为 ReadFailed，目标已变化为 Conflict。
     [[nodiscard]] SettingsCommitResult VerifySavedString(std::string_view key, std::string_view value) const noexcept;
 
+    // 无写盘地复核当前有效值及原始基线，允许旧文件缺键时使用未变的默认。
+    // 入参：key 为已打开字段；value 为待重试目标。
+    // 返回：仍一致为 Unchanged；读取失败或外部修改分别报告。
+    [[nodiscard]] SettingsCommitResult VerifyCurrentString(std::string_view key, std::string_view value) const noexcept;
+
   private:
     struct Field
     {

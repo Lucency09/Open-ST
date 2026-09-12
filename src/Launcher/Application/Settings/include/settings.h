@@ -34,6 +34,14 @@ void ShutdownSettings() noexcept;
 // 入参：key 为 settings 对象中的动态设置属性名。
 // 返回：用户配置或默认资源中的有效字符串值；均不可用或类型错误时为 std::nullopt。
 [[nodiscard]] std::optional<std::string> GetStringSetting(std::string_view key) noexcept;
+// 读取字符串并区分缺失默认值与用户字段原始类型无效的回退。
+// 入参：key 为动态设置名；invalidUser 输出用户字段存在但类型无效的状态。
+// 返回：有效用户值或默认值；均不可用时为空。
+[[nodiscard]] std::optional<std::string> GetStringSetting(std::string_view key, bool& invalidUser) noexcept;
+// 只读取默认资源中的字符串，供业务语义校验失败后的显式回退。
+// 入参：key 为动态设置属性名。
+// 返回：默认字符串；资源或字段无效时为空，不读取用户值。
+[[nodiscard]] std::optional<std::string> GetDefaultStringSetting(std::string_view key) noexcept;
 // 按动态属性名读取布尔设置，用户值不可用时回退默认资源。
 // 入参：key 为 settings 对象中的动态设置属性名。
 // 返回：用户配置或默认资源中的有效布尔值；均不可用或类型错误时为 std::nullopt。

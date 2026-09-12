@@ -107,6 +107,7 @@ src/
 ```text
 launcher -> application
 application -> localization
+application -> hotkeys
 application -> system_integration
 application -> capture_toolbar
 application -> pin_window
@@ -127,7 +128,7 @@ localization -> common
 
 `Application` 协调设置窗口、本地化、图形、桌面捕获和日志；每次截图读取一份边框颜色设置并传入各屏渲染器，`Graphics` 只负责解析与渲染，不依赖同级 `Settings`。设置窗口通过 Application 注入的窄回调查询语言与文本、通知保存完成，由 Application 切换运行时语言，不依赖同级 `Localization`。`Launcher` 只保留 Windows 程序入口并生成 `Open-ST.exe`。`Common` 只提供通用能力，不得反向依赖产品模块。
 
-`App::CopySelection` 与 `App::SaveSelection` 是统一完成入口，由快捷键或工具栏命令调用。Application 的私有 `CaptureCompletion` 编排同步转换和输出，忙状态覆盖保存对话框与错误提示；取消或失败保留有效会话，显示布局失效则在模态调用返回后回收。工具栏与快捷键共享待处理状态、截图/选区代次及忙状态检查；本阶段不实现双击完成或独立快捷键配置模块。
+`App::CopySelection` 与 `App::SaveSelection` 是统一完成入口，由快捷键或工具栏命令调用。Application 的私有 `CaptureCompletion` 编排同步转换和输出，忙状态覆盖保存对话框与错误提示；取消或失败保留有效会话，显示布局失效则在模态调用返回后回收。工具栏与快捷键共享待处理状态、截图/选区代次及忙状态检查；不实现双击完成。全局截图注册与会话按键匹配由独立 Hotkeys 模块管理，App 保留业务准入。
 
 `CaptureToolbar` 只依赖标准库、Windows SDK 及统一编译选项，不能依赖 Application 或其兄弟模块，也不链接 Common/WindowRenderer。App 将选区转换为物理像素 RECT，传入目标屏工作区和 DPI；工具栏只消费自己的按钮描述、状态、文本和命令回调。业务命令由 App 投递回消息窗口；工具栏不读 JSON、不持有冻结帧、不参与导出。普通按钮扩展使用稳定命令 ID，禁止以按钮排列下标作为业务 ID。
 
@@ -137,6 +138,13 @@ Application 从冻结选区生成贴图，以 `app_callbacks.cpp` 注入文字�
 新截图包含旧贴图的当前缩放、透明度与叠放结果；关闭遮罩后恢复交互，退出期间不恢复。
 保存和错误提示期间暂停全部贴图，原图快照与所属 HWND 保留到模态返回；提示选择有效截图窗口或可见置顶贴图
 作为 owner，防止被图像遮挡。显示缩放和不透明度不写入复制保存的像素。
+
+`Application/Hotkeys` 只依赖标准库和 Windows SDK，负责组合规则、注册所有权与候选切换；
+App 通过 `app_hotkeys.cpp` 适配，跨模块回调仍集中于 `app_callbacks.cpp`。
+Settings 拥有 `capture.hotkey` 字符串草稿及一次条件提交；Common/WindowRenderer 的 `keyChord` 控件
+只消费数值组合与宿主回调，不依赖 Hotkeys。录入、忙状态和恢复时截断旧消息，活动注册按 ID/组合/时间校验。
+注册候选成功且配置写入成功后才切换；准备或保存失败保留旧活动注册，注销失败保留不可分派记录供重试。
+全局配置支持范围、恢复与测试要求见 [快捷键设计](design/hotkeys-v0.3.md)。
 
 ## 3. CMake 辅助文件
 
