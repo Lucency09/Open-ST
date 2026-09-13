@@ -1,4 +1,5 @@
 // 在独立测试链接中替换系统输出入口，验证 App 贴图导出而不写真实剪贴板或图片。
+#include "capture_storage_options.h"
 #include "json_file_test_access.h"
 #include "save_image_dialog.h"
 #include "settings_internal.h"
@@ -33,6 +34,9 @@ struct ExportProbe final
     bool copyResult{true};
     bool writeResult{true};
     SaveChoice choice{SaveChoice::Cancelled};
+    ImageFileFormat selectedFormat{ImageFileFormat::Png};
+    ImageFileFormat initialFormat{ImageFileFormat::Png};
+    ImageEncodingOptions encoding;
     std::vector<std::uint8_t> pixels;
     std::function<void(HWND)> duringDialog;
     std::function<void(HWND)> duringNotice;
@@ -70,10 +74,12 @@ bool CopyImageToClipboard(HWND owner, const SdrImageView& image, std::wstring&)
 // 隔离编码写入，记录正式输出像素而不创建图片文件。
 // 入参：image 为原图，path 为保存位置，format 为选择格式，error 未使用。
 // 返回：配置的模拟写入结果，不创建文件。
-bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path, ImageFileFormat format, std::wstring&)
+bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path, const ImageEncodingOptions& options,
+                    std::wstring&)
 {
     EXPECT_EQ(path, probe.target);
-    EXPECT_EQ(format, ImageFileFormat::Png);
+    EXPECT_EQ(options.format, probe.selectedFormat);
+    probe.encoding = options;
     ++probe.writes;
     probe.pixels.assign(image.pixels.begin(), image.pixels.end());
     return probe.writeResult;
@@ -98,15 +104,17 @@ bool TryShowSimpleMessageWindow(HWND owner, HICON, const std::function<std::wstr
 // 模拟系统对话框返回，并在正式 PinOperation 栈内注入关闭事件。
 // 入参：owner 为受保护 HWND，lastDirectory 未使用，target 接收目标，error 未使用。
 // 返回：配置的确认或取消结果，不打开系统对话框。
-SaveChoice ShowSaveImageDialog(HWND owner, const std::filesystem::path&, SaveImageTarget& target, std::wstring&)
+SaveChoice ShowSaveImageDialog(HWND owner, const std::filesystem::path&, ImageFileFormat initialFormat,
+                               SaveImageTarget& target, std::wstring&)
 {
     ++probe.dialogs;
+    probe.initialFormat = initialFormat;
     EXPECT_TRUE(IsWindow(owner));
     if (probe.duringDialog)
         probe.duringDialog(owner);
     EXPECT_TRUE(IsWindow(owner));
     target.path = probe.target;
-    target.format = ImageFileFormat::Png;
+    target.format = probe.selectedFormat;
     return probe.choice;
 }
 
@@ -173,7 +181,8 @@ class PinExportIntegrationTest : public testing::Test
             std::filesystem::temp_directory_path() /
             ("open_st_pin_export_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64()));
         ASSERT_TRUE(std::filesystem::create_directories(this->root_ / "resources"));
-        std::ofstream(this->root_ / "resources/default_settings.json") << R"({"schemaVersion":1,"settings":{}})";
+        std::ofstream(this->root_ / "resources/default_settings.json")
+            << R"({"schemaVersion":1,"settings":{"export.default_format":"jpeg","export.jpeg_quality":95}})";
         ShutdownSettings();
         ASSERT_TRUE(JsonFileTestAccess::ReleaseFile("settings.user"));
         ASSERT_TRUE(JsonFileTestAccess::ReleaseFile("settings.default"));
@@ -383,5 +392,111 @@ TEST_F(PinExportIntegrationTest, recapture_keeps_existing_pin_visible_until_pixe
     EXPECT_EQ(manager.Image(this->id_), this->image_);
     ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Copy));
     EXPECT_EQ(probe.copies, 1);
+}
+// 验证初始默认 JPEG 和配置质量实际到达 App 输出替身，临时格式不写回默认。
+// 入参：无。
+// 返回：无；断言两次对话框初始选择及编码参数。
+TEST_F(PinExportIntegrationTest, storage_defaults_and_temporary_format_are_separate)
+{
+    probe.choice = SaveChoice::Accepted;
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.initialFormat, ImageFileFormat::Jpeg);
+    EXPECT_EQ(probe.encoding.format, ImageFileFormat::Png);
+    EXPECT_EQ(probe.encoding.jpegQuality, 95);
+    EXPECT_EQ(GetStringSetting("export.default_format"), "jpeg");
+    probe.selectedFormat = ImageFileFormat::Jpeg;
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.initialFormat, ImageFileFormat::Jpeg);
+    EXPECT_EQ(probe.encoding.format, ImageFileFormat::Jpeg);
+}
+
+// 验证保存对话框期间外部修改设置只影响下一次，本次编码继续使用已取质量。
+// 入参：无。
+// 返回：无；实际 App 保存栈观察到固定参数。
+TEST_F(PinExportIntegrationTest, storage_parameters_remain_fixed_during_dialog)
+{
+    ASSERT_TRUE(SetIntegerSetting("export.jpeg_quality", 37));
+    probe.choice = SaveChoice::Accepted;
+    probe.selectedFormat = ImageFileFormat::Jpeg;
+    // 模拟模态期间另一个写入者修改配置，不进入设置窗口或真实输出。
+    // 入参：未命名 HWND 为测试保存窗口 owner。
+    // 返回：无。
+    probe.duringDialog = [](HWND)
+    {
+        ASSERT_TRUE(SetIntegerSetting("export.jpeg_quality", 88));
+        ASSERT_TRUE(SetStringSetting("export.default_format", "png"));
+    };
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.initialFormat, ImageFileFormat::Jpeg);
+    EXPECT_EQ(probe.encoding.jpegQuality, 37);
+    probe.duringDialog = {};
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.initialFormat, ImageFileFormat::Png);
+    EXPECT_EQ(probe.encoding.jpegQuality, 88);
+}
+
+// 验证无效用户参数回退有效默认，但不会借读取修复用户文件。
+// 入参：无。
+// 返回：无；断言质量、格式、故障位及原始值均符合约定。
+TEST_F(PinExportIntegrationTest, storage_invalid_values_fall_back_without_writing)
+{
+    ASSERT_TRUE(SetStringSetting("export.default_format", "unknown"));
+    ASSERT_TRUE(SetIntegerSetting("export.jpeg_quality", 999));
+    const ImageSavePreferences preferences = ReadImageSavePreferences();
+    EXPECT_EQ(preferences.defaultFormat, ImageFileFormat::Jpeg);
+    EXPECT_EQ(preferences.jpegQuality, 95);
+    EXPECT_EQ(preferences.invalidFields, 3U);
+    EXPECT_EQ(GetStringSetting("export.default_format"), "unknown");
+    EXPECT_EQ(GetIntegerSetting("export.jpeg_quality"), 999);
+}
+
+// 验证没有任何有效 JPEG 质量时，PNG 仍能保存，JPEG 在文件写入前失败且贴图保留。
+// 入参：无。
+// 返回：无；通过真实 App 分支检查写入次数与图像生命周期。
+TEST_F(PinExportIntegrationTest, missing_quality_allows_png_but_rejects_jpeg)
+{
+    ASSERT_TRUE(SetIntegerSetting("export.jpeg_quality", 0));
+    std::ofstream(this->root_ / "resources/default_settings.json")
+        << R"({"schemaVersion":1,"settings":{"export.default_format":"jpeg","export.jpeg_quality":0}})";
+    probe.choice = SaveChoice::Accepted;
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.writes, 1);
+    EXPECT_EQ(probe.encoding.jpegQuality, 0);
+    probe.selectedFormat = ImageFileFormat::Jpeg;
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.writes, 1);
+    EXPECT_EQ(AppPinTestAccess::Manager(*this->app_).Image(this->id_), this->image_);
+}
+
+// 验证默认格式及用户格式均非法时不打开保存窗口，但复制仍不依赖保存设置。
+// 入参：无。
+// 返回：无；断言保存提前失败而复制可继续。
+TEST_F(PinExportIntegrationTest, invalid_format_prevents_dialog_without_blocking_copy)
+{
+    ASSERT_TRUE(SetStringSetting("export.default_format", "unknown"));
+    std::ofstream(this->root_ / "resources/default_settings.json") << R"({"schemaVersion":1,"settings":{}})";
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Save));
+    EXPECT_EQ(probe.dialogs, 0);
+    EXPECT_EQ(probe.writes, 0);
+    ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Copy));
+    EXPECT_EQ(probe.copies, 1);
+}
+
+// 验证颜色严格格式、大小写规范化及质量边界，与设置页注入的业务函数相同。
+// 入参：无。
+// 返回：无；通过合法与非法输入覆盖业务约束。
+TEST(CaptureStorageOptionsTest, validates_color_format_and_quality)
+{
+    EXPECT_EQ(NormalizeSelectionBorderColor("#12abEf"), "#12ABEF");
+    for (const std::string_view value : {"", "12ABEF", "#abc", "#000000FF", "#GG0000", " #000000", "#000000 "})
+        EXPECT_FALSE(NormalizeSelectionBorderColor(value).has_value());
+    EXPECT_TRUE(IsImageFormatSetting("jpeg"));
+    EXPECT_TRUE(IsImageFormatSetting("png"));
+    EXPECT_FALSE(IsImageFormatSetting("jpg"));
+    EXPECT_FALSE(IsImageFormatSetting("PNG"));
+    EXPECT_FALSE(IsJpegQualitySetting(0));
+    EXPECT_TRUE(IsJpegQualitySetting(1));
+    EXPECT_TRUE(IsJpegQualitySetting(100));
+    EXPECT_FALSE(IsJpegQualitySetting(101));
 }
 } // namespace open_st

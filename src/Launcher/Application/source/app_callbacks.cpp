@@ -1,5 +1,6 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
+#include "capture_storage_options.h"
 #include <app.h>
 #include <hotkeys.h>
 #include <pin_window_manager.h>
@@ -41,6 +42,18 @@ PinWindowCallbacks App::MakePinCallbacks()
 SettingsWindowCallbacks App::MakeSettingsCallbacks()
 {
     SettingsWindowCallbacks callbacks;
+    // 为设置页共享颜色规范化规则，仅显式提交使用规范值。
+    // 入参：value 为原始颜色文本。
+    // 返回：合法规范值或空值。
+    callbacks.normalizeBorderColor = [](std::string_view value) { return NormalizeSelectionBorderColor(value); };
+    // 校验文件格式 token，不依赖下拉框排列。
+    // 入参：value 为格式文本。
+    // 返回：产品支持时为 true。
+    callbacks.validImageFormat = [](std::string_view value) { return IsImageFormatSetting(value); };
+    // 与输出链共享质量约束。
+    // 入参：value 为 JPEG 质量。
+    // 返回：合法为 true。
+    callbacks.validJpegQuality = [](std::int64_t value) { return IsJpegQualitySetting(value); };
     // 为子窗口提供指定键的当前语言文本。
     // 入参：key：布局或工具栏请求的本地化文本键。
     // 返回：GetUiText 返回的本地化宽字符串。

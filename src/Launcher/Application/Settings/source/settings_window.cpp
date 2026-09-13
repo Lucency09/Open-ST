@@ -30,7 +30,8 @@ class SettingsWindow::Impl final
         if (instance == nullptr || !callbacks.text || !callbacks.currentLanguage || !callbacks.availableLanguages ||
             !callbacks.languageApplied || !callbacks.startupApplied || !callbacks.hotkeyDecode ||
             !callbacks.hotkeyEncode || !callbacks.hotkeyFormat || !callbacks.hotkeyPrepare || !callbacks.hotkeyFinish ||
-            !callbacks.hotkeyStatus || !callbacks.hotkeyRecording)
+            !callbacks.hotkeyStatus || !callbacks.hotkeyRecording || !callbacks.normalizeBorderColor ||
+            !callbacks.validImageFormat || !callbacks.validJpegQuality)
         {
             return false;
         }
@@ -43,7 +44,7 @@ class SettingsWindow::Impl final
         }
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
-        this->ready_ = this->editSession_.Open({"ui.language", "capture.hotkey"}, {"startup.enabled"});
+        this->ready_ = this->OpenEditSession();
         this->Require(this->renderer_->SetErrorHandler(
             // 将渲染器错误转为本地化字段或状态提示，未加载草稿时忽略选项缺失。
             // 入参：result 为渲染器报告的结构化错误，包含错误码及目标控件标识。
@@ -52,6 +53,18 @@ class SettingsWindow::Impl final
             {
                 if (result.code == "value_unavailable" && !this->ready_)
                     return;
+                if (result.id == "defaultSaveFormat" || result.id == "selectionBorderColor" ||
+                    result.id == "jpegQuality")
+                {
+                    const std::string_view key = result.id == "defaultSaveFormat" ? "export.default_format"
+                                                 : result.id == "selectionBorderColor"
+                                                     ? "capture.selection_border_color"
+                                                     : "export.jpeg_quality";
+                    this->Require(this->renderer_->SetFieldError(
+                        result.id, result.code == "value_unavailable" ? this->StorageFieldError(key)
+                                                                      : this->Text("settings.operation_failed")));
+                    return;
+                }
                 const std::wstring message = this->Text(
                     result.code == "value_unavailable" ? "settings.language.unavailable" : "settings.operation_failed");
                 if (result.id == "languageSelector")
@@ -69,6 +82,7 @@ class SettingsWindow::Impl final
         // 入参：key 为宿主提供的动态界面文本键。
         // 返回：宿主当前语言的界面文本；启动项状态键由宿主状态回调提供。
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
+        this->BindStorageControls();
         this->Require(this->renderer_->BindKeyChord(
             "captureHotkey",
             // 从草稿解析组合，不将非法配置改写为默认值。
@@ -244,6 +258,7 @@ class SettingsWindow::Impl final
                          reinterpret_cast<LPARAM>(this->callbacks_.smallIcon));
         }
         this->SetStatus(this->ready_ ? "" : "settings.edit_load_failed");
+        this->RefreshStorageErrors();
         this->UpdateButtons();
         return true;
     }
@@ -268,6 +283,7 @@ class SettingsWindow::Impl final
         this->hotkeyErrorKey_.clear();
         this->hotkeyCleanupPending_ = false;
         this->recordingOriginal_.reset();
+        this->integerInputInvalid_ = false;
         this->ready_ = false;
         this->busy_ = false;
     }
@@ -327,6 +343,7 @@ class SettingsWindow::Impl final
                 "languageSelector", this->languageErrorKey_.empty() ? L"" : this->Text(this->languageErrorKey_)));
             this->Require(this->renderer_->SetFieldError(
                 "captureHotkey", this->hotkeyErrorKey_.empty() ? L"" : this->Text(this->hotkeyErrorKey_)));
+            this->RefreshStorageErrors();
         }
         catch (...)
         {
@@ -373,6 +390,162 @@ class SettingsWindow::Impl final
     }
 
   private:
+    // 打开全部已实现字段，整数单独登记以保留严格类型语义。
+    // 入参：无。
+    // 返回：基线和有效草稿加载成功时为 true。
+    bool OpenEditSession()
+    {
+        return this->editSession_.Open(
+            {"ui.language", "capture.hotkey", "capture.selection_border_color", "export.default_format"},
+            {"startup.enabled"}, {"export.jpeg_quality"});
+    }
+
+    // 连接颜色原始输入、格式选择和可无效的数字编辑状态。
+    // 入参：无。
+    // 返回：无；绑定失败由现有窗口创建边界收敛。
+    void BindStorageControls()
+    {
+        this->Require(this->renderer_->BindString(
+            "selectionBorderColor",
+            // 返回原始文本，保留大小写和未完成颜色。
+            // 入参：无。
+            // 返回：当前字符串草稿及读取状态。
+            [this]()
+            {
+                const std::optional<std::string> value =
+                    this->editSession_.ReadString("capture.selection_border_color");
+                return RendererStringResult{value.has_value(), value.value_or(""), {}};
+            },
+            // 保存原始编辑文本；非法中间内容也留在草稿中阻止整批提交。
+            // 入参：value 为输入框当前全部文本。
+            // 返回：草稿更新结果和当前字段提示。
+            [this](std::string_view value)
+            {
+                if (!this->ready_ || this->busy_ ||
+                    !this->editSession_.ChangeString("capture.selection_border_color", value))
+                    return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                this->RefreshStorageErrors();
+                this->UpdateButtons();
+                return RendererChangeResult{true, this->StorageFieldError("capture.selection_border_color")};
+            }));
+        this->Require(this->renderer_->BindString(
+            "defaultSaveFormat",
+            // 读取格式原始 token，未知值不选择其他格式。
+            // 入参：无。
+            // 返回：当前格式草稿。
+            [this]()
+            {
+                const std::optional<std::string> value = this->editSession_.ReadString("export.default_format");
+                return RendererStringResult{value.has_value(), value.value_or(""), {}};
+            },
+            // 将明确选择的格式更新到草稿，不产生导出副作用。
+            // 入参：value 为选择的稳定格式 token。
+            // 返回：更新结果及字段错误。
+            [this](std::string_view value)
+            {
+                if (!this->ready_ || this->busy_ || !this->editSession_.ChangeString("export.default_format", value))
+                    return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                this->RefreshStorageErrors();
+                this->UpdateButtons();
+                return RendererChangeResult{true, this->StorageFieldError("export.default_format")};
+            }));
+        // 从宿主文本生成固定格式选项，配置 token 与语言分离。
+        // 入参：无。
+        // 返回：JPEG 和 PNG 两个选项。
+        this->Require(
+            this->renderer_->BindOptions("defaultSaveFormat",
+                                         [this]()
+                                         {
+                                             RendererOptionsResult result;
+                                             result.options.push_back({"jpeg", this->Text("settings.storage.jpeg")});
+                                             result.options.push_back({"png", this->Text("settings.storage.png")});
+                                             return result;
+                                         }));
+        this->Require(this->renderer_->BindInteger(
+            "jpegQuality",
+            // 提供原始整数意图，语义越界不夹取；未完成文本阻止程序刷新覆盖。
+            // 入参：无。
+            // 返回：当前整数及读取状态。
+            [this]()
+            {
+                const std::optional<std::int64_t> value = this->editSession_.ReadInteger("export.jpeg_quality");
+                return RendererIntegerResult{value.has_value() && !this->integerInputInvalid_, value.value_or(0),
+                                             this->StorageFieldError("export.jpeg_quality")};
+            },
+            // 接收合法数字或无效状态，后者不能继续提交上次合法草稿。
+            // 入参：value 为完整整数；空值表示无效或未完成输入。
+            // 返回：接受编辑通知并给出字段错误；不可编辑时拒绝。
+            [this](std::optional<std::int64_t> value)
+            {
+                if (!this->ready_ || this->busy_)
+                    return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                this->integerInputInvalid_ = !value.has_value();
+                if (value && !this->editSession_.ChangeInteger("export.jpeg_quality", *value))
+                    return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                this->RefreshStorageErrors();
+                this->UpdateButtons();
+                return RendererChangeResult{true, this->StorageFieldError("export.jpeg_quality")};
+            }));
+    }
+
+    // 查询单字段业务错误，类型错误默认回退显示待修复提示。
+    // 入参：key 为本页字段的动态设置键。
+    // 返回：本地化错误或待修复说明；字段正常为空串。
+    std::wstring StorageFieldError(std::string_view key) const
+    {
+        bool valid = false;
+        const char* invalidKey = "settings.storage.quality_invalid";
+        if (key == "export.jpeg_quality")
+        {
+            const std::optional<std::int64_t> value = this->editSession_.ReadInteger(key);
+            valid = !this->integerInputInvalid_ && value && this->callbacks_.validJpegQuality(*value);
+        }
+        else
+        {
+            const std::optional<std::string> value = this->editSession_.ReadString(key);
+            const bool color = key == "capture.selection_border_color";
+            invalidKey = color ? "settings.storage.color_invalid" : "settings.storage.format_invalid";
+            valid = value && (color ? this->callbacks_.normalizeBorderColor(*value).has_value()
+                                    : this->callbacks_.validImageFormat(*value));
+        }
+        return !valid                                   ? this->Text(invalidKey)
+               : this->editSession_.RequiresRepair(key) ? this->Text("settings.storage.repair_pending")
+                                                        : L"";
+    }
+
+    // 复核全部存储字段，不把未完成数字当作上次合法值。
+    // 入参：无。
+    // 返回：三个字段均满足业务规则时为 true。
+    bool StorageValid() const
+    {
+        const std::optional<std::string> color = this->editSession_.ReadString("capture.selection_border_color");
+        const std::optional<std::string> format = this->editSession_.ReadString("export.default_format");
+        const std::optional<std::int64_t> quality = this->editSession_.ReadInteger("export.jpeg_quality");
+        return !this->integerInputInvalid_ && color && this->callbacks_.normalizeBorderColor(*color) && format &&
+               this->callbacks_.validImageFormat(*format) && quality && this->callbacks_.validJpegQuality(*quality);
+    }
+
+    // 查询需通过显式应用修复的原始类型错误，不把缺字段视为变更。
+    // 入参：无。
+    // 返回：本页任意字段待修复时为 true。
+    bool StorageNeedsRepair() const noexcept
+    {
+        return this->editSession_.RequiresRepair("capture.selection_border_color") ||
+               this->editSession_.RequiresRepair("export.default_format") ||
+               this->editSession_.RequiresRepair("export.jpeg_quality");
+    }
+
+    // 重取三个字段错误，语言刷新不替换原始编辑文本。
+    // 入参：无。
+    // 返回：无。
+    void RefreshStorageErrors()
+    {
+        this->Require(this->renderer_->SetFieldError("selectionBorderColor",
+                                                     this->StorageFieldError("capture.selection_border_color")));
+        this->Require(
+            this->renderer_->SetFieldError("defaultSaveFormat", this->StorageFieldError("export.default_format")));
+        this->Require(this->renderer_->SetFieldError("jpegQuality", this->StorageFieldError("export.jpeg_quality")));
+    }
     // 判断当前草稿是否仍需注册或清理，宿主未提供查询时仅消费本地清理状态。
     // 入参：无。
     // 返回：点击应用还需处理快捷键副作用时为 true。
@@ -445,12 +618,17 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled("languageSelector", this->ready_));
         if (this->callbacks_.startupApplied)
             this->Require(this->renderer_->SetEnabled("startupEnabled", this->ready_));
-        this->Require(this->renderer_->SetEnabled(
-            "applyButton", this->ready_ && (this->editSession_.IsDirty() || this->pendingLanguage_.has_value() ||
-                                            this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
+        this->Require(this->renderer_->SetEnabled("applyButton",
+                                                  this->ready_ && this->StorageValid() &&
+                                                      (this->editSession_.IsDirty() || this->StorageNeedsRepair() ||
+                                                       this->pendingLanguage_.has_value() ||
+                                                       this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
         this->Require(this->renderer_->SetEnabled("startupRepairButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("captureHotkey", this->ready_));
-        this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_));
+        this->Require(this->renderer_->SetEnabled("selectionBorderColor", this->ready_));
+        this->Require(this->renderer_->SetEnabled("defaultSaveFormat", this->ready_));
+        this->Require(this->renderer_->SetEnabled("jpegQuality", this->ready_));
+        this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_ && this->StorageValid()));
         this->Require(this->renderer_->SetEnabled("restoreDefaultsButton", this->ready_));
     }
 
@@ -520,7 +698,12 @@ class SettingsWindow::Impl final
         {
             return;
         }
-        if (!this->editSession_.IsDirty() && !this->pendingLanguage_.has_value() &&
+        if (!this->StorageValid())
+        {
+            this->RefreshStorageErrors();
+            return;
+        }
+        if (!this->editSession_.IsDirty() && !this->StorageNeedsRepair() && !this->pendingLanguage_.has_value() &&
             !this->pendingStartup_.has_value() && !this->HotkeyNeedsApply())
         {
             if (closeWhenDone)
@@ -547,12 +730,31 @@ class SettingsWindow::Impl final
                 const std::optional<std::string> hotkey = this->ReadHotkey();
                 if (!startup || !hotkey || !this->ValidateHotkey(*hotkey))
                     return;
-                const bool dirty = this->editSession_.IsDirty();
+                if (!this->StorageValid())
+                    return;
+                const bool dirty = this->editSession_.IsDirty() || this->StorageNeedsRepair();
                 const bool needsHotkey = hotkeyChanged || this->HotkeyNeedsApply();
                 if (dirty || needsHotkey)
                 {
                     std::optional<std::string> pendingLanguage = languageChanged ? language : this->pendingLanguage_;
                     std::optional<bool> pendingStartup = startupChanged ? startup : this->pendingStartup_;
+                    SettingsEditSession commitSession = this->editSession_;
+                    std::vector<std::string> requiredKeys;
+                    std::vector<std::string> explicitlyEditedKeys;
+                    if (this->editSession_.IsDirty("capture.selection_border_color"))
+                        explicitlyEditedKeys.emplace_back("capture.selection_border_color");
+                    for (const char* key :
+                         {"capture.selection_border_color", "export.default_format", "export.jpeg_quality"})
+                        if (this->editSession_.RequiresRepair(key))
+                            requiredKeys.emplace_back(key);
+                    if (this->editSession_.IsDirty("capture.selection_border_color") ||
+                        this->editSession_.RequiresRepair("capture.selection_border_color"))
+                    {
+                        const std::optional<std::string> color = this->callbacks_.normalizeBorderColor(
+                            *this->editSession_.ReadString("capture.selection_border_color"));
+                        if (!color || !commitSession.ChangeString("capture.selection_border_color", *color))
+                            return;
+                    }
                     struct CandidateGuard final
                     {
                         SettingsWindowCallbacks& callbacks;
@@ -596,7 +798,8 @@ class SettingsWindow::Impl final
                         candidate.prepared = true;
                     }
                     const SettingsCommitResult committed =
-                        dirty ? this->editSession_.Commit() : SettingsCommitResult::Unchanged;
+                        dirty ? commitSession.Commit(requiredKeys, explicitlyEditedKeys)
+                              : SettingsCommitResult::Unchanged;
                     if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
                     {
                         if (candidate.prepared)
@@ -613,8 +816,10 @@ class SettingsWindow::Impl final
                         candidate.prepared = false;
                         this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(true);
                     }
+                    this->editSession_ = std::move(commitSession);
                     this->pendingLanguage_.swap(pendingLanguage);
                     this->pendingStartup_.swap(pendingStartup);
+                    this->Require(this->renderer_->RefreshValues());
                 }
                 bool languageApplied = true;
                 bool startupApplied = true;
@@ -721,6 +926,12 @@ class SettingsWindow::Impl final
                     fields.emplace_back("startup.enabled");
                 if (page == this->renderer_->GetControlPageId("captureHotkey"))
                     fields.emplace_back("capture.hotkey");
+                if (page == this->renderer_->GetControlPageId("selectionBorderColor"))
+                    fields.emplace_back("capture.selection_border_color");
+                if (page == this->renderer_->GetControlPageId("defaultSaveFormat"))
+                    fields.emplace_back("export.default_format");
+                if (page == this->renderer_->GetControlPageId("jpegQuality"))
+                    fields.emplace_back("export.jpeg_quality");
                 SettingsEditSession candidate = this->editSession_;
                 if (fields.empty() || !candidate.RestoreDefaults(fields))
                 {
@@ -752,8 +963,35 @@ class SettingsWindow::Impl final
                     }
                     this->hotkeyErrorKey_.clear();
                 }
+                for (const std::string& key : fields)
+                {
+                    bool valid = true;
+                    if (key == "capture.selection_border_color")
+                    {
+                        const std::optional<std::string> value = candidate.ReadString(key);
+                        valid = value && this->callbacks_.normalizeBorderColor(*value).has_value();
+                    }
+                    else if (key == "export.default_format")
+                    {
+                        const std::optional<std::string> value = candidate.ReadString(key);
+                        valid = value && this->callbacks_.validImageFormat(*value);
+                    }
+                    else if (key == "export.jpeg_quality")
+                    {
+                        const std::optional<std::int64_t> value = candidate.ReadInteger(key);
+                        valid = value && this->callbacks_.validJpegQuality(*value);
+                    }
+                    if (!valid)
+                    {
+                        this->SetStatus("settings.defaults_failed");
+                        return;
+                    }
+                }
                 this->editSession_ = std::move(candidate);
+                if (std::find(fields.begin(), fields.end(), "export.jpeg_quality") != fields.end())
+                    this->integerInputInvalid_ = false;
                 this->Require(this->renderer_->RefreshValues());
+                this->RefreshStorageErrors();
                 this->SetStatus({});
             });
     }
@@ -773,16 +1011,18 @@ class SettingsWindow::Impl final
             // 返回：无返回值。
             [this]()
             {
-                if (this->editSession_.IsDirty() && !this->Confirm("settings.reload_confirm"))
+                if ((this->editSession_.IsDirty() || this->integerInputInvalid_) &&
+                    !this->Confirm("settings.reload_confirm"))
                 {
                     return;
                 }
-                this->ready_ = this->editSession_.Open({"ui.language", "capture.hotkey"}, {"startup.enabled"});
+                this->ready_ = this->OpenEditSession();
                 if (!this->ready_)
                 {
                     this->SetStatus("settings.edit_load_failed");
                     return;
                 }
+                this->integerInputInvalid_ = false;
                 if (this->pendingLanguage_.has_value() &&
                     this->editSession_.ReadString("ui.language") != this->pendingLanguage_)
                 {
@@ -796,6 +1036,7 @@ class SettingsWindow::Impl final
                 this->hotkeyErrorKey_.clear();
                 this->Require(this->renderer_->SetFieldError("languageSelector", {}));
                 this->Require(this->renderer_->SetFieldError("captureHotkey", {}));
+                this->RefreshStorageErrors();
                 this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
                                 : this->pendingStartup_            ? "settings.startup.apply_failed"
                                 : this->hotkeyCleanupPending_      ? "settings.hotkey.cleanup_pending"
@@ -886,6 +1127,7 @@ class SettingsWindow::Impl final
     bool busy_{};
     bool closeAfterBusy_{};
     bool hotkeyCleanupPending_{};
+    bool integerInputInvalid_{};
 };
 
 // 创建编排对象，不立即读取布局或创建窗口。

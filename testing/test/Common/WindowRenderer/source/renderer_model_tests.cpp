@@ -71,6 +71,32 @@ TEST(RendererParserTest, key_chord_allows_no_label_and_rejects_business_value)
     EXPECT_TRUE(ParseLayout(document, layout));
     EXPECT_TRUE(layout.pages[0].content.children[0].textKey.empty());
 }
+// 验证整数布局范围和滑条原生范围限制，普通编辑节点无需标签。
+// 入参：无。
+// 返回：无；通过断言记录协议边界。
+TEST(RendererParserTest, integer_validates_range_and_slider_protocol)
+{
+    nlohmann::json document = Document();
+    nlohmann::json& node = document["pages"][0]["content"]["children"][0];
+    node = {{"type", "integer"}, {"id", "number"}, {"minimum", 1}, {"maximum", 100}, {"slider", true}};
+    Layout layout;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_EQ(layout.pages[0].content.children[0].type, open_st::renderer_detail::NodeType::Integer);
+    EXPECT_TRUE(layout.pages[0].content.children[0].slider);
+    node["minimum"] = 101;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_range");
+    node["minimum"] = 1.5;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_range");
+    node["minimum"] = 1;
+    node["maximum"] = (std::numeric_limits<std::uint64_t>::max)();
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_range");
+    node["maximum"] = 100;
+    node["slider"] = "yes";
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
+    node = {{"type", "edit"}, {"id", "text"}};
+    EXPECT_TRUE(ParseLayout(document, layout));
+    EXPECT_EQ(layout.pages[0].content.children[0].type, open_st::renderer_detail::NodeType::Edit);
+}
 // 验证页面与底部按钮共享 ID 空间，重复时附带定位并保留旧输出。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

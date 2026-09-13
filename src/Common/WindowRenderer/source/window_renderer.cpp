@@ -3,6 +3,7 @@
 #include "renderer_model.h"
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <commctrl.h>
 #include <cstdint>
 #include <dwmapi.h>
@@ -15,6 +16,93 @@
 
 namespace open_st
 {
+namespace
+{
+// 读取编辑框原始文本，保留空字符串和用户尚未完成的输入。
+// 入参：window 为借用的原生编辑框。
+// 返回：文本副本；分配失败抛出异常，不改写控件。
+std::wstring ReadEditText(HWND window)
+{
+    const int length = GetWindowTextLengthW(window);
+    std::wstring value(static_cast<std::size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(window, value.data(), length + 1);
+    value.resize(static_cast<std::size_t>(copied));
+    return value;
+}
+// 将宿主 UTF-8 草稿转换为 Win32 显示字符串。
+// 入参：value 为原始 UTF-8 字节。
+// 返回：宽字符串；非空非法编码抛出异常，空值保持为空。
+std::wstring EditWide(std::string_view value)
+{
+    if (value.empty())
+        return {};
+    const int count =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
+    if (count == 0)
+        throw std::runtime_error("Invalid edit UTF-8");
+    std::wstring result(static_cast<std::size_t>(count), L'\0');
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
+                        count);
+    return result;
+}
+// 将原生文本转换为宿主字符串草稿使用的 UTF-8。
+// 入参：value 为完整原始编辑内容。
+// 返回：UTF-8 副本；非法 UTF-16 抛出异常，空值保持为空。
+std::string EditUtf8(std::wstring_view value)
+{
+    if (value.empty())
+        return {};
+    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (count == 0)
+        throw std::runtime_error("Invalid edit UTF-16");
+    std::string result(static_cast<std::size_t>(count), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
+                        count, nullptr, nullptr);
+    return result;
+}
+// 严格解析十进制整数并验证布局范围，不夹取或改写原始输入。
+// 入参：text 为编辑内容；minimum、maximum 为允许的数值边界。
+// 返回：完整可表示且在范围内的整数；空、未完成或非法输入返回空值。
+std::optional<std::int64_t> ParseEditInteger(std::wstring_view text, std::int64_t minimum, std::int64_t maximum)
+{
+    if (text.empty())
+        return std::nullopt;
+    std::string digits(text.size(), '\0');
+    for (std::size_t index = 0; index < text.size(); ++index)
+    {
+        if ((text[index] < L'0' || text[index] > L'9') && !(index == 0 && text[index] == L'-'))
+            return std::nullopt;
+        digits[index] = static_cast<char>(text[index]);
+    }
+    std::int64_t value{};
+    const std::from_chars_result parsed = std::from_chars(digits.data(), digits.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + text.size() || value < minimum || value > maximum)
+        return std::nullopt;
+    return value;
+}
+
+struct EditRefreshGuard
+{
+    bool& refreshing;
+    bool previous;
+    // 暂时屏蔽程序更新编辑框产生的 EN_CHANGE。
+    // 入参：state 为渲染器刷新状态。
+    // 返回：无。
+    explicit EditRefreshGuard(bool& state) : refreshing(state), previous(state)
+    {
+        this->refreshing = true;
+    }
+    // 恢复进入前的刷新状态，支持同步重入及异常路径。
+    // 入参：无。
+    // 返回：无。
+    ~EditRefreshGuard()
+    {
+        this->refreshing = this->previous;
+    }
+};
+} // namespace
+
 using renderer_detail::Node;
 using renderer_detail::NodeType;
 using renderer_detail::Page;
@@ -26,6 +114,8 @@ struct WindowRenderer::Impl
         const Node* node{};
         std::string page;
         HWND window{};
+        HWND slider{};
+        std::int64_t sliderValue{};
         HWND label{};
         HWND errorWindow{};
         std::wstring text;
@@ -36,6 +126,8 @@ struct WindowRenderer::Impl
         std::function<RendererChangeResult(std::string_view)> change;
         std::function<RendererBoolResult()> readBool;
         std::function<RendererChangeResult(bool)> changeBool;
+        std::function<RendererIntegerResult()> readInteger;
+        std::function<RendererChangeResult(std::optional<std::int64_t>)> changeInteger;
         std::function<RendererKeyChordResult()> readChord;
         std::function<RendererChangeResult(RendererKeyChord)> changeChord;
         std::function<std::wstring(RendererKeyChord)> formatChord;
@@ -193,6 +285,10 @@ struct WindowRenderer::Impl
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Checkbox && (!control.readBool || !control.changeBool))
                 return {"field_binding_missing", {}, id};
+            if (control.node->type == NodeType::Edit && (!control.read || !control.change))
+                return {"field_binding_missing", {}, id};
+            if (control.node->type == NodeType::Integer && (!control.readInteger || !control.changeInteger))
+                return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::KeyChord &&
                 (!control.readChord || !control.changeChord || !control.formatChord))
                 return {"field_binding_missing", {}, id};
@@ -251,7 +347,7 @@ struct WindowRenderer::Impl
         this->font = candidate;
         for (const auto& [id, control] : this->controls)
         {
-            for (HWND child : {control.window, control.label, control.errorWindow})
+            for (HWND child : {control.window, control.slider, control.label, control.errorWindow})
                 if (child != nullptr)
                     SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(candidate), TRUE);
         }
@@ -286,6 +382,10 @@ struct WindowRenderer::Impl
     // 入参：wParam：WM_COMMAND 的控件编号及通知码；lParam：发出通知的 HWND。
     // 返回：无返回值；忙或程序刷新时忽略，拒绝输入恢复已接受值，未在本层收敛的异常交由窗口过程处理。
     void Command(WPARAM wParam, LPARAM lParam);
+    // 处理整数滑条的用户移动，替换编辑文本并通知宿主。
+    // 入参：wParam 为滚动动作；source 为发送消息的滑条窗口。
+    // 返回：无；忙、程序刷新或未知窗口的消息被忽略。
+    void SliderCommand(WPARAM wParam, HWND source);
     // 按稳定控件 ID 执行可用按钮的业务动作。
     // 入参：id：拟触发按钮的布局 ID。
     // 返回：无返回值；忙、禁用、未知 ID 或无动作时忽略；动作异常由外层消息边界处理。
@@ -402,7 +502,29 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     if (node.width == 0)
         actualWidth = std::min(width, std::max(this->Scale(80), this->TextWidth(control.text) + this->Scale(24)));
     int height = this->TextHeight(control.text, actualWidth);
-    if (node.type == NodeType::KeyChord && control.label == nullptr)
+    if (node.type == NodeType::Edit || node.type == NodeType::Integer)
+    {
+        const int labelHeight = control.label != nullptr ? height + this->Scale(4) : 0;
+        const int fieldHeight = this->Scale(28);
+        const int editWidth = control.slider != nullptr ? std::min(actualWidth, this->Scale(64)) : actualWidth;
+        const int gap = control.slider != nullptr ? std::min(std::max(0, actualWidth - editWidth), this->Scale(8)) : 0;
+        const int sliderWidth = control.slider != nullptr ? actualWidth - editWidth - gap : 0;
+        if (place)
+        {
+            if (control.label != nullptr)
+                MoveWindow(control.label, x, y - this->scroll, actualWidth, height, TRUE);
+            MoveWindow(control.window, x + sliderWidth + gap, y + labelHeight - this->scroll, editWidth, fieldHeight,
+                       TRUE);
+            if (control.slider != nullptr)
+                MoveWindow(control.slider, x, y + labelHeight - this->scroll, sliderWidth, fieldHeight, TRUE);
+        }
+        height = labelHeight + fieldHeight;
+        const int errorHeight = this->TextHeight(control.error, actualWidth);
+        if (place)
+            MoveWindow(control.errorWindow, x, y + height - this->scroll, actualWidth, errorHeight, TRUE);
+        return height + errorHeight;
+    }
+    if ((node.type == NodeType::KeyChord || node.type == NodeType::Select) && control.label == nullptr)
         height = this->Scale(28);
     if (node.type == NodeType::Checkbox)
         height = std::max(this->Scale(24),
@@ -414,7 +536,7 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
         const HWND textWindow = control.label != nullptr ? control.label : control.window;
         MoveWindow(textWindow, x, y - this->scroll, actualWidth, height, TRUE);
     }
-    if (node.type == NodeType::Select || (node.type == NodeType::KeyChord && control.label != nullptr))
+    if ((node.type == NodeType::Select || node.type == NodeType::KeyChord) && control.label != nullptr)
     {
         const int fieldY = y + height + this->Scale(4);
         if (place)
@@ -422,6 +544,8 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
                        this->Scale(node.type == NodeType::Select ? 180 : 28), TRUE);
         height += this->Scale(32);
     }
+    else if (node.type == NodeType::Select && place)
+        MoveWindow(control.window, x, y - this->scroll, actualWidth, this->Scale(180), TRUE);
     const int errorHeight = this->TextHeight(control.error, actualWidth);
     if (place && control.errorWindow != nullptr)
         MoveWindow(control.errorWindow, x, y + height - this->scroll, actualWidth, errorHeight, TRUE);
@@ -535,7 +659,7 @@ void WindowRenderer::Impl::Arrange()
     for (const auto& [id, control] : this->controls)
     {
         const bool visible = control.page.empty() || control.page == page.id;
-        for (HWND child : {control.window, control.label, control.errorWindow})
+        for (HWND child : {control.window, control.slider, control.label, control.errorWindow})
             if (child != nullptr)
                 ShowWindow(child, visible ? SW_SHOWNA : SW_HIDE);
     }
@@ -586,7 +710,33 @@ bool WindowRenderer::Impl::CreateControls()
         Control& control = this->controls.at(node.id);
         control.text = node.textKey.empty() ? std::wstring{} : this->text(node.textKey);
         const HMENU id = reinterpret_cast<HMENU>(static_cast<INT_PTR>(controlId++));
-        if (node.type == NodeType::Select || node.type == NodeType::KeyChord)
+        if (node.type == NodeType::Edit || node.type == NodeType::Integer)
+        {
+            if (!node.textKey.empty())
+                control.label = CreateWindowExW(0, L"STATIC", control.text.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                                0, 0, 1, 1, parent, nullptr, instance, nullptr);
+            if (node.slider)
+            {
+                control.slider =
+                    CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_NOTICKS, 0, 0, 1,
+                                    1, parent, nullptr, instance, nullptr);
+                if (control.slider == nullptr)
+                    return false;
+                SendMessageW(control.slider, TBM_SETRANGEMIN, FALSE, static_cast<LPARAM>(node.minimum));
+                SendMessageW(control.slider, TBM_SETRANGEMAX, FALSE, static_cast<LPARAM>(node.maximum));
+                SendMessageW(control.slider, TBM_SETLINESIZE, 0, 1);
+                SendMessageW(control.slider, TBM_SETPOS, TRUE, static_cast<LPARAM>(node.minimum));
+                control.sliderValue = node.minimum;
+            }
+            control.window =
+                CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0,
+                                0, 1, 1, parent, id, instance, nullptr);
+            control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
+                                                  parent, nullptr, instance, nullptr);
+            if ((!node.textKey.empty() && control.label == nullptr) || control.errorWindow == nullptr)
+                return false;
+        }
+        else if (node.type == NodeType::Select || node.type == NodeType::KeyChord)
         {
             if (!node.textKey.empty())
                 control.label = CreateWindowExW(0, L"STATIC", control.text.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
@@ -642,13 +792,16 @@ bool WindowRenderer::Impl::CreateControls()
     for (auto& [id, control] : this->controls)
     {
         if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox ||
-            control.node->type == NodeType::KeyChord)
+            control.node->type == NodeType::KeyChord || control.node->type == NodeType::Edit ||
+            control.node->type == NodeType::Integer)
         {
             const RendererResult result = this->RefreshControl(control);
             if (!result)
                 return false;
         }
         EnableWindow(control.window, control.enabled && !this->busy);
+        if (control.slider != nullptr)
+            EnableWindow(control.slider, control.enabled && !this->busy);
     }
     SetWindowTextW(this->statusWindow, this->status.c_str());
     this->Arrange();
@@ -660,6 +813,42 @@ bool WindowRenderer::Impl::CreateControls()
 // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
+    if (control.node->type == NodeType::Edit || control.node->type == NodeType::Integer)
+    {
+        try
+        {
+            const EditRefreshGuard guard(this->refreshing);
+            if (control.node->type == NodeType::Edit)
+            {
+                const RendererStringResult value = control.read();
+                if (value.success)
+                    SetWindowTextW(control.window, EditWide(value.value).c_str());
+                control.error = value.error;
+            }
+            else
+            {
+                const RendererIntegerResult value = control.readInteger();
+                if (value.success)
+                {
+                    SetWindowTextW(control.window, std::to_wstring(value.value).c_str());
+                    if (control.slider != nullptr && value.value >= control.node->minimum &&
+                        value.value <= control.node->maximum)
+                    {
+                        SendMessageW(control.slider, TBM_SETPOS, TRUE, static_cast<LPARAM>(value.value));
+                        control.sliderValue = value.value;
+                    }
+                }
+                control.error = value.error;
+            }
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            return {};
+        }
+        catch (...)
+        {
+            this->Report({"callback_failed", {}, control.node->id});
+            return {"callback_failed", {}, control.node->id};
+        }
+    }
     if (control.node->type == NodeType::KeyChord)
     {
         try
@@ -763,6 +952,32 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
     {
         if (control.window != source || !control.enabled)
             continue;
+        if ((control.node->type == NodeType::Edit || control.node->type == NodeType::Integer) &&
+            HIWORD(wParam) == EN_CHANGE)
+        {
+            const std::wstring original = ReadEditText(control.window);
+            RendererChangeResult result;
+            if (control.node->type == NodeType::Edit)
+            {
+                const std::string value = EditUtf8(original);
+                result = control.change(value);
+            }
+            else
+            {
+                const std::optional<std::int64_t> value =
+                    ParseEditInteger(original, control.node->minimum, control.node->maximum);
+                result = control.changeInteger(value);
+                if (result.accepted && value && control.slider != nullptr)
+                {
+                    SendMessageW(control.slider, TBM_SETPOS, TRUE, static_cast<LPARAM>(*value));
+                    control.sliderValue = *value;
+                }
+            }
+            control.error = result.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            this->Arrange();
+            return;
+        }
         if (control.node->type == NodeType::Button && HIWORD(wParam) == BN_CLICKED)
         {
             this->Invoke(id);
@@ -831,6 +1046,36 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
                 this->Report({"callback_failed", {}, id});
             this->Arrange();
         }
+        return;
+    }
+}
+
+// 处理整数滑条的用户移动，替换编辑文本并通知宿主。
+// 入参：wParam 为滚动动作；source 为发送消息的滑条窗口。
+// 返回：无；忙、程序刷新或未知窗口的消息被忽略。
+void WindowRenderer::Impl::SliderCommand(WPARAM wParam, HWND source)
+{
+    if (this->busy || this->refreshing || source == nullptr || LOWORD(wParam) > TB_BOTTOM)
+        return;
+    for (auto& [id, control] : this->controls)
+    {
+        if (control.slider != source || !control.enabled || control.node->type != NodeType::Integer)
+            continue;
+        const std::int64_t value = static_cast<int>(SendMessageW(source, TBM_GETPOS, 0, 0));
+        if (value < control.node->minimum || value > control.node->maximum)
+            return;
+        {
+            const EditRefreshGuard guard(this->refreshing);
+            SetWindowTextW(control.window, std::to_wstring(value).c_str());
+        }
+        const RendererChangeResult result = control.changeInteger(value);
+        if (result.accepted)
+            control.sliderValue = value;
+        else
+            SendMessageW(source, TBM_SETPOS, TRUE, static_cast<LPARAM>(control.sliderValue));
+        control.error = result.error;
+        SetWindowTextW(control.errorWindow, control.error.c_str());
+        this->Arrange();
         return;
     }
 }
@@ -1085,6 +1330,11 @@ LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARA
             impl->Command(wParam, lParam);
             return 0;
         }
+        if (impl != nullptr && message == WM_HSCROLL)
+        {
+            impl->SliderCommand(wParam, reinterpret_cast<HWND>(lParam));
+            return 0;
+        }
         if (impl != nullptr && (message == WM_VSCROLL || message == WM_MOUSEWHEEL))
         {
             if (impl->busy)
@@ -1154,6 +1404,9 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
     case WM_COMMAND:
         this->Command(wParam, lParam);
         return 0;
+    case WM_HSCROLL:
+        this->SliderCommand(wParam, reinterpret_cast<HWND>(lParam));
+        return 0;
     case WM_CLOSE:
         this->EndRecording(false);
         if (!this->busy && this->close)
@@ -1222,7 +1475,7 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
         this->viewport = nullptr;
         this->statusWindow = nullptr;
         for (auto& [id, control] : this->controls)
-            control.window = control.label = control.errorWindow = nullptr;
+            control.window = control.slider = control.label = control.errorWindow = nullptr;
         SetWindowLongPtrW(target, GWLP_USERDATA, 0);
         break;
     default:
@@ -1290,7 +1543,7 @@ RendererResult WindowRenderer::SetTextResolver(std::function<std::wstring(std::s
     return {};
 }
 
-// 把下拉框连接到宿主字符串草稿的读取和变更操作。
+// 把下拉框或普通编辑框连接到宿主字符串草稿，编辑框保留被拒绝的原始输入。
 // 入参：id：布局中的下拉框
 // ID；read：返回当前字符串及读取结果的回调；change：接收拟选字符串并返回是否接受的回调；回调移入渲染器。
 // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
@@ -1298,8 +1551,15 @@ RendererResult WindowRenderer::SetTextResolver(std::function<std::wstring(std::s
 RendererResult WindowRenderer::BindString(std::string_view id, std::function<RendererStringResult()> read,
                                           std::function<RendererChangeResult(std::string_view)> change)
 {
+    const RendererResult checked = this->impl_->Check(true);
+    if (!checked)
+        return checked;
     Impl::Control* control{};
-    const RendererResult found = this->impl_->Find(id, NodeType::Select, control);
+    const auto existing = this->impl_->controls.find(id);
+    const NodeType type = existing != this->impl_->controls.end() && existing->second.node->type == NodeType::Edit
+                              ? NodeType::Edit
+                              : NodeType::Select;
+    const RendererResult found = this->impl_->Find(id, type, control);
     if (!found)
         return found;
     if (!read || !change)
@@ -1308,6 +1568,25 @@ RendererResult WindowRenderer::BindString(std::string_view id, std::function<Ren
         return {"duplicate_binding", {}, std::string(id)};
     control->read = std::move(read);
     control->change = std::move(change);
+    return {};
+}
+
+// 绑定整数编辑与可选滑条，原始非法输入保留在编辑框并即时通知宿主。
+// 入参：id 为整数控件；read 读取数值草稿；change 接收合法整数或表示非法、未完成输入的空值。
+// 返回：成功返回空错误码；类型、回调或重复绑定错误返回结构化结果。
+RendererResult WindowRenderer::BindInteger(std::string_view id, std::function<RendererIntegerResult()> read,
+                                           std::function<RendererChangeResult(std::optional<std::int64_t>)> change)
+{
+    Impl::Control* control{};
+    const RendererResult found = this->impl_->Find(id, NodeType::Integer, control);
+    if (!found)
+        return found;
+    if (!read || !change)
+        return {"empty_callback", {}, std::string(id)};
+    if (control->readInteger || control->changeInteger)
+        return {"duplicate_binding", {}, std::string(id)};
+    control->readInteger = std::move(read);
+    control->changeInteger = std::move(change);
     return {};
 }
 
@@ -1510,7 +1789,7 @@ RendererResult WindowRenderer::Show(const RendererWindowOptions& options)
         return {"window_active", {}, {}};
     try
     {
-        INITCOMMONCONTROLSEX common{sizeof(common), ICC_TAB_CLASSES};
+        INITCOMMONCONTROLSEX common{sizeof(common), ICC_TAB_CLASSES | ICC_BAR_CLASSES};
         if (!InitCommonControlsEx(&common))
             return {"control_initialization_failed", {}, {}};
         const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -1682,7 +1961,8 @@ RendererResult WindowRenderer::RefreshValues()
         for (auto& [id, control] : this->impl_->controls)
         {
             if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox &&
-                control.node->type != NodeType::KeyChord)
+                control.node->type != NodeType::KeyChord && control.node->type != NodeType::Edit &&
+                control.node->type != NodeType::Integer)
                 continue;
             const RendererResult result = this->impl_->RefreshControl(control);
             if (!result)
@@ -1759,6 +2039,8 @@ RendererResult WindowRenderer::SetEnabled(std::string_view id, bool enabled)
         this->impl_->EndRecording(false);
     if (found->second.window != nullptr)
         EnableWindow(found->second.window, enabled && !this->impl_->busy);
+    if (found->second.slider != nullptr)
+        EnableWindow(found->second.slider, enabled && !this->impl_->busy);
     return {};
 }
 
@@ -1777,8 +2059,12 @@ RendererResult WindowRenderer::SetBusy(bool busy)
         this->impl_->EndRecording(true);
     this->impl_->busy = busy;
     for (auto& [id, control] : this->impl_->controls)
+    {
         if (control.window != nullptr)
             EnableWindow(control.window, control.enabled && !busy);
+        if (control.slider != nullptr)
+            EnableWindow(control.slider, control.enabled && !busy);
+    }
     if (this->impl_->tabs != nullptr)
         EnableWindow(this->impl_->tabs, !busy);
     if (!busy && this->impl_->savedFocus != nullptr && IsChild(this->impl_->window, this->impl_->savedFocus) &&
@@ -1820,7 +2106,8 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
     if (found == this->impl_->controls.end())
         return {"unknown_id", {}, std::string(id)};
     if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox &&
-        found->second.node->type != NodeType::KeyChord)
+        found->second.node->type != NodeType::KeyChord && found->second.node->type != NodeType::Edit &&
+        found->second.node->type != NodeType::Integer)
         return {"wrong_control_type", {}, std::string(id)};
     found->second.error = std::move(text);
     if (found->second.errorWindow != nullptr)

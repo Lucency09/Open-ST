@@ -14,10 +14,18 @@ enum class ImageFileFormat
     Png
 };
 
+// 编码参数由调用方在保存前固定；PNG 完全忽略 JPEG 质量，JPEG 仅接受 1–100。
+struct ImageEncodingOptions final
+{
+    ImageFileFormat format{ImageFileFormat::Jpeg};
+    int jpegQuality{95};
+};
+
 // 将 SDR 图像保存为 PNG 或 JPEG 文件，调用线程须已初始化 COM。
-// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；path：目标路径，已有文件的覆盖确认由调用方负责；format：PNG 或
-// JPEG 格式；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；path：目标路径，已有文件的覆盖确认由调用方负责；encodingOptions：编码格式及 JPEG
+// 整数质量（1–100），PNG 忽略质量；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
 // 返回：完整编码、写入和刷新成功时为 true；否则为 false，编码失败不触碰目标，覆盖过程不保证原子性。
-[[nodiscard]] bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path, ImageFileFormat format,
-                                  std::wstring& error);
+[[nodiscard]] bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path,
+                                  const ImageEncodingOptions& encodingOptions, std::wstring& error);
 } // namespace open_st

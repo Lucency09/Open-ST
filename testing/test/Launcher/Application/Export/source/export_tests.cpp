@@ -235,7 +235,7 @@ TEST_F(ImageEncoderTest, round_trip_rgb_and_srgb_metadata)
     {
         std::wstring error;
         std::vector<std::uint8_t> encoded;
-        ASSERT_TRUE(EncodeSdrImage(Image(), format, encoded, error));
+        ASSERT_TRUE(EncodeSdrImage(Image(), {format, 95}, encoded, error));
         ComPtr<IWICImagingFactory> factory;
         ComPtr<IWICStream> stream;
         ComPtr<IWICBitmapDecoder> decoder;
@@ -286,7 +286,7 @@ TEST_F(ImageEncoderTest, invalid_format_preserves_output)
 {
     std::vector<std::uint8_t> encoded{42};
     std::wstring error;
-    EXPECT_FALSE(EncodeSdrImage(Image(), static_cast<ImageFileFormat>(99), encoded, error));
+    EXPECT_FALSE(EncodeSdrImage(Image(), {static_cast<ImageFileFormat>(99), 95}, encoded, error));
     EXPECT_EQ(encoded, (std::vector<std::uint8_t>{42}));
     EXPECT_FALSE(error.empty());
 }
@@ -299,10 +299,94 @@ TEST_F(ImageEncoderTest, encoding_failure_never_opens_destination)
     ExportSystemFake fake;
     fake.existing = true;
     std::wstring error;
-    EXPECT_FALSE(WriteImageWithApi({}, L"fake.png", ImageFileFormat::Png, fake.File(), error));
-    EXPECT_FALSE(WriteImageWithApi(Image(), L"fake.png", static_cast<ImageFileFormat>(99), fake.File(), error));
+    EXPECT_FALSE(WriteImageWithApi({}, L"fake.png", {ImageFileFormat::Png, 95}, fake.File(), error));
+    EXPECT_FALSE(WriteImageWithApi(Image(), L"fake.png", {static_cast<ImageFileFormat>(99), 95}, fake.File(), error));
     EXPECT_TRUE(fake.calls.empty());
 }
+// 验证 JPEG 质量 1、95、100 都实际编码、解码有效，固定纹理确实受质量影响。
+// 入参：无；使用内存中的确定性 32×32 BGRX 纹理。
+// 返回：无；不依赖文件大小单调性，通过编码字节差异确认质量生效。
+TEST_F(ImageEncoderTest, jpeg_quality_boundaries_change_encoded_texture)
+{
+    using Microsoft::WRL::ComPtr;
+    std::vector<std::uint8_t> pixels(32U * 32U * 4U);
+    for (std::size_t index = 0U; index < pixels.size(); ++index)
+    {
+        pixels[index] = static_cast<std::uint8_t>((index * 37U + index / 19U) % 256U);
+    }
+    const SdrImageView texture{32U, 32U, 128U, pixels};
+    std::array<std::vector<std::uint8_t>, 3> encodings;
+    const std::array<int, 3> qualities{1, 95, 100};
+    for (std::size_t index = 0U; index < qualities.size(); ++index)
+    {
+        std::wstring error;
+        ASSERT_TRUE(EncodeSdrImage(texture, {ImageFileFormat::Jpeg, qualities[index]}, encodings[index], error));
+        ComPtr<IWICImagingFactory> factory;
+        ComPtr<IWICStream> stream;
+        ComPtr<IWICBitmapDecoder> decoder;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        ASSERT_TRUE(SUCCEEDED(
+            CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))));
+        ASSERT_TRUE(SUCCEEDED(factory->CreateStream(&stream)));
+        ASSERT_TRUE(SUCCEEDED(
+            stream->InitializeFromMemory(encodings[index].data(), static_cast<DWORD>(encodings[index].size()))));
+        ASSERT_TRUE(
+            SUCCEEDED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnLoad, &decoder)));
+        ASSERT_TRUE(SUCCEEDED(decoder->GetFrame(0U, &frame)));
+        UINT width{}, height{};
+        ASSERT_TRUE(SUCCEEDED(frame->GetSize(&width, &height)));
+        EXPECT_EQ(width, 32U);
+        EXPECT_EQ(height, 32U);
+        std::vector<std::uint8_t> decoded(32U * 32U * 3U);
+        EXPECT_TRUE(SUCCEEDED(frame->CopyPixels(nullptr, 96U, static_cast<UINT>(decoded.size()), decoded.data())));
+    }
+    EXPECT_NE(encodings[0], encodings[1]);
+    EXPECT_NE(encodings[1], encodings[2]);
+}
+
+// 验证 PNG 编码完全忽略 JPEG 质量，包含不可用值和整数边界均得到相同字节。
+// 入参：无；借用固定两行像素，既有往返测试另行核对 PNG 精确像素。
+// 返回：无；通过相同编码字节保证质量未改变 PNG 文件及解码像素。
+TEST_F(ImageEncoderTest, png_ignores_jpeg_quality_entirely)
+{
+    std::wstring error;
+    std::vector<std::uint8_t> expected;
+    ASSERT_TRUE(EncodeSdrImage(Image(), {ImageFileFormat::Png, 95}, expected, error));
+    for (const int quality : {0, -1, 1, 100, 101, (std::numeric_limits<int>::min)(), (std::numeric_limits<int>::max)()})
+    {
+        std::vector<std::uint8_t> encoded;
+        ASSERT_TRUE(EncodeSdrImage(Image(), {ImageFileFormat::Png, quality}, encoded, error));
+        EXPECT_EQ(encoded, expected);
+    }
+    ExportSystemFake fake;
+    ASSERT_TRUE(WriteImageWithApi(Image(), L"fake.png", {ImageFileFormat::Png, 0}, fake.File(), error));
+    EXPECT_EQ(fake.writtenBytes, expected);
+    EXPECT_EQ(Count(fake, "flush"), 1U);
+}
+
+// 验证非法 JPEG 质量保留旧内存输出，并在创建或截断新旧目标文件前拒绝。
+// 入参：无；系统文件替身分别模拟新建目标和已有目标。
+// 返回：无；所有非法值均不调用文件 API，也不发布编码结果。
+TEST_F(ImageEncoderTest, invalid_jpeg_quality_never_touches_destination)
+{
+    for (const int quality : {0, -1, 101, (std::numeric_limits<int>::min)(), (std::numeric_limits<int>::max)()})
+    {
+        const ImageEncodingOptions options{ImageFileFormat::Jpeg, quality};
+        std::vector<std::uint8_t> encoded{42};
+        std::wstring error;
+        EXPECT_FALSE(EncodeSdrImage(Image(), options, encoded, error));
+        EXPECT_EQ(encoded, (std::vector<std::uint8_t>{42}));
+        EXPECT_FALSE(error.empty());
+        for (const bool existing : {false, true})
+        {
+            ExportSystemFake fake;
+            fake.existing = existing;
+            EXPECT_FALSE(WriteImageWithApi(Image(), L"fake.jpg", options, fake.File(), error));
+            EXPECT_TRUE(fake.calls.empty());
+        }
+    }
+}
+
 // 比较旧式整帧临时 DIB 加复制与直接填充，测试替身避免触碰系统剪贴板。
 // 入参：仅 Release 且 OPEN_ST_EXPORT_BENCHMARKS=1 时执行；固定 4K 像素和九次采样。
 // 返回：输出中位毫秒和明确省去的临时字节数；不设置机器相关的耗时断言。

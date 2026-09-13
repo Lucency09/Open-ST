@@ -121,6 +121,10 @@ class App final
     // 入参：无。
     // 返回：无返回值；截图或模态提示期间延后处理，其余时消费告警并显示一次合并提示。
     void ReportDataReadWarnings();
+    // 对连续参数错误去重，延迟到截图或模态结束后提示。
+    // 入参：invalidFields 为格式及质量错误位。
+    // 返回：无。
+    void TrackStorageWarnings(std::uint32_t invalidFields) noexcept;
     // 在当前光标位置提供截图、设置、关于及退出托盘菜单。
     // 入参：无。
     // 返回：无返回值；用户选中的命令通过窗口消息交回 App 处理。
@@ -249,6 +253,8 @@ class App final
     bool hotkeyRecording_{};
     bool hotkeyCleanupPending_{};
     DWORD hotkeyBoundary_{};
+    std::uint32_t storageInvalidFields_{};
+    bool storageWarningPending_{};
     bool completionBusy_{}; // 包括错误弹窗在内的忙状态。
     bool dialogActive_{};   // 简单模态弹窗及其系统兜底期间禁止重新打开业务入口。
     bool welcoming_{};

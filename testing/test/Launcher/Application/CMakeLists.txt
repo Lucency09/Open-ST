@@ -16,7 +16,8 @@ target_sources(open_st_application_tests PRIVATE source/simple_message_window_te
 target_sources(open_st_application_tests PRIVATE source/capture_toolbar_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/pin_window_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/hotkey_integration_tests.cpp)
-target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys)
+target_sources(open_st_application_tests PRIVATE source/save_image_dialog_tests.cpp)
+target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export)
 target_include_directories(open_st_application_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Hotkeys/private")
 target_link_libraries(open_st_application_tests PRIVATE OpenST::PinWindow)

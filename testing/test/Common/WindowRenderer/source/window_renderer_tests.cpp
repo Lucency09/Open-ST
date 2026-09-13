@@ -744,6 +744,39 @@ TEST_F(RendererBoolTest, disabled_and_busy_checkbox_do_not_dispatch)
     ASSERT_TRUE(this->renderer_.SetBusy(false));
     EXPECT_TRUE(IsWindowEnabled(checkbox));
 }
+// 验证行内无标签下拉框与左侧描述同高起排，不生成额外标签空白。
+// 入参：无。
+// 返回：无；通过实际控件矩形和现有字符串绑定断言兼容性。
+TEST_F(RendererBindingTest, select_without_label_aligns_with_row_description)
+{
+    nlohmann::json document = WindowDocument();
+    document["pages"][0]["content"]["children"] = nlohmann::json::array(
+        {{{"type", "row"},
+          {"id", "formatRow"},
+          {"gap", 12},
+          {"children",
+           nlohmann::json::array({{{"type", "text"}, {"id", "description"}, {"textKey", "description"}, {"width", 200}},
+                                  {{"type", "select"}, {"id", "choice"}, {"width", "fill"}}})}}});
+    this->Prepare(document);
+    this->Show();
+    const HWND combo = this->Combo();
+    ASSERT_NE(combo, nullptr);
+    const HWND description = GetDlgItem(GetParent(combo), 100);
+    ASSERT_NE(description, nullptr);
+    RECT labelBounds{};
+    RECT comboBounds{};
+    GetWindowRect(description, &labelBounds);
+    GetWindowRect(combo, &comboBounds);
+    EXPECT_EQ(comboBounds.top, labelBounds.top);
+    EXPECT_GT(comboBounds.left, labelBounds.right);
+    EXPECT_EQ(SendMessageW(combo, CB_GETCURSEL, 0, 0), 0);
+    EXPECT_EQ(this->changes_, 0);
+    ASSERT_TRUE(this->renderer_.RefreshTexts());
+    GetWindowRect(combo, &comboBounds);
+    EXPECT_EQ(comboBounds.top, labelBounds.top);
+    EXPECT_EQ(this->changes_, 0);
+}
+
 // 验证组合键字段拒绝空、重复和错误类型绑定，并要求完整回调。
 // 入参：无。
 // 返回：无返回值；通过断言记录绑定错误码。

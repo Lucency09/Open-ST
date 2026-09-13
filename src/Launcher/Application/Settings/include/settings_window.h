@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -88,6 +89,18 @@ struct SettingsWindowCallbacks final
     // 入参：无。
     // 返回：无；刷新失败不撤销已保存结果。
     std::function<void()> hotkeyRefresh;
+    // 校验直接输入的选框颜色，并在显式提交时提供大写规范值。
+    // 入参：string_view 为用户原始 #RRGGBB 文本，不允许自动裁剪空白。
+    // 返回：合法颜色的大写 token；非法或未完成输入为空。
+    std::function<std::optional<std::string>(std::string_view)> normalizeBorderColor;
+    // 校验默认保存格式的稳定配置 token。
+    // 入参：string_view 为 jpeg 或 png 格式 token。
+    // 返回：支持该格式时为 true。
+    std::function<bool(std::string_view)> validImageFormat;
+    // 校验整数 JPEG 质量，不夹取或替换用户值。
+    // 入参：int64_t 为质量值，合法范围由宿主规则确定。
+    // 返回：可用于 JPEG 编码时为 true。
+    std::function<bool(std::int64_t)> validJpegQuality;
 };
 
 // 管理进程内唯一的非模态设置窗口；关闭窗口不会结束应用消息循环。

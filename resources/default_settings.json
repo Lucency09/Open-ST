@@ -5,6 +5,8 @@
     "ui.language": "en-US",
     "onboarding.completed": false,
     "startup.enabled": true,
-    "capture.hotkey": "Ctrl+Alt+Q"
+    "capture.hotkey": "Ctrl+Alt+Q",
+    "export.default_format": "jpeg",
+    "export.jpeg_quality": 95
   }
 }

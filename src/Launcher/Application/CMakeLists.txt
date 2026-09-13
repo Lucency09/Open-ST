@@ -20,6 +20,9 @@ target_sources(open_st_application
         source/app_hotkeys.cpp
         source/app_pin.cpp
         source/capture_completion.cpp
+        source/capture_storage_options.cpp
+        private/capture_storage_options.h
+        private/save_image_dialog_events.h
         source/capture_toolbar_monitor.cpp
         source/diagnostic_text.cpp
         private/capture_toolbar_monitor.h

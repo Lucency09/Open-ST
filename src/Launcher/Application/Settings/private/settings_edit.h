@@ -4,6 +4,7 @@
 
 #include <json_file.h>
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -27,10 +28,22 @@ class SettingsEditSession final
 {
   public:
     // 读取原始用户字段和有效显示值，为指定设置字段建立编辑基线与草稿。
-    // 入参：keys 为字符串字段名列表；boolKeys 为布尔字段名列表。
+    // 入参：keys 为字符串字段名列表；boolKeys 为布尔字段名列表；integerKeys 为整数列表。
     // 返回：全部基线和有效草稿准备成功时为 true；文件、字段或类型不满足时为 false，保留原会话。
-    [[nodiscard]] bool Open(const std::vector<std::string>& keys,
-                            const std::vector<std::string>& boolKeys = {}) noexcept;
+    [[nodiscard]] bool Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys = {},
+                            const std::vector<std::string>& integerKeys = {}) noexcept;
+    // 读取已统一为有符号数值语义的整数草稿。
+    // 入参：key 为登记的整数字段名。
+    // 返回：可表示的整数；字段未登记或类型不符为空。
+    [[nodiscard]] std::optional<std::int64_t> ReadInteger(std::string_view key) const noexcept;
+    // 更新整数草稿，不写入用户配置。
+    // 入参：key 为登记的整数字段名；value 为有符号整数。
+    // 返回：修改成功时为 true。
+    [[nodiscard]] bool ChangeInteger(std::string_view key, std::int64_t value) noexcept;
+    // 查询原始字段类型错误且当前显示默认值的待修复状态。
+    // 入参：key 为登记的字段名。
+    // 返回：存在原始非法类型、需显式提交修复时为 true；缺字段为 false。
+    [[nodiscard]] bool RequiresRepair(std::string_view key) const noexcept;
     // 读取已注册字段草稿；未知字段返回空值。
     // 入参：key 为 settings 对象中的动态设置属性名。
     // 返回：字符串草稿的副本；字段未注册、类型不符或读取失败为 std::nullopt。
@@ -60,9 +73,10 @@ class SettingsEditSession final
     // 返回：至少一个草稿偏离有效显示基线时为 true，否则为 false。
     [[nodiscard]] bool IsDirty() const noexcept;
     // 将变化字段及显式必需字段作为一批提交，并在提交成功后推进原始与显示基线。
-    // 入参：requiredKeys 为即使显示值未改变也要求以准确类型持久化的字段名列表。
+    // 入参：requiredKeys 为需要准确类型持久化的字段；explicitlyEditedKeys 为规范化后仍须条件提交的显式编辑字段。
     // 返回：无须写入为 Unchanged，提交成功为 Saved；失败区分 Conflict、ReadFailed、WriteFailed 和 InvalidField。
-    [[nodiscard]] SettingsCommitResult Commit(const std::vector<std::string>& requiredKeys = {}) noexcept;
+    [[nodiscard]] SettingsCommitResult Commit(const std::vector<std::string>& requiredKeys = {},
+                                              const std::vector<std::string>& explicitlyEditedKeys = {}) noexcept;
     // 查询单字段差异，供宿主只触发变动字段的副作用。
     // 入参：key 为 settings 对象中的动态设置属性名。
     // 返回：指定字段草稿偏离有效显示基线时为 true；未注册或未改变为 false。
@@ -80,6 +94,8 @@ class SettingsEditSession final
   private:
     struct Field
     {
+        bool integer{};
+        bool requiresRepair{};
         std::optional<nlohmann::json> raw;
         nlohmann::json baseline;
         nlohmann::json draft;

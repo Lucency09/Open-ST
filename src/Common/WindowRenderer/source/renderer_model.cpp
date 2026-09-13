@@ -3,6 +3,7 @@
 #include "renderer_model.h"
 #include <algorithm>
 #include <initializer_list>
+#include <limits>
 #include <set>
 
 namespace open_st::renderer_detail
@@ -185,13 +186,44 @@ class Parser
                 node.children.push_back(
                     this->ParseNode(children[index], path + "/children/" + std::to_string(index), depth + 1));
         }
+        else if (type == "edit" || type == "integer")
+        {
+            node.type = type == "edit" ? NodeType::Edit : NodeType::Integer;
+            if (type == "edit")
+                this->Keys(source, {"type", "id", "labelKey", "width"}, path);
+            else
+            {
+                this->Keys(source, {"type", "id", "labelKey", "width", "minimum", "maximum", "slider"}, path);
+                const nlohmann::json& minimum = this->Required(source, "minimum", path);
+                const nlohmann::json& maximum = this->Required(source, "maximum", path);
+                if (!minimum.is_number_integer() || !maximum.is_number_integer() ||
+                    minimum < (std::numeric_limits<std::int64_t>::min)() ||
+                    minimum > (std::numeric_limits<std::int64_t>::max)() ||
+                    maximum < (std::numeric_limits<std::int64_t>::min)() ||
+                    maximum > (std::numeric_limits<std::int64_t>::max)() || minimum > maximum)
+                    this->Fail("invalid_range", path, node.id);
+                node.minimum = minimum.get<std::int64_t>();
+                node.maximum = maximum.get<std::int64_t>();
+                if (source.contains("slider"))
+                {
+                    if (!source["slider"].is_boolean())
+                        this->Fail("invalid_type", path + "/slider", node.id);
+                    node.slider = source["slider"].get<bool>();
+                }
+                if (node.slider && (node.minimum < (std::numeric_limits<int>::min)() ||
+                                    node.maximum > (std::numeric_limits<int>::max)()))
+                    this->Fail("invalid_range", path, node.id);
+            }
+            if (source.contains("labelKey"))
+                node.textKey = this->String(source, "labelKey", path);
+        }
         else if (type == "select" || type == "checkbox" || type == "keyChord")
         {
             node.type = type == "select"     ? NodeType::Select
                         : type == "checkbox" ? NodeType::Checkbox
                                              : NodeType::KeyChord;
             this->Keys(source, {"type", "id", "labelKey", "width"}, path);
-            if (type != "keyChord" || source.contains("labelKey"))
+            if (type == "checkbox" || source.contains("labelKey"))
                 node.textKey = this->String(source, "labelKey", path);
         }
         else if (type == "text" || type == "button")

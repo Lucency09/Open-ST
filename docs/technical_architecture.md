@@ -157,7 +157,7 @@ D3D11 与 DXGI 的关系可以理解为：D3D11 管“GPU 如何创建和处理�
 
 `Application/Export` 借用自身的 `SdrImageView`，将图像编码为带 sRGB 语义的不透明 PNG/JPEG，或构造兼容的 `CF_DIB` 剪贴板数据。该模块不依赖兄弟 Graphics、Settings 或 Localization；视图适配、保存对话框与错误本地化由 Application 完成。全部编码成功后才写目标文件；本次新建文件写入失败时按句柄清理残缺文件，覆盖已有文件不承诺中途失败后原内容完整，不创建临时截图文件。
 
-Application 以 `CopySelection` / `SaveSelection` 为统一业务入口，由 Ctrl+C/Enter 和 Ctrl+S 触发；仅接受稳定且非空的选区。私有 `CaptureCompletion` 通过同步回调协调转换、复制、选择路径、保存和记录目录。保存取消或输出失败保留选区与冻结帧并恢复焦点；成功关闭会话，目录记录失败只单独告警。忙状态阻止重复命令和选区修改；模态对话框期间布局失效只标记取消，返回后停止输出并回收，避免回调仍借用数据时销毁会话。当前不实现双击完成；工具栏和独立 Hotkeys 模块已接入，快捷键设置由 Settings 草稿及 App 注册事务协调。系统保存对话框初始选择 PNG，JPEG 质量为 95；默认文件名按打开对话框时的本地时间生成 `openst-yy-mm-dd_hh-mm-ss.mmm.png`，可切换文件类型并编辑名称。格式偏好设置尚未实现。
+Application 以 `CopySelection` / `SaveSelection` 为统一业务入口，由 Ctrl+C/Enter 和 Ctrl+S 触发；仅接受稳定且非空的选区。私有 `CaptureCompletion` 通过同步回调协调转换、复制、选择路径、保存和记录目录。保存取消或输出失败保留选区与冻结帧并恢复焦点；成功关闭会话，目录记录失败只单独告警。忙状态阻止重复命令和选区修改；模态对话框期间布局失效只标记取消，返回后停止输出并回收，避免回调仍借用数据时销毁会话。当前不实现双击完成；工具栏和独立 Hotkeys 模块已接入，快捷键设置由 Settings 草稿及 App 注册事务协调。系统保存对话框初始格式来自设置（默认 JPEG），质量默认为 95、允许 1–100。App 在进入保存忙态后读取一次固定参数，截图与贴图共用规则；本次对话框中临时切换不写回默认。时间戳文件名使用对应后缀，扩展名冲突在原窗口内修正并再次确认；返回后不改目标路径。Export 只消费显式 ImageEncodingOptions，PNG 忽略 JPEG 质量。
 
 ### 2.6 DirectComposition
 

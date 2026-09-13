@@ -316,4 +316,69 @@ TEST_F(SettingsEditTest, boolean_conflict_preserves_entire_batch)
     EXPECT_FALSE(this->ReadUser().at("settings").contains("ui.language"));
     EXPECT_EQ(session.VerifySavedBool("startup.enabled", false), open_st::SettingsCommitResult::Conflict);
 }
+// 验证正数默认与有符号编辑采用同一整数语义，缺字段不会因读取和恢复默认补写。
+// 入参：无运行入参。
+// 返回：无，断言检查默认比较、草稿状态和持久化缺失。
+TEST_F(SettingsEditTest, integer_default_and_signed_draft_share_value_semantics)
+{
+    this->Write("resources/default_settings.json", R"({"schemaVersion":1,"settings":{"quality":95}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({}, {}, {"quality"}));
+    EXPECT_EQ(session.ReadInteger("quality"), 95);
+    EXPECT_FALSE(session.RequiresRepair("quality"));
+    ASSERT_TRUE(session.ChangeInteger("quality", 95));
+    EXPECT_FALSE(session.IsDirty());
+    ASSERT_TRUE(session.RestoreDefaults({"quality"}));
+    EXPECT_FALSE(session.IsDirty());
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Unchanged);
+    EXPECT_FALSE(this->ReadUser().at("settings").contains("quality"));
+    ASSERT_TRUE(session.ChangeInteger("quality", 100));
+    ASSERT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+    EXPECT_EQ(session.ReadInteger("quality"), 100);
+    ASSERT_TRUE(session.ChangeInteger("quality", 99));
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+}
+
+// 验证浮点、布尔及不可表示整数显示默认但标记待修复，显式 required 提交才修复类型。
+// 入参：无运行入参。
+// 返回：无，断言检查类型严格性、待修复状态和提交结果。
+TEST_F(SettingsEditTest, invalid_integer_raw_type_requires_explicit_repair)
+{
+    this->Write("resources/default_settings.json", R"({"schemaVersion":1,"settings":{"quality":95}})");
+    for (const nlohmann::json& invalid :
+         {nlohmann::json(95.0), nlohmann::json(true), nlohmann::json(18446744073709551615ULL)})
+    {
+        this->Write("data/settings.json",
+                    nlohmann::json{{"schemaVersion", 1}, {"settings", {{"quality", invalid}}}}.dump());
+        open_st::SettingsEditSession session;
+        ASSERT_TRUE(session.Open({}, {}, {"quality"}));
+        EXPECT_EQ(session.ReadInteger("quality"), 95);
+        EXPECT_TRUE(session.RequiresRepair("quality"));
+        EXPECT_FALSE(session.IsDirty());
+        EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Unchanged);
+        EXPECT_EQ(session.Commit({"quality"}), open_st::SettingsCommitResult::Saved);
+        EXPECT_FALSE(session.RequiresRepair("quality"));
+        EXPECT_TRUE(this->ReadUser().at("settings").at("quality").is_number_integer());
+    }
+}
+
+// 验证整数外部改成浮点时仍触发整批冲突，语言草稿及未知字段不被部分提交。
+// 入参：无运行入参。
+// 返回：无，断言检查数值相同而原始类型不同的冲突保护。
+TEST_F(SettingsEditTest, integer_to_float_external_change_blocks_entire_commit)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"quality":95,"ui.language":"en-US"}})");
+    this->Write("data/settings.json",
+                R"({"schemaVersion":1,"settings":{"quality":95,"ui.language":"en-US","unknown":42}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {}, {"quality"}));
+    ASSERT_TRUE(session.ChangeInteger("quality", 90));
+    ASSERT_TRUE(session.ChangeString("ui.language", "ja-JP"));
+    this->Write("data/settings.json",
+                R"({"schemaVersion":1,"settings":{"quality":95.0,"ui.language":"en-US","unknown":42}})");
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Conflict);
+    EXPECT_EQ(this->ReadUser().at("settings").at("ui.language"), "en-US");
+    EXPECT_EQ(this->ReadUser().at("settings").at("unknown"), 42);
+}
 } // namespace

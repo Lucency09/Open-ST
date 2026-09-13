@@ -234,7 +234,7 @@ class SettingsState final
     // 按动态属性名读取有符号整数设置，用户值不可用时回退默认资源。
     // 入参：key 为 settings 对象中的动态设置属性名。
     // 返回：用户配置或默认资源中可由 int64_t 表示的整数；均缺失、类型错误或超范围时为 std::nullopt。
-    std::optional<std::int64_t> Integer(std::string_view key) noexcept
+    std::optional<std::int64_t> Integer(std::string_view key, bool* invalidUser = nullptr) noexcept
     {
         return this->ReadValue<std::int64_t>(
             key,
@@ -247,7 +247,38 @@ class SettingsState final
                        (!value.is_number_unsigned() ||
                         value.get<std::uint64_t>() <=
                             static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
-            });
+            },
+            invalidUser);
+    }
+
+    // 读取默认整数并沿用默认资源故障告警，不消费用户配置。
+    // 入参：key 为动态字段名。
+    // 返回：默认可表示整数；读取、类型或范围无效时为空。
+    std::optional<std::int64_t> DefaultInteger(std::string_view key) noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            nlohmann::json document;
+            if (!this->initialized_ || !this->ReadDocument(this->defaultFile_, document, this->defaultReadFailed_))
+                return std::nullopt;
+            // 严格校验整数可表示范围。
+            // 入参：value 为默认 JSON 字段。
+            // 返回：可表示整数时为 true。
+            return SettingsValue<std::int64_t>(
+                document, key,
+                [](const nlohmann::json& value)
+                {
+                    return value.is_number_integer() &&
+                           (!value.is_number_unsigned() ||
+                            value.get<std::uint64_t>() <=
+                                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+                });
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
     }
 
     // 更新动态字符串 key；编辑写入会先检查外部变化并保留未知字段。
@@ -537,6 +568,22 @@ std::optional<bool> GetBoolSetting(std::string_view key) noexcept
 std::optional<std::int64_t> GetIntegerSetting(std::string_view key) noexcept
 {
     return GetSettingsState().Integer(key);
+}
+
+// 返回整数有效值并保留用户原始字段无效的来源信息。
+// 入参：key 为字段名；invalidUser 输出存在但类型或可表示范围无效。
+// 返回：用户或默认整数；均无效时为空。
+std::optional<std::int64_t> GetIntegerSetting(std::string_view key, bool& invalidUser) noexcept
+{
+    return GetSettingsState().Integer(key, &invalidUser);
+}
+
+// 只返回默认资源中的整数。
+// 入参：key 为字段名。
+// 返回：可表示默认整数或空值。
+std::optional<std::int64_t> GetDefaultIntegerSetting(std::string_view key) noexcept
+{
+    return GetSettingsState().DefaultInteger(key);
 }
 
 // 通过动态 key 写入字符串设置。

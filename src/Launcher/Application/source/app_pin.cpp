@@ -1,5 +1,6 @@
 // 将冻结选区接入独立贴图，并用稳定请求代次和模态快照协调复制保存。
 #include "capture_overlay_session.h"
+#include "capture_storage_options.h"
 #include "save_directory.h"
 #include "save_image_dialog.h"
 #include <app.h>
@@ -172,13 +173,20 @@ void App::DispatchPinCommand(PinCommand command, std::uint64_t request)
             }
             else if (command == PinCommand::Save)
             {
+                const ImageSavePreferences preferences = ReadImageSavePreferences();
+                this->TrackStorageWarnings(preferences.invalidFields);
                 SaveImageTarget target;
-                const SaveChoice choice = ShowSaveImageDialog(owner, LastSaveDirectory(), target, error);
+                const SaveChoice choice =
+                    preferences.defaultFormat
+                        ? ShowSaveImageDialog(owner, LastSaveDirectory(), *preferences.defaultFormat, target, error)
+                        : SaveChoice::Failed;
                 if (choice == SaveChoice::Failed)
                     failureKey = "export.save_failed";
                 if (choice == SaveChoice::Accepted && !this->shuttingDown_ && this->pinManager_->Window(id))
                 {
-                    if (!WriteImageFile(view, target.path, target.format, error))
+                    ImageEncodingOptions options;
+                    if (!MakeImageEncodingOptions(preferences, target.format, options) ||
+                        !WriteImageFile(view, target.path, options, error))
                         failureKey = "export.save_failed";
                     else
                     {

@@ -166,6 +166,80 @@
           }
         ]
       }
+    },
+    {
+      "id": "captureStorage",
+      "titleKey": "settings.storage.title",
+      "content": {
+        "type": "column",
+        "id": "captureStorageContent",
+        "padding": 16,
+        "gap": 14,
+        "children": [
+          {
+            "type": "row",
+            "id": "colorStorageRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "colorStorageLabel",
+                "textKey": "settings.storage.color",
+                "width": 160
+              },
+              {
+                "type": "edit",
+                "id": "selectionBorderColor",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "formatStorageRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "formatStorageLabel",
+                "textKey": "settings.storage.format",
+                "width": 160
+              },
+              {
+                "type": "select",
+                "id": "defaultSaveFormat",
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "qualityStorageRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "qualityStorageLabel",
+                "textKey": "settings.storage.quality",
+                "width": 160
+              },
+              {
+                "type": "integer",
+                "id": "jpegQuality",
+                "minimum": 1,
+                "maximum": 100,
+                "slider": true,
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "id": "storageHelp",
+            "textKey": "settings.storage.help"
+          }
+        ]
+      }
     }
   ],
   "footer": {

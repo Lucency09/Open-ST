@@ -3,8 +3,10 @@
 #pragma once
 
 #include <Windows.h>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
@@ -40,6 +42,12 @@ struct RendererBoolResult
 {
     bool success = true;
     bool value = false;
+    std::wstring error;
+};
+struct RendererIntegerResult
+{
+    bool success = true;
+    std::int64_t value{};
     std::wstring error;
 };
 struct RendererKeyChord
@@ -97,11 +105,16 @@ class WindowRenderer final
     // 入参：callback：接收文本键并返回宽字符文本的回调，移入渲染器；其捕获对象须保持存活。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；须在显示前注册，空回调或重复绑定被拒绝。
     RendererResult SetTextResolver(std::function<std::wstring(std::string_view)> callback);
-    // 把下拉框连接到宿主字符串草稿的读取和变更操作。
-    // 入参：id：布局中的下拉框 ID；read：返回当前字符串及读取结果的回调；change：接收拟选字符串并返回是否接受的回调；回调移入渲染器。
-    // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；非下拉框、空回调或重复绑定被拒绝，拒绝变更时恢复已接受值。
+    // 把下拉框或普通编辑框连接到宿主字符串草稿的读取和即时变更操作。
+    // 入参：id 为 select 或 edit 控件；read 读取 UTF-8 草稿；change 接收完整原始字符串并返回宿主校验结果。
+    // 返回：绑定错误返回结构化结果；下拉框拒绝时恢复已接受值，编辑框拒绝时保留原始文本供继续修改。
     RendererResult BindString(std::string_view id, std::function<RendererStringResult()> read,
                               std::function<RendererChangeResult(std::string_view)> change);
+    // 绑定整数编辑与可选滑条，原始非法输入保留在编辑框并即时通知宿主。
+    // 入参：id 为整数控件；read 读取数值草稿；change 接收合法整数或表示非法、未完成输入的空值。
+    // 返回：成功返回空错误码；类型、回调或重复绑定错误返回结构化结果，不接管宿主业务校验。
+    RendererResult BindInteger(std::string_view id, std::function<RendererIntegerResult()> read,
+                                std::function<RendererChangeResult(std::optional<std::int64_t>)> change);
     // 把复选框连接到宿主布尔草稿的读取和变更操作。
     // 入参：id：布局中的复选框 ID；read：读取当前布尔值的回调；change：接收新布尔值并返回是否接受的回调；回调移入渲染器。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID 的结构化结果；类型不符、空回调或重复绑定被拒绝。

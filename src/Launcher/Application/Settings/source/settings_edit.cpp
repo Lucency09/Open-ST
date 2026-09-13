@@ -4,10 +4,22 @@
 #include "settings_internal.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace
 {
+// 严格读取可表示整数，统一 JSON 正数和显式有符号输入的比较语义。
+// 入参：value 为原始 JSON 值。
+// 返回：int64_t 整数；浮点、布尔或溢出时为空。
+std::optional<std::int64_t> IntegerValue(const nlohmann::json& value)
+{
+    if (!value.is_number_integer() ||
+        (value.is_number_unsigned() &&
+         value.get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())))
+        return std::nullopt;
+    return value.get<std::int64_t>();
+}
 // 提取字段的原始持久化值，用于区分缺失、显式 null 和有效显示默认值。
 // 入参：document 为已通过编辑协议校验的设置文档；key 为动态字段名。
 // 返回：字段存在时返回保留原始类型的 JSON 副本，包括显式 null；缺失时返回 std::nullopt。
@@ -23,6 +35,13 @@ std::optional<nlohmann::json> RawField(const nlohmann::json& document, std::stri
 // 返回：存在性、JSON 类型和内容均一致为 true，否则为 false。
 bool SameRaw(const std::optional<nlohmann::json>& left, const std::optional<nlohmann::json>& right)
 {
+    if (left && right && left->is_number_integer() && right->is_number_integer())
+    {
+        const std::optional<std::int64_t> leftInteger = IntegerValue(*left);
+        const std::optional<std::int64_t> rightInteger = IntegerValue(*right);
+        if (leftInteger && rightInteger)
+            return *leftInteger == *rightInteger;
+    }
     return left.has_value() == right.has_value() &&
            (!left.has_value() || (left->type() == right->type() && *left == *right));
 }
@@ -31,9 +50,10 @@ bool SameRaw(const std::optional<nlohmann::json>& left, const std::optional<nloh
 namespace open_st
 {
 // 读取原始用户字段和有效显示值，为指定设置字段建立编辑基线与草稿。
-// 入参：keys 为字符串字段名列表；boolKeys 为布尔字段名列表。
+// 入参：keys 为字符串列表；boolKeys 为布尔列表；integerKeys 为整数列表。
 // 返回：全部基线和有效草稿准备成功时为 true；文件、字段或类型不满足时为 false，保留原会话。
-bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys) noexcept
+bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys,
+                               const std::vector<std::string>& integerKeys) noexcept
 {
     try
     {
@@ -51,25 +71,36 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::
         const bool defaultsValid = candidate.defaultFile_.Read(defaults) && IsSettingsDocument(defaults);
         std::vector<std::string> allKeys = keys;
         allKeys.insert(allKeys.end(), boolKeys.begin(), boolKeys.end());
+        allKeys.insert(allKeys.end(), integerKeys.begin(), integerKeys.end());
         for (const std::string& key : allKeys)
         {
             const bool boolean = std::find(boolKeys.begin(), boolKeys.end(), key) != boolKeys.end();
+            const bool integer = std::find(integerKeys.begin(), integerKeys.end(), key) != integerKeys.end();
+            // 依据本字段登记类型检查原始值，不混同浮点和整数。
+            // 入参：value 为待验证 JSON 字段。
+            // 返回：类型和可表示范围正确时为 true。
+            const auto valid = [boolean, integer](const nlohmann::json& value)
+            {
+                return integer ? IntegerValue(value).has_value() : boolean ? value.is_boolean() : value.is_string();
+            };
             if (key.empty() || candidate.fields_.contains(key))
             {
                 return false;
             }
             Field field;
+            field.integer = integer;
             field.raw = RawField(user, key);
+            field.requiresRepair = field.raw && !valid(*field.raw);
             std::optional<nlohmann::json> effective = field.raw;
-            if (!effective.has_value() || (boolean ? !effective->is_boolean() : !effective->is_string()))
+            if (!effective || !valid(*effective))
             {
                 effective = defaultsValid ? RawField(defaults, key) : std::nullopt;
             }
-            if (!effective.has_value() || (boolean ? !effective->is_boolean() : !effective->is_string()))
+            if (!effective || !valid(*effective))
             {
                 return false;
             }
-            field.baseline = *effective;
+            field.baseline = integer ? nlohmann::json(*IntegerValue(*effective)) : *effective;
             field.draft = field.baseline;
             candidate.fields_.emplace(key, std::move(field));
         }
@@ -140,11 +171,13 @@ bool SettingsEditSession::RestoreDefaults(const std::vector<std::string>& keys) 
         {
             const auto field = candidate.find(key);
             const std::optional<nlohmann::json> value = RawField(defaults, key);
-            if (field == candidate.end() || !value.has_value() || value->type() != field->second.baseline.type())
+            if (field == candidate.end() || !value ||
+                (field->second.integer ? !IntegerValue(*value).has_value()
+                                       : value->type() != field->second.baseline.type()))
             {
                 return false;
             }
-            field->second.draft = *value;
+            field->second.draft = field->second.integer ? nlohmann::json(*IntegerValue(*value)) : *value;
         }
         this->fields_.swap(candidate);
         return true;
@@ -171,9 +204,10 @@ bool SettingsEditSession::IsDirty() const noexcept
 }
 
 // 将变化字段及显式必需字段作为一批提交，并在提交成功后推进原始与显示基线。
-// 入参：requiredKeys 为即使显示值未改变也要求以准确类型持久化的字段名列表。
+// 入参：requiredKeys 为需要准确类型持久化的字段；explicitlyEditedKeys 为规范化后仍须条件提交的显式编辑字段。
 // 返回：无须写入为 Unchanged，提交成功为 Saved；失败区分 Conflict、ReadFailed、WriteFailed 和 InvalidField。
-SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>& requiredKeys) noexcept
+SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>& requiredKeys,
+                                                 const std::vector<std::string>& explicitlyEditedKeys) noexcept
 {
     try
     {
@@ -186,14 +220,21 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
             if (!this->fields_.contains(key))
                 return SettingsCommitResult::InvalidField;
         }
+        for (const std::string& key : explicitlyEditedKeys)
+        {
+            if (!this->fields_.contains(key))
+                return SettingsCommitResult::InvalidField;
+        }
         // 判断字段是否改动，或必需字段是否尚未以准确类型持久化。
         // 入参：key 为待检查字段名；field 包含该字段的原始值、显示基线和当前草稿。
         // 返回：草稿已改变或必需字段尚未准确持久化时为 true，否则为 false。
-        const auto needsWrite = [&requiredKeys](const std::string& key, const Field& field)
+        const auto needsWrite = [&requiredKeys, &explicitlyEditedKeys](const std::string& key, const Field& field)
         {
-            return field.draft != field.baseline ||
+            return std::find(explicitlyEditedKeys.begin(), explicitlyEditedKeys.end(), key) !=
+                       explicitlyEditedKeys.end() ||
+                   field.draft != field.baseline ||
                    (std::find(requiredKeys.begin(), requiredKeys.end(), key) != requiredKeys.end() &&
-                    (!field.raw.has_value() || *field.raw != field.draft || field.raw->type() != field.draft.type()));
+                    !SameRaw(field.raw, std::optional<nlohmann::json>(field.draft)));
         };
         if (!std::any_of(this->fields_.begin(), this->fields_.end(),
                          // 按字段键和草稿检查是否存在需要写入的设置项。
@@ -210,6 +251,7 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
             {
                 field.raw = field.draft;
                 field.baseline = field.draft;
+                field.requiresRepair = false;
             }
         }
         SettingsCommitResult failure = SettingsCommitResult::WriteFailed;
@@ -371,5 +413,34 @@ SettingsCommitResult SettingsEditSession::VerifyCurrentString(std::string_view k
     {
         return SettingsCommitResult::ReadFailed;
     }
+}
+// 读取整数草稿，拒绝其他登记类型。
+// 入参：key 为字段名。
+// 返回：整数值或空值。
+std::optional<std::int64_t> SettingsEditSession::ReadInteger(std::string_view key) const noexcept
+{
+    const auto field = this->fields_.find(key);
+    return field == this->fields_.end() || !field->second.integer ? std::nullopt : IntegerValue(field->second.draft);
+}
+
+// 将数值更新到已登记整数草稿。
+// 入参：key 为字段名；value 为新整数。
+// 返回：成功为 true，失败保留原草稿。
+bool SettingsEditSession::ChangeInteger(std::string_view key, std::int64_t value) noexcept
+{
+    const auto field = this->fields_.find(key);
+    if (!this->ready_ || field == this->fields_.end() || !field->second.integer)
+        return false;
+    field->second.draft = value;
+    return true;
+}
+
+// 区分类型非法默认回退与正常缺字段回退。
+// 入参：key 为字段名。
+// 返回：原始类型尚待显式修复时为 true。
+bool SettingsEditSession::RequiresRepair(std::string_view key) const noexcept
+{
+    const auto field = this->fields_.find(key);
+    return field != this->fields_.end() && field->second.requiresRepair;
 }
 } // namespace open_st

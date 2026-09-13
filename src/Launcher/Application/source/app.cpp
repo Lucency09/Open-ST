@@ -2,6 +2,7 @@
 
 #include "capture_command_gate.h"
 #include "capture_completion.h"
+#include "capture_storage_options.h"
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
 #include "save_directory.h"
@@ -488,17 +489,25 @@ int App::Run(int)
 // 返回：无返回值；截图或模态提示期间延后处理，其余时消费告警并显示一次合并提示。
 void App::ReportDataReadWarnings()
 {
-    if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_ || this->shuttingDown_)
+    if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_ || this->shuttingDown_ ||
+        this->completionBusy_ || this->settingsBusy_)
     {
         return;
     }
     const bool settingsFailed = ConsumeSettingsReadWarning();
     const bool textsFailed = ConsumeUiTextReadWarning();
-    if (!settingsFailed && !textsFailed)
+    const bool storageFailed = std::exchange(this->storageWarningPending_, false);
+    if (!settingsFailed && !textsFailed && !storageFailed)
     {
         return;
     }
-    const std::wstring message = GetUiText("common_resources.read_failed");
+    std::wstring message = settingsFailed || textsFailed ? GetUiText("common_resources.read_failed") : L"";
+    if (storageFailed)
+    {
+        if (!message.empty())
+            message += L"\n";
+        message += GetUiText("settings.storage.read_failed");
+    }
     const std::wstring title = GetUiText("app.title");
     // 读取告警文本本身若遇到新故障，本次合并提示已经覆盖，不留到下一条消息重复报告。
     (void)ConsumeUiTextReadWarning();
@@ -510,6 +519,19 @@ void App::ReportDataReadWarnings()
                             // 入参：无。
                             // 返回：标题快照。
                             [title]() { return title; }, MB_OK | MB_ICONWARNING);
+}
+
+// 对持续的存储参数故障去重，恢复后允许再次提示，不在读取时打断截图。
+// 入参：invalidFields 为本次参数故障位。
+// 返回：无。
+void App::TrackStorageWarnings(std::uint32_t invalidFields) noexcept
+{
+    if ((invalidFields & ~this->storageInvalidFields_) != 0)
+    {
+        this->storageWarningPending_ = true;
+        OPEN_ST_LOG_WARNING("Capture storage settings invalid; using available defaults. fields=", invalidFields);
+    }
+    this->storageInvalidFields_ = invalidFields;
 }
 
 // 注册并创建接收热键、托盘和业务命令的隐藏消息窗口。
@@ -1715,6 +1737,9 @@ try
         const HWND owner = this->overlaySession_->ActivationWindow();
         SdrSelectionFrame frame;
         SaveImageTarget target;
+        const ImageSavePreferences preferences = save ? ReadImageSavePreferences() : ImageSavePreferences{};
+        if (save)
+            this->TrackStorageWarnings(preferences.invalidFields);
         CompletionActions actions;
         // 从冻结桌面生成当前选区的 SDR 输出图像。
         // 入参：无显式入参；捕获 selection 及 App，借用输出 frame 和诊断 error。
@@ -1737,17 +1762,30 @@ try
         // 读取上次保存目录并显示系统图片保存对话框。
         // 入参：无显式入参；捕获 owner，借用 target 和 error 作为选择结果和诊断输出。
         // 返回：ShowSaveImageDialog 的 Accepted、Cancelled 或 Failed 状态。
-        actions.chooseSave = [owner, &target, &error]()
-        { return ShowSaveImageDialog(owner, LastSaveDirectory(), target, error); };
+        actions.chooseSave = [owner, preferences, &target, &error]()
+        {
+            if (!preferences.defaultFormat)
+            {
+                error = L"No valid default image format is available.";
+                return SaveChoice::Failed;
+            }
+            return ShowSaveImageDialog(owner, LastSaveDirectory(), *preferences.defaultFormat, target, error);
+        };
         // 将生成的 SDR 选区图像写入用户已确认的文件目标。
         // 入参：无显式入参；借用 frame、target、error，捕获 App 校验会话有效性。
         // 返回：会话有效且文件写入成功 true；会话失效或写入失败 false。
-        actions.save = [this, &frame, &target, &error]()
+        actions.save = [this, preferences, &frame, &target, &error]()
         {
+            ImageEncodingOptions options;
+            if (!MakeImageEncodingOptions(preferences, target.format, options))
+            {
+                error = L"JPEG quality configuration is unavailable.";
+                return false;
+            }
             const SdrImageView image{static_cast<std::uint32_t>(frame.Bounds().Width()),
                                      static_cast<std::uint32_t>(frame.Bounds().Height()), frame.Stride(),
                                      frame.Pixels()};
-            return !this->overlayInvalidated_ && WriteImageFile(image, target.path, target.format, error);
+            return !this->overlayInvalidated_ && WriteImageFile(image, target.path, options, error);
         };
         // 记住成功保存截图的父目录以便下次打开保存对话框。
         // 入参：无显式入参；借用 target 获取父目录。

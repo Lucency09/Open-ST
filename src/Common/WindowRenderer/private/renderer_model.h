@@ -12,6 +12,8 @@ enum class NodeType
     Select,
     Checkbox,
     KeyChord,
+    Edit,
+    Integer,
     Button
 };
 struct Node
@@ -22,6 +24,9 @@ struct Node
     int padding = 0;
     int gap = 12;
     int width = -1;
+    std::int64_t minimum{};
+    std::int64_t maximum{};
+    bool slider{};
     std::vector<Node> children;
 };
 struct Page

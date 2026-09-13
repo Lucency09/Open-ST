@@ -26,9 +26,12 @@ struct FileWriteApi
 [[nodiscard]] bool WriteEncodedFile(const std::filesystem::path& path, std::span<const std::uint8_t> bytes,
                                     const FileWriteApi& api, std::wstring& error);
 // 先在内存完成 SDR 图像编码，再经注入接口写入目标文件，调用线程须已初始化 COM。
-// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；path：目标路径，覆盖确认由调用方完成；format：PNG 或 JPEG
-// 格式；api：调用期间有效的文件系统接口表；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；path：目标路径，覆盖确认由调用方完成；encodingOptions：编码格式及 JPEG
+// 整数质量（1–100），PNG
+// 忽略质量；api：调用期间有效的文件系统接口表；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
 // 返回：编码、写入及刷新全部成功时为 true；否则为 false，编码失败不触碰目标，覆盖写入失败不保证回滚。
 [[nodiscard]] bool WriteImageWithApi(const SdrImageView& image, const std::filesystem::path& path,
-                                     ImageFileFormat format, const FileWriteApi& api, std::wstring& error);
+                                     const ImageEncodingOptions& encodingOptions, const FileWriteApi& api,
+                                     std::wstring& error);
 } // namespace open_st

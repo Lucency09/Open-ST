@@ -50,6 +50,14 @@ void ShutdownSettings() noexcept;
 // 入参：key 为 settings 对象中的动态设置属性名。
 // 返回：用户配置或默认资源中可由 int64_t 表示的整数；均缺失、类型错误或超范围时为 std::nullopt。
 [[nodiscard]] std::optional<std::int64_t> GetIntegerSetting(std::string_view key) noexcept;
+// 读取整数并保留用户字段类型或可表示范围无效的来源。
+// 入参：key 为动态字段名；invalidUser 输出原始字段存在但无效的状态。
+// 返回：有效用户或默认整数，均不可用时为空。
+[[nodiscard]] std::optional<std::int64_t> GetIntegerSetting(std::string_view key, bool& invalidUser) noexcept;
+// 只读取默认资源中的整数，不读取或写入用户配置。
+// 入参：key 为动态字段名。
+// 返回：可表示的默认整数；资源、类型或范围无效时为空。
+[[nodiscard]] std::optional<std::int64_t> GetDefaultIntegerSetting(std::string_view key) noexcept;
 
 // 只更新指定动态 key，并保留文档中的其他设置和未知字段。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的字符串值。

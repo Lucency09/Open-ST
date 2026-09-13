@@ -610,6 +610,71 @@
       "zh-CN": "Esc",
       "en-US": "Esc",
       "ja-JP": "Esc"
+    },
+    "settings.storage.title": {
+      "zh-CN": "截图与存储",
+      "en-US": "Capture and storage",
+      "ja-JP": "キャプチャと保存"
+    },
+    "settings.storage.color": {
+      "zh-CN": "选框颜色",
+      "en-US": "Selection border color",
+      "ja-JP": "選択枠の色"
+    },
+    "settings.storage.format": {
+      "zh-CN": "默认保存格式",
+      "en-US": "Default save format",
+      "ja-JP": "既定の保存形式"
+    },
+    "settings.storage.quality": {
+      "zh-CN": "JPEG 质量",
+      "en-US": "JPEG quality",
+      "ja-JP": "JPEG 品質"
+    },
+    "settings.storage.jpeg": {
+      "zh-CN": "JPEG",
+      "en-US": "JPEG",
+      "ja-JP": "JPEG"
+    },
+    "settings.storage.png": {
+      "zh-CN": "PNG",
+      "en-US": "PNG",
+      "ja-JP": "PNG"
+    },
+    "settings.storage.help": {
+      "zh-CN": "颜色使用 #RRGGBB，例如 #12ABEF。JPEG 质量范围 1–100，100 仍不是无损。应用后用于下一次截图或保存；保存窗口临时切换格式不会修改默认设置。",
+      "en-US": "Use #RRGGBB for colors, such as #12ABEF. JPEG quality ranges from 1 to 100; 100 is not lossless. Applied settings affect the next capture or save. Changing format in the save dialog does not change the default.",
+      "ja-JP": "色は #12ABEF のような #RRGGBB 形式で入力します。JPEG 品質は 1–100 で、100 でも可逆圧縮ではありません。適用後、次のキャプチャや保存に使用します。保存画面で形式を変更しても既定値は変わりません。"
+    },
+    "settings.storage.color_invalid": {
+      "zh-CN": "请输入 # 加六位十六进制字符，不含空格或透明度。",
+      "en-US": "Enter # followed by six hexadecimal digits, without spaces or alpha.",
+      "ja-JP": "空白や透明度を含めず、# と6桁の16進数を入力してください。"
+    },
+    "settings.storage.format_invalid": {
+      "zh-CN": "请选择 JPEG 或 PNG。",
+      "en-US": "Select JPEG or PNG.",
+      "ja-JP": "JPEG または PNG を選択してください。"
+    },
+    "settings.storage.quality_invalid": {
+      "zh-CN": "JPEG 质量必须是 1–100 的整数。",
+      "en-US": "JPEG quality must be an integer from 1 to 100.",
+      "ja-JP": "JPEG 品質は 1–100 の整数で指定してください。"
+    },
+    "settings.storage.repair_pending": {
+      "zh-CN": "配置类型无效，现显示有效默认值。点击应用后修复。",
+      "en-US": "The stored value has an invalid type. A valid default is shown; click Apply to repair it.",
+      "ja-JP": "保存値の型が無効です。有効な既定値を表示しています。「適用」で修復します。"
+    },
+    "settings.storage.read_failed": {
+      "zh-CN": "部分截图存储配置无效，已尝试使用有效默认值。请在设置中检查；无法取得所需参数时不会保存图片。",
+      "en-US": "Some capture or storage settings are invalid. Valid defaults were used where available. Check Settings; images are not saved if required options are unavailable.",
+      "ja-JP": "一部のキャプチャ・保存設定が無効です。利用可能な既定値を使用しました。必要な設定を取得できない場合、画像は保存されません。設定を確認してください。"
+    },
+    "export.dialog.extension_corrected": {
+      "zh-CN": "扩展名已按所选格式修正为 {extension}。请确认文件名并再次点击保存。",
+      "en-US": "The extension was changed to {extension} to match the selected format. Check the filename and click Save again.",
+      "ja-JP": "選択形式に合わせて拡張子を {extension} に修正しました。ファイル名を確認して、もう一度保存してください。"
     }
   }
 }

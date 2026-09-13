@@ -408,4 +408,27 @@ TEST_F(SettingsTest, default_string_getter_rejects_wrong_type_without_using_user
     EXPECT_FALSE(open_st::GetDefaultStringSetting("missing"));
     EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
 }
+// 验证默认整数读取不消费用户覆盖，非法用户类型回退保留来源，默认故障产生去重告警。
+// 入参：无运行入参。
+// 返回：无，断言检查读取来源、溢出边界和默认资源告警。
+TEST_F(SettingsTest, default_integer_and_invalid_user_source_are_distinct)
+{
+    SettingsTest::WriteRaw(this->root_ / "resources/default_settings.json",
+                           R"({"schemaVersion":1,"settings":{"quality":95}})");
+    SettingsTest::WriteRaw(this->root_ / "data/settings.json", R"({"schemaVersion":1,"settings":{"quality":50}})");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    bool invalidUser = true;
+    EXPECT_EQ(open_st::GetIntegerSetting("quality", invalidUser), 50);
+    EXPECT_FALSE(invalidUser);
+    EXPECT_EQ(open_st::GetDefaultIntegerSetting("quality"), 95);
+    SettingsTest::WriteRaw(this->root_ / "data/settings.json",
+                           R"({"schemaVersion":1,"settings":{"quality":18446744073709551615}})");
+    EXPECT_EQ(open_st::GetIntegerSetting("quality", invalidUser), 95);
+    EXPECT_TRUE(invalidUser);
+    SettingsTest::WriteRaw(this->root_ / "resources/default_settings.json", "{broken");
+    EXPECT_FALSE(open_st::GetDefaultIntegerSetting("quality"));
+    EXPECT_TRUE(open_st::ConsumeSettingsReadWarning());
+    EXPECT_FALSE(open_st::GetDefaultIntegerSetting("quality"));
+    EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
+}
 } // namespace

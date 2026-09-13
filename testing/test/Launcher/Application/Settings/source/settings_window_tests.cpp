@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <settings.h>
 #include <settings_window.h>
 #include <stdexcept>
@@ -73,12 +74,16 @@ class SettingsWindowTest : public testing::Test
         std::filesystem::create_directories(this->root_ / "data");
         std::filesystem::copy_file(OPEN_ST_SETTINGS_LAYOUT_PATH, this->root_ / "resources/setting_windows.json",
                                    std::filesystem::copy_options::overwrite_existing);
-        this->Write("resources/default_settings.json",
-                    R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
-                    R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q"}})");
-        this->Write("data/settings.json",
-                    R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
-                    R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q"}})");
+        this->Write(
+            "resources/default_settings.json",
+            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+            R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q",)"
+            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95}})");
+        this->Write(
+            "data/settings.json",
+            R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+            R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q",)"
+            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95}})");
         ASSERT_TRUE(open_st::InitializeSettings(this->root_));
         open_st::SettingsWindowTestAccess::SetConfirmation(this->window_,
                                                            // 记录恢复默认确认次数，并返回用例指定的确认结果。
@@ -244,6 +249,32 @@ class SettingsWindowTest : public testing::Test
         // 入参：无。
         // 返回：无。
         callbacks.hotkeyRefresh = [this]() { this->window_.RefreshTexts(); };
+        // 为窗口测试提供严格颜色规则替身，不建立兄弟模块依赖。
+        // 入参：value 为原始颜色输入。
+        // 返回：合法六位颜色的大写值，否则为空。
+        callbacks.normalizeBorderColor = [](std::string_view value) -> std::optional<std::string>
+        {
+            if (value.size() != 7 || value.front() != '#')
+                return std::nullopt;
+            std::string normalized(value);
+            for (std::size_t index = 1; index < normalized.size(); ++index)
+            {
+                char& character = normalized[index];
+                if (character >= 'a' && character <= 'f')
+                    character = static_cast<char>(character - 'a' + 'A');
+                else if (!(character >= '0' && character <= '9') && !(character >= 'A' && character <= 'F'))
+                    return std::nullopt;
+            }
+            return normalized;
+        };
+        // 只允许设计中的两个保存 token。
+        // 入参：value 为格式值。
+        // 返回：jpeg/png 为 true。
+        callbacks.validImageFormat = [](std::string_view value) { return value == "jpeg" || value == "png"; };
+        // 验证整数 JPEG 质量范围。
+        // 入参：value 为质量值。
+        // 返回：1 到 100 含端点为 true。
+        callbacks.validJpegQuality = [](std::int64_t value) { return value >= 1 && value <= 100; };
         return callbacks;
     }
 
@@ -1156,5 +1187,147 @@ TEST_F(SettingsWindowTest, hotkey_apply_retry_commits_other_field_drafts)
     EXPECT_EQ(this->activeHotkey_, "Ctrl+Alt+Q");
     EXPECT_EQ(this->hotkeyEvents_, (std::vector<std::string>{"prepare", "activate", "language"}));
     EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+}
+// 验证真实颜色输入即时激活应用，写入失败保留小写原文，成功后才显示规范大写。
+// 入参：无运行入参。
+// 返回：无，断言检查控件文字、磁盘值及失败恢复。
+TEST_F(SettingsWindowTest, storage_color_normalizes_only_after_successful_commit)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#000000");
+    ASSERT_NE(color, nullptr);
+    SetWindowTextW(color, L"#aabbcc");
+    this->Pump();
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    this->Click("settings.apply");
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#aabbcc");
+    EXPECT_EQ(open_st::GetStringSetting("capture.selection_border_color"), "#000000");
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_NORMAL), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("capture.selection_border_color"), "#AABBCC");
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#AABBCC");
+}
+
+// 验证半个色值与无效数字均阻止整个设置批次，语言刷新不会吞掉用户原输入。
+// 入参：无运行入参。
+// 返回：无，断言检查按钮禁用、原输入保留和取消无写入。
+TEST_F(SettingsWindowTest, storage_invalid_input_blocks_all_fields_and_survives_text_refresh)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#000000");
+    const HWND quality = this->Control(L"Edit", L"95");
+    ASSERT_NE(color, nullptr);
+    ASSERT_NE(quality, nullptr);
+    SetWindowTextW(color, L"#123");
+    this->Pump();
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+    SetWindowTextW(color, L"#123456");
+    SetWindowTextW(quality, L"95.5");
+    this->Pump();
+    this->window_.RefreshTexts();
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(quality, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"95.5");
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetIntegerSetting("export.jpeg_quality"), 95);
+}
+
+// 验证原始字段类型错误显示默认并允许显式应用修复，未知字段不被删除。
+// 入参：无运行入参。
+// 返回：无，断言检查待修复按钮和持久化真实类型。
+TEST_F(SettingsWindowTest, storage_wrong_types_enable_explicit_default_repair)
+{
+    this->Write(
+        "data/settings.json",
+        R"({"schemaVersion":1,"settings":{"ui.language":"en-US",)"
+        R"("capture.selection_border_color":42,"export.default_format":false,"export.jpeg_quality":95.0,"unknown":7}})");
+    ASSERT_NE(this->Open(), nullptr);
+    this->Click("settings.apply");
+    nlohmann::json document;
+    std::ifstream input(this->root_ / "data/settings.json");
+    input >> document;
+    EXPECT_EQ(document.at("settings").at("capture.selection_border_color"), "#000000");
+    EXPECT_EQ(document.at("settings").at("export.default_format"), "jpeg");
+    EXPECT_TRUE(document.at("settings").at("export.jpeg_quality").is_number_integer());
+    EXPECT_EQ(document.at("settings").at("unknown"), 7);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+}
+
+// 验证业务非法质量原值保持可见，不夹取成最大值；恢复本页默认只改变草稿。
+// 入参：无运行入参。
+// 返回：无，断言检查语义错误和默认恢复后的未保存边界。
+TEST_F(SettingsWindowTest, storage_semantic_quality_error_requires_edit_or_defaults)
+{
+    ASSERT_TRUE(open_st::SetIntegerSetting("export.jpeg_quality", 999));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    EXPECT_NE(this->Control(L"Edit", L"999"), nullptr);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_NE(this->Control(L"Edit", L"95"), nullptr);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetIntegerSetting("export.jpeg_quality"), 999);
+}
+// 验证颜色仅改大小写仍检查原始字段冲突，冲突阻止同批语言和快捷键提交。
+// 入参：无运行入参。
+// 返回：无，断言检查外部值保留、原始输入保留以及候选撤销。
+TEST_F(SettingsWindowTest, storage_case_only_edit_detects_external_conflict_for_entire_batch)
+{
+    ASSERT_TRUE(open_st::SetStringSetting("capture.selection_border_color", "#AABBCC"));
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    ASSERT_TRUE(open_st::SettingsWindowTestAccess::ChangeHotkey(this->window_, "Ctrl+Shift+F8"));
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#AABBCC");
+    ASSERT_NE(color, nullptr);
+    SetWindowTextW(color, L"#aabbcc");
+    this->Pump();
+    ASSERT_TRUE(open_st::SetStringSetting("capture.selection_border_color", "#123456"));
+    this->Click("settings.apply");
+    EXPECT_NE(this->Control(L"Static", L"settings.conflict"), nullptr);
+    EXPECT_EQ(open_st::GetStringSetting("capture.selection_border_color"), "#123456");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Alt+Q");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#aabbcc");
+}
+
+// 验证无外部冲突的大小写修改完成规范化并清除草稿，不重写内容相同文件的原始排版。
+// 入参：无运行入参。
+// 返回：无，断言检查可见规范值、按钮状态和用户文件字节。
+TEST_F(SettingsWindowTest, storage_case_only_edit_normalizes_without_rewriting_identical_document)
+{
+    const std::string original = "{ \"schemaVersion\" : 1, \"settings\" : { \"ui.language\" : \"en-US\", "
+                                 "\"capture.selection_border_color\" : \"#AABBCC\" } }\n";
+    this->Write("data/settings.json", original);
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#AABBCC");
+    ASSERT_NE(color, nullptr);
+    SetWindowTextW(color, L"#aabbcc");
+    this->Pump();
+    this->Click("settings.apply");
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#AABBCC");
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    std::ifstream input(this->root_ / "data/settings.json", std::ios::binary);
+    const std::string saved{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(saved, original);
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
 }
 } // namespace

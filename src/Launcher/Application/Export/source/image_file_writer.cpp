@@ -40,9 +40,9 @@ class OutputFile final
 };
 
 // 记录文件写入错误，并为本次新建的不完整文件请求关闭时删除。
-// 入参：file：仍打开的目标文件句柄；created：是否由本次操作新建；api：文件系统接口表；operation：失败操作名称；code：原始 Win32
-// 错误码；error：输出参数，接收写入故障及删除标记失败详情。
-// 返回：始终返回 false；仅新建文件尝试设置删除标记，已有覆盖目标保留当前内容且不回滚。
+// 入参：file：仍打开的目标文件句柄；created：是否由本次操作新建；api：文件系统接口表；operation：失败操作名称；code：原始
+// Win32 错误码；error：输出参数，接收写入故障及删除标记失败详情。 返回：始终返回
+// false；仅新建文件尝试设置删除标记，已有覆盖目标保留当前内容且不回滚。
 bool FileFailure(HANDLE file, bool created, const FileWriteApi& api, const wchar_t* operation, DWORD code,
                  std::wstring& error)
 {
@@ -114,14 +114,16 @@ bool WriteEncodedFile(const std::filesystem::path& path, std::span<const std::ui
 }
 
 // 先在内存完成 SDR 图像编码，再经注入接口写入目标文件，调用线程须已初始化 COM。
-// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；path：目标路径，覆盖确认由调用方完成；format：PNG 或 JPEG
-// 格式；api：调用期间有效的文件系统接口表；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；path：目标路径，覆盖确认由调用方完成；encodingOptions：编码格式及 JPEG
+// 整数质量（1–100），PNG
+// 忽略质量；api：调用期间有效的文件系统接口表；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
 // 返回：编码、写入及刷新全部成功时为 true；否则为 false，编码失败不触碰目标，覆盖写入失败不保证回滚。
-bool WriteImageWithApi(const SdrImageView& image, const std::filesystem::path& path, ImageFileFormat format,
-                       const FileWriteApi& api, std::wstring& error)
+bool WriteImageWithApi(const SdrImageView& image, const std::filesystem::path& path,
+                       const ImageEncodingOptions& encodingOptions, const FileWriteApi& api, std::wstring& error)
 {
     std::vector<std::uint8_t> encoded;
-    if (!EncodeSdrImage(image, format, encoded, error))
+    if (!EncodeSdrImage(image, encodingOptions, encoded, error))
     {
         return false;
     }
@@ -129,12 +131,13 @@ bool WriteImageWithApi(const SdrImageView& image, const std::filesystem::path& p
 }
 
 // 将 SDR 图像保存为 PNG 或 JPEG 文件，调用线程须已初始化 COM。
-// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride 为行字节跨度，第四字节不表示透明度；path：目标路径，已有文件的覆盖确认由调用方负责；format：PNG 或
-// JPEG 格式；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
+// 入参：image：调用期间借用的顶向下 SDR/sRGB BGRX 图像，宽高为像素数、stride
+// 为行字节跨度，第四字节不表示透明度；path：目标路径，已有文件的覆盖确认由调用方负责；encodingOptions：编码格式及 JPEG
+// 整数质量（1–100），PNG 忽略质量；error：输出参数，失败时接收供日志记录的诊断，不直接用于界面显示。
 // 返回：完整编码、写入和刷新成功时为 true；否则为 false，编码失败不触碰目标，覆盖过程不保证原子性。
-bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path, ImageFileFormat format,
-                    std::wstring& error)
+bool WriteImageFile(const SdrImageView& image, const std::filesystem::path& path,
+                    const ImageEncodingOptions& encodingOptions, std::wstring& error)
 {
-    return WriteImageWithApi(image, path, format, FileWriteApi{}, error);
+    return WriteImageWithApi(image, path, encodingOptions, FileWriteApi{}, error);
 }
 } // namespace open_st
