@@ -240,6 +240,48 @@
           }
         ]
       }
+    },
+    {
+      "id": "maintenance",
+      "titleKey": "settings.maintenance.title",
+      "content": {
+        "type": "column",
+        "id": "maintenanceContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "text",
+            "id": "maintenanceHelp",
+            "textKey": "settings.maintenance.help"
+          },
+          {
+            "type": "button",
+            "id": "openLogDirectoryButton",
+            "textKey": "settings.maintenance.open_directory"
+          },
+          {
+            "type": "button",
+            "id": "clearHistoricalLogsButton",
+            "textKey": "settings.maintenance.clear_history"
+          },
+          {
+            "type": "text",
+            "id": "maintenanceStatus",
+            "textKey": "settings.maintenance.status"
+          },
+          {
+            "type": "button",
+            "id": "restoreAllSettingsButton",
+            "textKey": "settings.maintenance.restore_all"
+          },
+          {
+            "type": "text",
+            "id": "restoreAllHelp",
+            "textKey": "settings.maintenance.restore_help"
+          }
+        ]
+      }
     }
   ],
   "footer": {

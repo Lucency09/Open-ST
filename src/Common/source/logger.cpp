@@ -45,6 +45,72 @@ struct FileTimestamp
     std::string value;
 };
 
+struct MaintenanceHandleDeleter
+{
+    // 释放维护期间持有的文件或目录句柄。
+    // 入参：handle：可为空或无效的 Win32 句柄。
+    // 返回：无返回值；有效句柄恰好关闭一次。
+    void operator()(void* handle) const noexcept
+    {
+        if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
+            CloseHandle(handle);
+    }
+};
+using MaintenanceHandle = std::unique_ptr<void, MaintenanceHandleDeleter>;
+
+// 读取路径自身身份，允许正常日志轮转删除旧文件，但不跟随重解析点。
+// 入参：path：完整文件路径；information：输出文件身份和属性。
+// 返回：已验证普通文件的句柄；失败返回空句柄。
+MaintenanceHandle ReadLogIdentity(const std::filesystem::path& path, BY_HANDLE_FILE_INFORMATION& information)
+{
+    MaintenanceHandle handle(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                         FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    if (handle.get() == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(handle.get(), &information) ||
+        (information.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+        return {};
+    return handle;
+}
+
+// 比较文件实际身份，防止路径别名绕过当前日志保护。
+// 入参：left、right：已读取成功的文件身份。
+// 返回：卷序号及文件索引均相同时为 true。
+bool SameLogIdentity(const BY_HANDLE_FILE_INFORMATION& left, const BY_HANDLE_FILE_INFORMATION& right) noexcept
+{
+    return left.dwVolumeSerialNumber == right.dwVolumeSerialNumber && left.nFileIndexHigh == right.nFileIndexHigh &&
+           left.nFileIndexLow == right.nFileIndexLow;
+}
+
+// 逐级固定日志目录，拒绝重解析点并阻止维护期间重命名或替换路径组件。
+// 入参：directory：绝对日志目录；handles：接收需要全程保留的目录句柄；stop：取消标志。
+// 返回：所有组件都是普通目录时为 true；目录不可用或已取消时为 false。
+bool AnchorLogDirectory(const std::filesystem::path& directory, std::vector<MaintenanceHandle>& handles,
+                        std::stop_token stop)
+{
+    std::filesystem::path current = directory.root_path();
+    std::vector<std::filesystem::path> paths{current};
+    for (const std::filesystem::path& component : directory.relative_path())
+    {
+        current /= component;
+        paths.push_back(current);
+    }
+    for (const std::filesystem::path& path : paths)
+    {
+        if (stop.stop_requested())
+            return false;
+        MaintenanceHandle handle(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                             nullptr, OPEN_EXISTING,
+                                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (handle.get() == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(handle.get(), &information) ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+            return false;
+        handles.push_back(std::move(handle));
+    }
+    return true;
+}
+
 // 识别日志文件名中的日期片段格式。
 // 入参：text：待检查的 YYYY-MM-DD 片段。
 // 返回：数字和连字符位置符合格式时 true；否则 false，不校验日期实际存在。
@@ -322,6 +388,119 @@ class LoggerState final
         }
     }
 
+    // 提供当前运行日志服务的实际目录，不改变任何状态。
+    // 入参：无。
+    // 返回：运行时目录副本；未初始化或异常时为空。
+    std::optional<std::filesystem::path> Directory() noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            if (this->initialized_)
+                return this->logDirectory_;
+        }
+        catch (...)
+        {
+        }
+        return std::nullopt;
+    }
+
+    // 删除本次快照中的历史日志，保持当前流和正常轮转不受维护操作重置。
+    // 入参：stop：枚举及各次删除前检查的取消标志。
+    // 返回：结构化结果；开始及删除时的当前文件都保留，异常不向上层传播。
+    open_st::LogCleanupResult ClearHistorical(std::stop_token stop) noexcept
+    {
+        open_st::LogCleanupResult result;
+        try
+        {
+            std::filesystem::path directory;
+            std::filesystem::path initialPath;
+            std::uint64_t generation{};
+            BY_HANDLE_FILE_INFORMATION initialIdentity{};
+            {
+                const std::scoped_lock<std::mutex> lock(this->mutex_);
+                if (stop.stop_requested())
+                {
+                    result.status = open_st::LogCleanupStatus::Cancelled;
+                    return result;
+                }
+                if (!this->initialized_)
+                    return result;
+                directory = this->logDirectory_;
+                initialPath = this->currentPath_;
+                generation = this->generation_;
+                const MaintenanceHandle initialFile = ReadLogIdentity(this->currentPath_, initialIdentity);
+                if (!initialFile)
+                {
+                    ++result.failed;
+                    return result;
+                }
+                // 只保留身份值；立即关闭查询句柄，避免正常轮转删除旧文件后留下待删除对象。
+            }
+            std::vector<MaintenanceHandle> directories;
+            if (!AnchorLogDirectory(directory, directories, stop))
+            {
+                if (stop.stop_requested())
+                    result.status = open_st::LogCleanupStatus::Cancelled;
+                else
+                    ++result.failed;
+                return result;
+            }
+            std::vector<std::filesystem::path> candidates;
+            std::error_code error;
+            std::filesystem::directory_iterator iterator(directory, error);
+            const std::filesystem::directory_iterator end;
+            while (!error && iterator != end)
+            {
+                if (stop.stop_requested())
+                {
+                    result.status = open_st::LogCleanupStatus::Cancelled;
+                    return result;
+                }
+                LogFileInfo info;
+                if (ParseLogFile(iterator->path(), info))
+                    candidates.push_back(std::move(info.path));
+                iterator.increment(error);
+            }
+            if (error)
+                ++result.failed;
+            result.status = open_st::LogCleanupStatus::Completed;
+            for (const std::filesystem::path& candidate : candidates)
+            {
+                const std::scoped_lock<std::mutex> lock(this->mutex_);
+                if (stop.stop_requested())
+                {
+                    result.status = open_st::LogCleanupStatus::Cancelled;
+                    return result;
+                }
+                if (!this->initialized_ || this->generation_ != generation)
+                {
+                    ++result.failed;
+                    result.status = result.deleted != 0 ? open_st::LogCleanupStatus::PartialFailure
+                                                        : open_st::LogCleanupStatus::Unavailable;
+                    return result;
+                }
+                if (candidate == initialPath || candidate == this->currentPath_)
+                {
+                    ++result.retained;
+                    continue;
+                }
+                this->DeleteHistoricalLocked(candidate, initialIdentity, result);
+            }
+            if (stop.stop_requested())
+                result.status = open_st::LogCleanupStatus::Cancelled;
+            else if (result.failed != 0)
+                result.status = open_st::LogCleanupStatus::PartialFailure;
+        }
+        catch (...)
+        {
+            ++result.failed;
+            if (result.status == open_st::LogCleanupStatus::Completed)
+                result.status = open_st::LogCleanupStatus::PartialFailure;
+        }
+        return result;
+    }
+
     // 停止日志输出并删除可识别的程序日志，供退出清理重试。
     // 入参：无；使用初始化时记录的日志目录。
     // 返回：目录不存在或全部清理成功 true；路径含重解析点、访问失败或删除失败 false，保留目录供重试。
@@ -485,11 +664,62 @@ class LoggerState final
     }
 
   private:
+    // 在短写锁临界区验证候选身份并按句柄删除，拒绝链接、别名和无法确认的目标。
+    // 入参：candidate：命名已识别路径；initialIdentity：操作开始时的当前文件身份；result：累计结果。
+    // 返回：无返回值；每个候选计入删除、失败、保留或已消失之一，调用方须持有 mutex_。
+    void DeleteHistoricalLocked(const std::filesystem::path& candidate,
+                                const BY_HANDLE_FILE_INFORMATION& initialIdentity, open_st::LogCleanupResult& result)
+    {
+        MaintenanceHandle file(CreateFileW(candidate.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                           FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+        if (file.get() == INVALID_HANDLE_VALUE)
+        {
+            const DWORD error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                ++result.alreadyMissing;
+            else
+                ++result.failed;
+            return;
+        }
+        BY_HANDLE_FILE_INFORMATION information{};
+        if (!GetFileInformationByHandle(file.get(), &information) ||
+            (information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            ++result.failed;
+            return;
+        }
+        if ((information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ||
+            SameLogIdentity(information, initialIdentity))
+        {
+            ++result.retained;
+            return;
+        }
+        BY_HANDLE_FILE_INFORMATION currentIdentity{};
+        const MaintenanceHandle currentFile = ReadLogIdentity(this->currentPath_, currentIdentity);
+        if (!currentFile || information.nNumberOfLinks != 1)
+        {
+            ++result.failed;
+            return;
+        }
+        if (SameLogIdentity(information, currentIdentity))
+        {
+            ++result.retained;
+            return;
+        }
+        FILE_DISPOSITION_INFO disposition{TRUE};
+        if (SetFileInformationByHandle(file.get(), FileDispositionInfo, &disposition, sizeof(disposition)))
+            ++result.deleted;
+        else
+            ++result.failed;
+    }
+
     // 在持锁状态下关闭当前文件并复位日志运行状态。
     // 入参：clearDirectory：是否同时清除日志目录，false 保留目录以便清理重试；调用方须持有 mutex_。
     // 返回：无返回值；刷新关闭输出，清空路径及计数并取消初始化状态。
     void ResetLocked(bool clearDirectory = true) noexcept
     {
+        ++this->generation_;
         if (this->file_.is_open())
         {
             this->file_.flush();
@@ -789,6 +1019,7 @@ class LoggerState final
     std::string currentDate_;
     std::size_t lineCount_{};
     std::uintmax_t fileBytes_{};
+    std::uint64_t generation_{};
     open_st::LogOptions options_{};
     bool needsSeparator_{};
     bool initialized_{};
@@ -806,6 +1037,22 @@ LoggerState& GetLoggerState()
 
 namespace open_st
 {
+// 查询已初始化日志服务的目录，不启动或重置日志。
+// 入参：无。
+// 返回：当前目录副本；不可用时为空。
+std::optional<std::filesystem::path> GetLoggingDirectory() noexcept
+{
+    return GetLoggerState().Directory();
+}
+
+// 在保持当前日志连续写入的前提下清理历史文件。
+// 入参：stop：操作取消标志。
+// 返回：结构化清理状态及各类计数。
+LogCleanupResult ClearHistoricalLogs(std::stop_token stop) noexcept
+{
+    return GetLoggerState().ClearHistorical(stop);
+}
+
 // 使用当前程序目录和默认轮转配置启动日志服务。
 // 入参：无。
 // 返回：默认日志初始化成功时 true；程序路径查询或日志准备失败时 false。

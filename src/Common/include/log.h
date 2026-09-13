@@ -4,8 +4,39 @@
 
 #include <log_detail.h>
 
+#include <cstddef>
+#include <filesystem>
+#include <optional>
+#include <stop_token>
+
 namespace open_st
 {
+enum class LogCleanupStatus
+{
+    Completed,
+    PartialFailure,
+    Unavailable,
+    Cancelled
+};
+
+struct LogCleanupResult
+{
+    LogCleanupStatus status{LogCleanupStatus::Unavailable};
+    std::size_t deleted{};
+    std::size_t failed{};
+    std::size_t retained{};
+    std::size_t alreadyMissing{};
+};
+
+// 查询当前初始化日志服务所用目录，不创建目录或启动服务。
+// 入参：无。
+// 返回：正在运行时返回实际目录副本；未初始化或查询失败时为空。
+std::optional<std::filesystem::path> GetLoggingDirectory() noexcept;
+// 清理可识别的历史日志，保持当前输出流继续写入。
+// 入参：stop：取消请求，在枚举和逐项删除前检查。
+// 返回：结构化状态和删除、失败、保留、已消失计数；异常不越过模块边界。
+LogCleanupResult ClearHistoricalLogs(std::stop_token stop = {}) noexcept;
+
 // 初始化进程日志输出并应用文件轮转限制。
 // 入参：无。
 // 返回：初始化成功时为 true；路径、配置或文件访问失败时为 false，不向调用方传播异常。

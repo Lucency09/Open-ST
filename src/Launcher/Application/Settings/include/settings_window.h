@@ -19,6 +19,12 @@ struct SettingsHotkeyChord final
     UINT modifiers{};
     UINT key{};
 };
+// Application 拥有的维护任务快照，查询和显示只发生在 UI 线程。
+struct SettingsMaintenanceStatus final
+{
+    bool running{};
+    std::wstring text;
+};
 // 由上级 Application 提供本地化查询及保存通知，Settings 不依赖同级本地化模块。
 struct SettingsWindowCallbacks final
 {
@@ -101,6 +107,12 @@ struct SettingsWindowCallbacks final
     // 入参：int64_t 为质量值，合法范围由宿主规则确定。
     // 返回：可用于 JPEG 编码时为 true。
     std::function<bool(std::int64_t)> validJpegQuality;
+    // 打开日志目录，不保存当前草稿；成功打开为 true，缺少回调时操作不可用。
+    std::function<bool()> openLogDirectory;
+    // 启动已确认的历史清理；true 表示任务已接收，不表示删除完成。
+    std::function<bool()> clearHistoricalLogs;
+    // 查询宿主维护任务的当前状态，不持有任务或窗口所有权。
+    std::function<SettingsMaintenanceStatus()> maintenanceStatus;
 };
 
 // 管理进程内唯一的非模态设置窗口；关闭窗口不会结束应用消息循环。

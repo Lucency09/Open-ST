@@ -5,6 +5,7 @@
 #include "capture_storage_options.h"
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
+#include "log_maintenance_task.h"
 #include "save_directory.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
@@ -250,6 +251,7 @@ App::App(HINSTANCE instance) noexcept : instance_(instance) {}
 App::~App()
 {
     this->shuttingDown_ = true;
+    this->StopLogMaintenance();
     this->pendingPinId_ = 0;
     if (this->singleInstance_ != nullptr)
     {
@@ -468,11 +470,13 @@ int App::Run(int)
     {
         if (this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(message))
         {
+            this->DrainLogMaintenance();
             this->ReportDataReadWarnings();
             continue;
         }
         TranslateMessage(&message);
         DispatchMessageW(&message);
+        this->DrainLogMaintenance();
         this->ReportDataReadWarnings();
     }
     if (messageResult == -1)
@@ -594,6 +598,12 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 返回：已消费业务消息的处理结果；其他消息返回 DefWindowProcW 的结果。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (message == WM_APP + 7)
+    {
+        if (this->logMaintenance_ && this->logMaintenance_->Snapshot().operation == static_cast<std::uint64_t>(wParam))
+            this->DrainLogMaintenance();
+        return 0;
+    }
     if (message == PIN_STOPPED_MESSAGE)
     {
         this->UpdateCaptureGate();
@@ -607,6 +617,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
     if (message == WM_CLOSE)
     {
         this->shuttingDown_ = true;
+        this->StopLogMaintenance();
         this->pendingPinId_ = 0;
         if (this->pinManager_)
             this->pinManager_->Shutdown();
@@ -877,6 +888,7 @@ void App::ShowTrayMenu()
 // 返回：无返回值；首次创建时注入业务回调，忙状态下不重复开启。
 void App::ShowSettings()
 {
+    this->DrainLogMaintenance();
     if (this->dialogActive_ || this->shuttingDown_)
     {
         return;
@@ -1856,7 +1868,7 @@ catch (const std::exception&)
 // 返回：无返回值；失败保留状态提示，用户完成清理或确认退出后请求结束应用。
 void App::ShowCleanup()
 {
-    if (this->dialogActive_ || this->completionBusy_ || this->welcoming_)
+    if (this->dialogActive_ || this->completionBusy_ || this->welcoming_ || this->shuttingDown_)
     {
         return;
     }
@@ -1962,6 +1974,7 @@ void App::ShowCleanup()
                                                 return;
                                             }
                                             this->shuttingDown_ = true;
+                                            this->StopLogMaintenance();
                                             if (this->settingsWindow_ != nullptr)
                                             {
                                                 this->settingsWindow_->Close();

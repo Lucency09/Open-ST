@@ -675,6 +675,116 @@
       "zh-CN": "扩展名已按所选格式修正为 {extension}。请确认文件名并再次点击保存。",
       "en-US": "The extension was changed to {extension} to match the selected format. Check the filename and click Save again.",
       "ja-JP": "選択形式に合わせて拡張子を {extension} に修正しました。ファイル名を確認して、もう一度保存してください。"
+    },
+    "settings.maintenance.title": {
+      "zh-CN": "维护",
+      "en-US": "Maintenance",
+      "ja-JP": "メンテナンス"
+    },
+    "settings.maintenance.help": {
+      "zh-CN": "清理只删除本程序的历史日志，当前日志保留并继续记录。",
+      "en-US": "Cleanup removes only this app’s historical logs. The current log is kept and recording continues.",
+      "ja-JP": "このアプリの過去のログだけを削除します。現在のログは保持し、記録を続けます。"
+    },
+    "settings.maintenance.open_directory": {
+      "zh-CN": "打开日志目录",
+      "en-US": "Open log folder",
+      "ja-JP": "ログフォルダーを開く"
+    },
+    "settings.maintenance.clear_history": {
+      "zh-CN": "清理历史日志",
+      "en-US": "Clear historical logs",
+      "ja-JP": "過去のログを削除"
+    },
+    "settings.maintenance.restore_all": {
+      "zh-CN": "恢复全部设置",
+      "en-US": "Restore all settings",
+      "ja-JP": "すべての設定を既定に戻す"
+    },
+    "settings.maintenance.restore_help": {
+      "zh-CN": "恢复全部设置经确认后立即保存并生效，替换所有未应用的设置草稿。",
+      "en-US": "After confirmation, all settings are saved and applied immediately, replacing unapplied drafts.",
+      "ja-JP": "確認後、未適用の変更を置き換え、すべての設定を直ちに保存・適用します。"
+    },
+    "settings.maintenance.status": {
+      "zh-CN": "日志状态待查询。",
+      "en-US": "Log status is unavailable.",
+      "ja-JP": "ログの状態を取得できません。"
+    },
+    "settings.maintenance.idle": {
+      "zh-CN": "当前没有清理任务。",
+      "en-US": "No cleanup is running.",
+      "ja-JP": "削除処理は実行されていません。"
+    },
+    "settings.maintenance.running": {
+      "zh-CN": "正在清理历史日志，当前日志继续记录……",
+      "en-US": "Clearing historical logs. The current log continues recording…",
+      "ja-JP": "過去のログを削除中です。現在のログは記録を続けています…"
+    },
+    "settings.maintenance.completed": {
+      "zh-CN": "历史日志清理完成，已删除 {deleted} 个文件。当前日志保留。",
+      "en-US": "Cleanup completed: {deleted} files deleted. The current log was kept.",
+      "ja-JP": "削除完了：{deleted} 件を削除しました。現在のログは保持しています。"
+    },
+    "settings.maintenance.partial": {
+      "zh-CN": "已删除 {deleted} 个文件，{failed} 项未能清理。当前日志继续记录，可重试。",
+      "en-US": "Deleted {deleted} files; {failed} items could not be cleared. Recording continues; you can retry.",
+      "ja-JP": "{deleted} 件を削除しました。{failed} 件は削除できませんでした。記録は継続し、再試行できます。"
+    },
+    "settings.maintenance.cancelled": {
+      "zh-CN": "清理已取消，已删除 {deleted} 个文件。已删除的文件不会恢复。",
+      "en-US": "Cleanup cancelled after deleting {deleted} files. Deleted files cannot be restored.",
+      "ja-JP": "{deleted} 件削除後に中止しました。削除済みのファイルは元に戻りません。"
+    },
+    "settings.maintenance.unavailable": {
+      "zh-CN": "日志目录或清理服务暂不可用，请稍后重试。",
+      "en-US": "The log folder or cleanup service is unavailable. Please retry later.",
+      "ja-JP": "ログフォルダーまたは削除機能を利用できません。後でもう一度お試しください。"
+    },
+    "settings.maintenance.open_failed": {
+      "zh-CN": "无法打开日志目录，请检查目录是否存在或可访问。",
+      "en-US": "Could not open the log folder. Check that it exists and is accessible.",
+      "ja-JP": "ログフォルダーを開けません。存在することとアクセス権を確認してください。"
+    },
+    "settings.maintenance.start_failed": {
+      "zh-CN": "无法启动清理任务，可能已有任务正在运行。请稍后重试。",
+      "en-US": "Could not start cleanup; another task may already be running. Please retry later.",
+      "ja-JP": "削除処理を開始できません。すでに実行中の可能性があります。後でもう一度お試しください。"
+    },
+    "settings.maintenance.clear_confirm": {
+      "zh-CN": "删除本程序的历史日志？\n当前正在写入的日志将保留，已删除的历史日志不能撤销。\n本操作不会应用其他页面的草稿。",
+      "en-US": "Delete this app’s historical logs?\nThe current log will be kept. Deletion cannot be undone.\nDrafts on other pages will not be applied.",
+      "ja-JP": "このアプリの過去のログを削除しますか？\n現在のログは保持します。削除は取り消せません。\n他のページの変更は適用しません。"
+    },
+    "settings.maintenance.restore_confirm": {
+      "zh-CN": "确认后立即恢复以下默认值：\n界面语言：{language}\n开机自启：{startup}\n截图快捷键：{hotkey}\n选框颜色：{color}\n默认格式：{format}\nJPEG 质量：{quality}\n\n所有未应用的设置草稿将被替换；将应用当前程序的自启入口。\n不会清理日志、重置首次欢迎状态或清除保存目录记忆。继续吗？",
+      "en-US": "Restore and apply these defaults immediately?\nLanguage: {language}\nStart at login: {startup}\nCapture shortcut: {hotkey}\nBorder color: {color}\nSave format: {format}\nJPEG quality: {quality}\n\nUnapplied drafts will be replaced. Startup registration will target the current app.\nLogs, onboarding status and the last save folder are preserved.",
+      "ja-JP": "次の既定値を直ちに保存・適用しますか？\n言語：{language}\nログイン時に起動：{startup}\nキャプチャキー：{hotkey}\n枠の色：{color}\n保存形式：{format}\nJPEG 品質：{quality}\n\n未適用の変更は置き換えます。自動起動には現在のアプリを登録します。\nログ、初回設定の状態、前回の保存先は保持します。"
+    },
+    "settings.maintenance.enabled": {
+      "zh-CN": "开启",
+      "en-US": "Enabled",
+      "ja-JP": "有効"
+    },
+    "settings.maintenance.disabled": {
+      "zh-CN": "关闭",
+      "en-US": "Disabled",
+      "ja-JP": "無効"
+    },
+    "settings.maintenance.defaults_hotkey_failed": {
+      "zh-CN": "未恢复设置：默认截图快捷键无法启用，可能已被占用。设置和草稿保持原样；解决占用后请再次点击“恢复全部设置”。",
+      "en-US": "Settings were not restored: the default capture shortcut could not be activated and may be in use. Settings and drafts are unchanged. Resolve the conflict, then click Restore all settings again.",
+      "ja-JP": "設定を復元できませんでした。既定のキーを有効にできず、使用中の可能性があります。設定と編集中の内容は保持しています。競合を解消して「すべての設定を既定に戻す」を再度押してください。"
+    },
+    "settings.maintenance.defaults_saved": {
+      "zh-CN": "全部设置已恢复默认并生效。",
+      "en-US": "All settings have been restored and applied.",
+      "ja-JP": "すべての設定を既定に戻し、適用しました。"
+    },
+    "settings.maintenance.defaults_partial": {
+      "zh-CN": "默认配置已保存，但部分设置未能生效或尚需完成处理。可点击“应用”重试。",
+      "en-US": "Defaults were saved, but some settings could not be applied or still need processing. Click Apply to retry.",
+      "ja-JP": "既定値は保存しましたが、一部の設定を適用できないか、処理が残っています。「適用」で再試行してください。"
     }
   }
 }

@@ -23,6 +23,7 @@ class SettingsWindow::Impl final
     {
         if (this->IsOpen())
         {
+            this->RefreshTexts();
             ShowWindow(this->renderer_->NativeHandle(), SW_RESTORE);
             SetForegroundWindow(this->renderer_->NativeHandle());
             return true;
@@ -83,6 +84,7 @@ class SettingsWindow::Impl final
         // 返回：宿主当前语言的界面文本；启动项状态键由宿主状态回调提供。
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
         this->BindStorageControls();
+        this->BindMaintenanceControls();
         this->Require(this->renderer_->BindKeyChord(
             "captureHotkey",
             // 从草稿解析组合，不将非法配置改写为默认值。
@@ -284,6 +286,7 @@ class SettingsWindow::Impl final
         this->hotkeyCleanupPending_ = false;
         this->recordingOriginal_.reset();
         this->integerInputInvalid_ = false;
+        this->restoredDefaultsPending_ = false;
         this->ready_ = false;
         this->busy_ = false;
     }
@@ -299,11 +302,14 @@ class SettingsWindow::Impl final
     // 转发非模态键盘处理，不传播异常。
     // 入参：message 为应用消息循环取得的待处理消息。
     // 返回：消息已被窗口键盘导航处理为 true，否则为 false。
-    bool ProcessDialogMessage(MSG& message) const noexcept
+    bool ProcessDialogMessage(MSG& message) noexcept
     {
         try
         {
-            return this->renderer_ != nullptr && this->renderer_->ProcessDialogMessage(message);
+            if (!this->IsOpen())
+                return false;
+            this->UpdateMaintenanceButtons();
+            return this->renderer_->ProcessDialogMessage(message);
         }
         catch (...)
         {
@@ -344,6 +350,7 @@ class SettingsWindow::Impl final
             this->Require(this->renderer_->SetFieldError(
                 "captureHotkey", this->hotkeyErrorKey_.empty() ? L"" : this->Text(this->hotkeyErrorKey_)));
             this->RefreshStorageErrors();
+            this->UpdateMaintenanceButtons();
         }
         catch (...)
         {
@@ -398,6 +405,182 @@ class SettingsWindow::Impl final
         return this->editSession_.Open(
             {"ui.language", "capture.hotkey", "capture.selection_border_color", "export.default_format"},
             {"startup.enabled"}, {"export.jpeg_quality"});
+    }
+
+    // 为维护页绑定独立动作，旧布局不含这些控件时保持兼容。
+    // 入参：无。
+    // 返回：无；布局含控件但缺少宿主实现时保留禁用状态。
+    void BindMaintenanceControls()
+    {
+        if (!this->renderer_->GetControlPageId("openLogDirectoryButton").empty())
+            this->Require(this->renderer_->BindAction("openLogDirectoryButton",
+                                                      // 将打开请求纳入短暂忙状态，防止同步重复操作。
+                                                      // 入参：无。
+                                                      // 返回：无；缺少回调或已经忙碌时不执行。
+                                                      [this]()
+                                                      {
+                                                          if (this->busy_ || !this->callbacks_.openLogDirectory)
+                                                              return;
+                                                          this->RunBusy(
+                                                              // 请求宿主打开实际日志目录，失败显示独立提示。
+                                                              // 入参：无。
+                                                              // 返回：无，不保存任何设置草稿。
+                                                              [this]()
+                                                              {
+                                                                  if (!this->callbacks_.openLogDirectory())
+                                                                      this->SetStatus(
+                                                                          "settings.maintenance.open_failed");
+                                                              });
+                                                      }));
+        if (!this->renderer_->GetControlPageId("clearHistoricalLogsButton").empty())
+            this->Require(this->renderer_->BindAction(
+                "clearHistoricalLogsButton",
+                // 拒绝重复清理，再进入确认与任务启动边界。
+                // 入参：无。
+                // 返回：无；后台运行期间不维持整个窗口忙状态。
+                [this]()
+                {
+                    if (this->busy_ || !this->callbacks_.clearHistoricalLogs || !this->callbacks_.maintenanceStatus ||
+                        this->callbacks_.maintenanceStatus().running)
+                        return;
+                    this->RunBusy(
+                        // 用户确认后启动历史清理并刷新任务状态。
+                        // 入参：无。
+                        // 返回：无，取消确认时不启动任务。
+                        [this]()
+                        {
+                            if (!this->Confirm("settings.maintenance.clear_confirm"))
+                                return;
+                            if (!this->callbacks_.clearHistoricalLogs())
+                                this->SetStatus("settings.maintenance.start_failed");
+                            this->RefreshTexts();
+                        });
+                }));
+        if (!this->renderer_->GetControlPageId("restoreAllSettingsButton").empty())
+            // 转发已点击的全部恢复动作，由内部流程准备和确认默认候选。
+            // 入参：无。
+            // 返回：无。
+            this->Require(
+                this->renderer_->BindAction("restoreAllSettingsButton", [this]() { this->RestoreAllDefaults(); }));
+    }
+
+    // 维护动作只依赖自身可用性，非法颜色或数字草稿不阻断日志操作。
+    // 入参：无。
+    // 返回：无。
+    void UpdateMaintenanceButtons()
+    {
+        this->Require(this->renderer_->SetEnabled("restoreDefaultsButton",
+                                                  this->ready_ && this->renderer_->GetActivePageId() != "maintenance"));
+        if (!this->renderer_->GetControlPageId("openLogDirectoryButton").empty())
+            this->Require(this->renderer_->SetEnabled("openLogDirectoryButton",
+                                                      static_cast<bool>(this->callbacks_.openLogDirectory)));
+        if (!this->renderer_->GetControlPageId("clearHistoricalLogsButton").empty())
+            this->Require(this->renderer_->SetEnabled("clearHistoricalLogsButton",
+                                                      this->callbacks_.clearHistoricalLogs &&
+                                                          this->callbacks_.maintenanceStatus &&
+                                                          !this->callbacks_.maintenanceStatus().running));
+        if (!this->renderer_->GetControlPageId("restoreAllSettingsButton").empty())
+            this->Require(this->renderer_->SetEnabled("restoreAllSettingsButton", this->ready_));
+    }
+
+    // 明确恢复范围，不扫描未知配置或首次欢迎、保存目录等非可设置字段。
+    // 入参：无。
+    // 返回：当前产品已经开放编辑的六项字段。
+    std::vector<std::string> AllSettingKeys() const
+    {
+        return {"ui.language",           "startup.enabled",    "capture.hotkey", "capture.selection_border_color",
+                "export.default_format", "export.jpeg_quality"};
+    }
+
+    // 校验候选的实际类型与业务语义，完全独立于原始未完成输入缓冲。
+    // 入参：candidate 为已经从默认资源准备的候选。
+    // 返回：六字段均有效且语言仍可用时为 true。
+    bool ValidateDefaults(const SettingsEditSession& candidate) const
+    {
+        const std::optional<std::string> language = candidate.ReadString("ui.language");
+        const std::optional<bool> startup = candidate.ReadBool("startup.enabled");
+        const std::optional<std::string> hotkey = candidate.ReadString("capture.hotkey");
+        const std::optional<std::string> color = candidate.ReadString("capture.selection_border_color");
+        const std::optional<std::string> format = candidate.ReadString("export.default_format");
+        const std::optional<std::int64_t> quality = candidate.ReadInteger("export.jpeg_quality");
+        const RendererOptionsResult options = this->QueryLanguages();
+        return language && startup && hotkey && this->callbacks_.hotkeyDecode(*hotkey) && color &&
+               this->callbacks_.normalizeBorderColor(*color) && format && this->callbacks_.validImageFormat(*format) &&
+               quality && this->callbacks_.validJpegQuality(*quality) && options.success &&
+               std::any_of(options.options.begin(), options.options.end(),
+                           // 在当前资源选项中精确匹配候选语言。
+                           // 入参：option 为正在检查的语言选项。
+                           // 返回：选项与候选语言代码一致时为 true。
+                           [&language](const RendererOption& option) { return option.value == *language; });
+    }
+
+    // 使用受控占位符展示固定候选值，确认期间资源变化不会替换已经展示的目标。
+    // 入参：candidate 为已经验证的六字段候选。
+    // 返回：当前语言的完整确认说明。
+    std::wstring DefaultConfirmation(const SettingsEditSession& candidate) const
+    {
+        const std::string language = *candidate.ReadString("ui.language");
+        const std::string color = *candidate.ReadString("capture.selection_border_color");
+        const std::string format = *candidate.ReadString("export.default_format");
+        const std::optional<SettingsHotkeyChord> hotkey =
+            this->callbacks_.hotkeyDecode(*candidate.ReadString("capture.hotkey"));
+        const std::vector<std::pair<std::wstring, std::wstring>> replacements{
+            {L"{language}", std::wstring(language.begin(), language.end())},
+            {L"{startup}", this->Text(*candidate.ReadBool("startup.enabled") ? "settings.maintenance.enabled"
+                                                                             : "settings.maintenance.disabled")},
+            {L"{hotkey}", this->callbacks_.hotkeyFormat(*hotkey)},
+            {L"{color}", std::wstring(color.begin(), color.end())},
+            {L"{format}", this->Text(format == "jpeg" ? "settings.storage.jpeg" : "settings.storage.png")},
+            {L"{quality}", std::to_wstring(*candidate.ReadInteger("export.jpeg_quality"))}};
+        const std::wstring pattern = this->Text("settings.maintenance.restore_confirm");
+        std::wstring result;
+        for (std::size_t position = 0; position < pattern.size();)
+        {
+            bool replaced = false;
+            for (const auto& [token, value] : replacements)
+            {
+                if (pattern.compare(position, token.size(), token) == 0)
+                {
+                    result += value;
+                    position += token.size();
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced)
+                result += pattern[position++];
+        }
+        return result;
+    }
+
+    // 确认后立即提交全部默认，失败不覆盖当前草稿或未完成数字文本。
+    // 入参：无。
+    // 返回：无。
+    void RestoreAllDefaults()
+    {
+        if (this->busy_ || !this->ready_)
+            return;
+        this->RunBusy(
+            // 准备固定默认候选，确认后执行与普通应用共用的条件提交。
+            // 入参：无。
+            // 返回：无；候选或确认失败时保留原始编辑状态。
+            [this]()
+            {
+                SettingsEditSession candidate = this->editSession_;
+                if (!candidate.RestoreDefaults(this->AllSettingKeys()) || !this->ValidateDefaults(candidate))
+                {
+                    this->SetStatus("settings.defaults_failed");
+                    return;
+                }
+                const std::wstring message = this->DefaultConfirmation(candidate);
+                const std::wstring title = this->Text("settings.title");
+                const bool confirmed =
+                    this->confirmation_ ? this->confirmation_()
+                                        : MessageBoxW(this->renderer_->NativeHandle(), message.c_str(), title.c_str(),
+                                                      MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES;
+                if (confirmed)
+                    this->ExecuteApply(std::move(candidate), true, false);
+            });
     }
 
     // 连接颜色原始输入、格式选择和可无效的数字编辑状态。
@@ -598,6 +781,9 @@ class SettingsWindow::Impl final
             return this->callbacks_.startupStatus();
         if (key == "settings.hotkey.status")
             return this->callbacks_.hotkeyStatus();
+        if (key == "settings.maintenance.status")
+            return this->callbacks_.maintenanceStatus ? this->callbacks_.maintenanceStatus().text
+                                                      : this->callbacks_.text("settings.maintenance.unavailable");
         return this->callbacks_.text(key);
     }
 
@@ -629,7 +815,7 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled("defaultSaveFormat", this->ready_));
         this->Require(this->renderer_->SetEnabled("jpegQuality", this->ready_));
         this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_ && this->StorageValid()));
-        this->Require(this->renderer_->SetEnabled("restoreDefaultsButton", this->ready_));
+        this->UpdateMaintenanceButtons();
     }
 
     // 通过宿主回调查询当前资源声明的语言，构造下拉框可用选项。
@@ -716,172 +902,194 @@ class SettingsWindow::Impl final
             // 提交草稿后分别复核并应用语言和启动项，副作用失败保留重试目标。
             // 入参：无显式入参。
             // 返回：无返回值。
-            [this, closeWhenDone]()
+            [this, closeWhenDone]() { this->ExecuteApply(this->editSession_, false, closeWhenDone); });
+    }
+
+    // 共用条件提交和系统应用顺序；恢复候选在保存成功之前不覆盖原始草稿。
+    // 入参：commitSession 为独立候选；restoreAll 强制六字段检查和系统应用；closeWhenDone 为成功后关闭。
+    // 返回：无；失败保留草稿或已保存的待应用状态。
+    void ExecuteApply(SettingsEditSession commitSession, bool restoreAll, bool closeWhenDone)
+    {
+        const std::optional<std::string> language = commitSession.ReadString("ui.language");
+        if (restoreAll && !this->ValidateDefaults(commitSession))
+        {
+            this->SetStatus("settings.defaults_failed");
+            return;
+        }
+        if (!language.has_value() || (!restoreAll && !this->ValidateLanguage(*language)))
+        {
+            return;
+        }
+        const bool languageChanged = restoreAll || commitSession.IsDirty("ui.language");
+        const bool startupChanged = restoreAll || commitSession.IsDirty("startup.enabled");
+        const bool hotkeyChanged = commitSession.IsDirty("capture.hotkey");
+        const std::optional<bool> startup = commitSession.ReadBool("startup.enabled");
+        const std::optional<std::string> hotkey = commitSession.ReadString("capture.hotkey");
+        if (!startup || !hotkey || (!restoreAll && !this->ValidateHotkey(*hotkey)))
+            return;
+        if (!restoreAll && !this->StorageValid())
+            return;
+        const bool dirty = restoreAll || commitSession.IsDirty() || this->StorageNeedsRepair();
+        const bool needsHotkey = restoreAll || hotkeyChanged || this->HotkeyNeedsApply();
+        if (dirty || needsHotkey)
+        {
+            std::optional<std::string> pendingLanguage = languageChanged ? language : this->pendingLanguage_;
+            std::optional<bool> pendingStartup = startupChanged ? startup : this->pendingStartup_;
+            std::vector<std::string> requiredKeys;
+            std::vector<std::string> explicitlyEditedKeys =
+                restoreAll ? this->AllSettingKeys() : std::vector<std::string>{};
+            if (commitSession.IsDirty("capture.selection_border_color"))
+                explicitlyEditedKeys.emplace_back("capture.selection_border_color");
+            for (const char* key : {"capture.selection_border_color", "export.default_format", "export.jpeg_quality"})
+                if (commitSession.RequiresRepair(key))
+                    requiredKeys.emplace_back(key);
+            if (commitSession.IsDirty("capture.selection_border_color") ||
+                commitSession.RequiresRepair("capture.selection_border_color"))
             {
-                const std::optional<std::string> language = this->editSession_.ReadString("ui.language");
-                if (!language.has_value() || !this->ValidateLanguage(*language))
-                {
+                const std::optional<std::string> color =
+                    this->callbacks_.normalizeBorderColor(*commitSession.ReadString("capture.selection_border_color"));
+                if (!color || !commitSession.ChangeString("capture.selection_border_color", *color))
                     return;
+            }
+            struct CandidateGuard final
+            {
+                SettingsWindowCallbacks& callbacks;
+                bool& cleanupPending;
+                bool prepared{};
+                // 在提交失败或异常时撤销候选，保留旧活动注册。
+                // 入参：无。
+                // 返回：无；宿主契约要求 finish 不抛出，防御性捕获仍保留清理故障。
+                ~CandidateGuard() noexcept
+                {
+                    if (!this->prepared)
+                        return;
+                    try
+                    {
+                        this->cleanupPending = !this->callbacks.hotkeyFinish(false);
+                    }
+                    catch (...)
+                    {
+                        this->cleanupPending = true;
+                        OPEN_ST_LOG_ERROR("Hotkey candidate rollback failed.");
+                    }
                 }
-                const bool languageChanged = this->editSession_.IsDirty("ui.language");
-                const bool startupChanged = this->editSession_.IsDirty("startup.enabled");
-                const bool hotkeyChanged = this->editSession_.IsDirty("capture.hotkey");
-                const std::optional<bool> startup = this->editSession_.ReadBool("startup.enabled");
-                const std::optional<std::string> hotkey = this->ReadHotkey();
-                if (!startup || !hotkey || !this->ValidateHotkey(*hotkey))
-                    return;
-                if (!this->StorageValid())
-                    return;
-                const bool dirty = this->editSession_.IsDirty() || this->StorageNeedsRepair();
-                const bool needsHotkey = hotkeyChanged || this->HotkeyNeedsApply();
-                if (dirty || needsHotkey)
+            } candidate{this->callbacks_, this->hotkeyCleanupPending_};
+            if (needsHotkey)
+            {
+                if (!restoreAll && !hotkeyChanged)
                 {
-                    std::optional<std::string> pendingLanguage = languageChanged ? language : this->pendingLanguage_;
-                    std::optional<bool> pendingStartup = startupChanged ? startup : this->pendingStartup_;
-                    SettingsEditSession commitSession = this->editSession_;
-                    std::vector<std::string> requiredKeys;
-                    std::vector<std::string> explicitlyEditedKeys;
-                    if (this->editSession_.IsDirty("capture.selection_border_color"))
-                        explicitlyEditedKeys.emplace_back("capture.selection_border_color");
-                    for (const char* key :
-                         {"capture.selection_border_color", "export.default_format", "export.jpeg_quality"})
-                        if (this->editSession_.RequiresRepair(key))
-                            requiredKeys.emplace_back(key);
-                    if (this->editSession_.IsDirty("capture.selection_border_color") ||
-                        this->editSession_.RequiresRepair("capture.selection_border_color"))
+                    const SettingsCommitResult verified = commitSession.VerifyCurrentString("capture.hotkey", *hotkey);
+                    if (verified != SettingsCommitResult::Unchanged)
                     {
-                        const std::optional<std::string> color = this->callbacks_.normalizeBorderColor(
-                            *this->editSession_.ReadString("capture.selection_border_color"));
-                        if (!color || !commitSession.ChangeString("capture.selection_border_color", *color))
-                            return;
-                    }
-                    struct CandidateGuard final
-                    {
-                        SettingsWindowCallbacks& callbacks;
-                        bool& cleanupPending;
-                        bool prepared{};
-                        // 在提交失败或异常时撤销候选，保留旧活动注册。
-                        // 入参：无。
-                        // 返回：无；宿主契约要求 finish 不抛出，防御性捕获仍保留清理故障。
-                        ~CandidateGuard() noexcept
-                        {
-                            if (!this->prepared)
-                                return;
-                            try
-                            {
-                                this->cleanupPending = !this->callbacks.hotkeyFinish(false);
-                            }
-                            catch (...)
-                            {
-                                this->cleanupPending = true;
-                                OPEN_ST_LOG_ERROR("Hotkey candidate rollback failed.");
-                            }
-                        }
-                    } candidate{this->callbacks_, this->hotkeyCleanupPending_};
-                    if (needsHotkey)
-                    {
-                        if (!hotkeyChanged)
-                        {
-                            const SettingsCommitResult verified =
-                                this->editSession_.VerifyCurrentString("capture.hotkey", *hotkey);
-                            if (verified != SettingsCommitResult::Unchanged)
-                            {
-                                this->ReportCommitFailure(verified);
-                                return;
-                            }
-                        }
-                        if (!this->callbacks_.hotkeyPrepare(*hotkey))
-                        {
-                            this->SetStatus("settings.hotkey.registration_failed");
-                            return;
-                        }
-                        candidate.prepared = true;
-                    }
-                    const SettingsCommitResult committed =
-                        dirty ? commitSession.Commit(requiredKeys, explicitlyEditedKeys)
-                              : SettingsCommitResult::Unchanged;
-                    if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
-                    {
-                        if (candidate.prepared)
-                        {
-                            candidate.prepared = false;
-                            this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(false);
-                        }
-                        this->RefreshHotkeyUi();
-                        this->ReportCommitFailure(committed);
+                        this->ReportCommitFailure(verified);
                         return;
                     }
-                    if (candidate.prepared)
-                    {
-                        candidate.prepared = false;
-                        this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(true);
-                    }
-                    this->editSession_ = std::move(commitSession);
-                    this->pendingLanguage_.swap(pendingLanguage);
-                    this->pendingStartup_.swap(pendingStartup);
-                    this->Require(this->renderer_->RefreshValues());
                 }
-                bool languageApplied = true;
-                bool startupApplied = true;
-                SettingsCommitResult verificationFailure = SettingsCommitResult::Unchanged;
-                if (this->pendingLanguage_)
+                if (!this->callbacks_.hotkeyPrepare(*hotkey))
                 {
-                    const SettingsCommitResult verified =
-                        this->editSession_.VerifySavedString("ui.language", *this->pendingLanguage_);
-                    if (verified != SettingsCommitResult::Unchanged)
-                    {
-                        verificationFailure = verified;
-                        languageApplied = false;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            languageApplied = this->callbacks_.languageApplied(*this->pendingLanguage_);
-                        }
-                        catch (...)
-                        {
-                            languageApplied = false;
-                        }
-                    }
-                    if (languageApplied)
-                        this->pendingLanguage_.reset();
+                    this->SetStatus(restoreAll ? "settings.maintenance.defaults_hotkey_failed"
+                                               : "settings.hotkey.registration_failed");
+                    return;
                 }
-                if (this->pendingStartup_)
+                candidate.prepared = true;
+            }
+            const SettingsCommitResult committed =
+                dirty ? commitSession.Commit(requiredKeys, explicitlyEditedKeys) : SettingsCommitResult::Unchanged;
+            if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
+            {
+                if (candidate.prepared)
                 {
-                    const SettingsCommitResult verified =
-                        this->editSession_.VerifySavedBool("startup.enabled", *this->pendingStartup_);
-                    if (verified != SettingsCommitResult::Unchanged)
-                    {
-                        verificationFailure = verified;
-                        startupApplied = false;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            startupApplied = this->callbacks_.startupApplied(*this->pendingStartup_);
-                        }
-                        catch (...)
-                        {
-                            startupApplied = false;
-                        }
-                    }
-                    if (startupApplied)
-                        this->pendingStartup_.reset();
+                    candidate.prepared = false;
+                    this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(false);
                 }
                 this->RefreshHotkeyUi();
-                if (verificationFailure != SettingsCommitResult::Unchanged)
-                    this->ReportCommitFailure(verificationFailure);
-                else
-                    this->SetStatus(this->hotkeyCleanupPending_           ? "settings.hotkey.cleanup_pending"
-                                    : !languageApplied && !startupApplied ? "settings.effects_failed"
-                                    : !languageApplied                    ? "settings.language.apply_failed"
-                                    : !startupApplied                     ? "settings.startup.apply_failed"
-                                                                          : "settings.saved");
-                this->closeAfterBusy_ = !this->hotkeyCleanupPending_ &&
-                                        (this->closeAfterBusy_ || (languageApplied && startupApplied && closeWhenDone));
-            });
+                this->ReportCommitFailure(committed);
+                return;
+            }
+            if (candidate.prepared)
+            {
+                candidate.prepared = false;
+                this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(true);
+            }
+            this->editSession_ = std::move(commitSession);
+            if (restoreAll)
+            {
+                this->integerInputInvalid_ = false;
+                this->languageErrorKey_.clear();
+                this->hotkeyErrorKey_.clear();
+                this->restoredDefaultsPending_ = true;
+            }
+            this->pendingLanguage_.swap(pendingLanguage);
+            this->pendingStartup_.swap(pendingStartup);
+            this->Require(this->renderer_->RefreshValues());
+        }
+        bool languageApplied = true;
+        bool startupApplied = true;
+        SettingsCommitResult verificationFailure = SettingsCommitResult::Unchanged;
+        if (this->pendingLanguage_)
+        {
+            const SettingsCommitResult verified =
+                this->editSession_.VerifySavedString("ui.language", *this->pendingLanguage_);
+            if (verified != SettingsCommitResult::Unchanged)
+            {
+                verificationFailure = verified;
+                languageApplied = false;
+            }
+            else
+            {
+                try
+                {
+                    languageApplied = this->callbacks_.languageApplied(*this->pendingLanguage_);
+                }
+                catch (...)
+                {
+                    languageApplied = false;
+                }
+            }
+            if (languageApplied)
+                this->pendingLanguage_.reset();
+        }
+        if (this->pendingStartup_)
+        {
+            const SettingsCommitResult verified =
+                this->editSession_.VerifySavedBool("startup.enabled", *this->pendingStartup_);
+            if (verified != SettingsCommitResult::Unchanged)
+            {
+                verificationFailure = verified;
+                startupApplied = false;
+            }
+            else
+            {
+                try
+                {
+                    startupApplied = this->callbacks_.startupApplied(*this->pendingStartup_);
+                }
+                catch (...)
+                {
+                    startupApplied = false;
+                }
+            }
+            if (startupApplied)
+                this->pendingStartup_.reset();
+        }
+        this->RefreshHotkeyUi();
+        if (verificationFailure != SettingsCommitResult::Unchanged)
+            this->ReportCommitFailure(verificationFailure);
+        else
+            this->SetStatus(this->hotkeyCleanupPending_           ? "settings.hotkey.cleanup_pending"
+                            : !languageApplied && !startupApplied ? "settings.effects_failed"
+                            : !languageApplied                    ? "settings.language.apply_failed"
+                            : !startupApplied                     ? "settings.startup.apply_failed"
+                                                                  : "settings.saved");
+        if (this->restoredDefaultsPending_)
+        {
+            const bool complete = languageApplied && startupApplied && !this->hotkeyCleanupPending_ &&
+                                  verificationFailure == SettingsCommitResult::Unchanged;
+            this->SetStatus(complete ? "settings.maintenance.defaults_saved" : "settings.maintenance.defaults_partial");
+            this->restoredDefaultsPending_ = !complete;
+        }
+        this->closeAfterBusy_ = !this->hotkeyCleanupPending_ &&
+                                (this->closeAfterBusy_ || (languageApplied && startupApplied && closeWhenDone));
     }
 
     // 请求用户确认恢复默认或重新加载操作，测试可替换确认边界。
@@ -904,7 +1112,7 @@ class SettingsWindow::Impl final
     // 返回：无返回值。
     void RestoreDefaults()
     {
-        if (this->busy_ || !this->ready_)
+        if (this->busy_ || !this->ready_ || this->renderer_->GetActivePageId() == "maintenance")
         {
             return;
         }
@@ -1082,9 +1290,10 @@ class SettingsWindow::Impl final
             this->closeAfterBusy_ = false;
             try
             {
-                this->SetStatus(this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
-                                : this->pendingStartup_            ? "settings.startup.apply_failed"
-                                                                   : "settings.operation_failed");
+                this->SetStatus(this->restoredDefaultsPending_       ? "settings.maintenance.defaults_partial"
+                                : this->pendingLanguage_.has_value() ? "settings.language.apply_failed"
+                                : this->pendingStartup_              ? "settings.startup.apply_failed"
+                                                                     : "settings.operation_failed");
             }
             catch (...)
             {
@@ -1128,6 +1337,7 @@ class SettingsWindow::Impl final
     bool closeAfterBusy_{};
     bool hotkeyCleanupPending_{};
     bool integerInputInvalid_{};
+    bool restoredDefaultsPending_{};
 };
 
 // 创建编排对象，不立即读取布局或创建窗口。

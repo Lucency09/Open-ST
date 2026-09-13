@@ -18,6 +18,9 @@ target_sources(open_st_application
         source/app.cpp
         source/app_callbacks.cpp
         source/app_hotkeys.cpp
+        source/app_maintenance.cpp
+        source/log_maintenance_task.cpp
+        private/log_maintenance_task.h
         source/app_pin.cpp
         source/capture_completion.cpp
         source/capture_storage_options.cpp

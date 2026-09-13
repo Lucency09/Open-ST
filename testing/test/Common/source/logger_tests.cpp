@@ -8,6 +8,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -453,5 +454,224 @@ TEST_F(LoggerTest, cleanup_refuses_symbolic_log_directory)
     EXPECT_FALSE(open_st::Logger::ShutdownAndClear());
     EXPECT_FALSE(std::filesystem::is_empty(target));
     EXPECT_TRUE(std::filesystem::is_symlink(data / "logs"));
+}
+
+// 验证目录查询只报告运行状态，未初始化的维护不会隐式启动服务。
+// 入参：无运行入参；由 GoogleTest 管理独立临时目录。
+// 返回：无返回值；断言不可用、初始化和关闭后的公开接口语义。
+TEST_F(LoggerTest, maintenance_directory_requires_running_logger)
+{
+    EXPECT_FALSE(open_st::GetLoggingDirectory().has_value());
+    EXPECT_EQ(open_st::ClearHistoricalLogs().status, open_st::LogCleanupStatus::Unavailable);
+    EXPECT_FALSE(std::filesystem::exists(this->root_));
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    EXPECT_EQ(open_st::GetLoggingDirectory(), this->root_ / "data" / "logs");
+    open_st::ShutdownLogging();
+    EXPECT_FALSE(open_st::GetLoggingDirectory().has_value());
+    EXPECT_EQ(open_st::ClearHistoricalLogs().status, open_st::LogCleanupStatus::Unavailable);
+}
+
+// 验证历史清理保留当前文件及无关内容，并在同一文件继续追加记录。
+// 入参：无运行入参；历史、陌生文件和子目录都在测试专属根目录。
+// 返回：无返回值；断言仅历史日志删除且当前流未被重置。
+TEST_F(LoggerTest, historical_cleanup_keeps_current_stream_and_unrelated_entries)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    OPEN_ST_LOG_ERROR("before historical cleanup");
+    const std::vector<std::filesystem::path> initial = this->LogFiles();
+    ASSERT_EQ(initial.size(), 1U);
+    const std::filesystem::path directory = this->root_ / "data" / "logs";
+    const std::filesystem::path legacy = directory / "Open-ST-2020-01-01.log";
+    const std::filesystem::path timestamped = directory / "Open-ST-2020-01-01-01-02-03-004.log";
+    const std::filesystem::path notes = directory / "notes.log";
+    const std::filesystem::path malformed = directory / "Open-ST-invalid.log";
+    const std::filesystem::path nested = directory / "Open-ST-2020-02-01.log";
+    std::ofstream(legacy) << "old";
+    std::ofstream(timestamped) << "old";
+    std::ofstream(notes) << "notes";
+    std::ofstream(malformed) << "unrelated";
+    std::filesystem::create_directory(nested);
+    std::ofstream(nested / "Open-ST-2020-01-02.log") << "nested";
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::Completed);
+    EXPECT_EQ(result.deleted, 2U);
+    EXPECT_EQ(result.failed, 0U);
+    EXPECT_EQ(result.retained, 2U);
+    EXPECT_FALSE(std::filesystem::exists(legacy));
+    EXPECT_FALSE(std::filesystem::exists(timestamped));
+    EXPECT_EQ(this->ReadFile(notes), "notes");
+    EXPECT_EQ(this->ReadFile(malformed), "unrelated");
+    EXPECT_EQ(this->ReadFile(nested / "Open-ST-2020-01-02.log"), "nested");
+    OPEN_ST_LOG_ERROR("after historical cleanup");
+    const std::string content = this->ReadFile(initial.front());
+    EXPECT_NE(content.find("before historical cleanup"), std::string::npos);
+    EXPECT_NE(content.find("after historical cleanup"), std::string::npos);
+    EXPECT_EQ(this->LogFiles().size(), 3U);
+    const open_st::LogCleanupResult repeated = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(repeated.status, open_st::LogCleanupStatus::Completed);
+    EXPECT_EQ(repeated.deleted, 0U);
+}
+
+// 验证历史日志占用只产生部分失败，其他候选继续删除且释放后可重试。
+// 入参：无运行入参；只对测试历史文件设置不共享删除的占用句柄。
+// 返回：无返回值；断言失败不停止当前日志，重试只删除剩余历史。
+TEST_F(LoggerTest, historical_cleanup_partial_failure_preserves_logging_and_retries)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path current = this->LogFiles().front();
+    const std::filesystem::path directory = this->root_ / "data" / "logs";
+    const std::filesystem::path blocked = directory / "Open-ST-2020-01-01.log";
+    const std::filesystem::path removable = directory / "Open-ST-2020-01-02.log";
+    std::ofstream(blocked) << "blocked";
+    std::ofstream(removable) << "old";
+    const HANDLE handle = CreateFileW(blocked.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+    const open_st::LogCleanupResult first = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(first.status, open_st::LogCleanupStatus::PartialFailure);
+    EXPECT_EQ(first.deleted, 1U);
+    EXPECT_EQ(first.failed, 1U);
+    EXPECT_TRUE(std::filesystem::exists(blocked));
+    EXPECT_FALSE(std::filesystem::exists(removable));
+    OPEN_ST_LOG_ERROR("still running after partial failure");
+    EXPECT_NE(this->ReadFile(current).find("still running after partial failure"), std::string::npos);
+    CloseHandle(handle);
+    const open_st::LogCleanupResult second = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(second.status, open_st::LogCleanupStatus::Completed);
+    EXPECT_EQ(second.deleted, 1U);
+    EXPECT_TRUE(std::filesystem::exists(current));
+}
+
+// 验证取消请求在任何枚举或删除前生效，取消不关闭日志服务。
+// 入参：无运行入参；使用预先请求停止的标准 stop_token。
+// 返回：无返回值；断言取消状态、零删除以及当前和历史文件均保留。
+TEST_F(LoggerTest, historical_cleanup_cancelled_before_start_keeps_every_file)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path current = this->LogFiles().front();
+    const std::filesystem::path old = this->root_ / "data" / "logs" / "Open-ST-2020-01-01.log";
+    std::ofstream(old) << "old";
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs(cancellation.get_token());
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::Cancelled);
+    EXPECT_EQ(result.deleted, 0U);
+    EXPECT_TRUE(std::filesystem::exists(old));
+    OPEN_ST_LOG_ERROR("after cancellation");
+    EXPECT_NE(this->ReadFile(current).find("after cancellation"), std::string::npos);
+}
+
+// 验证符号链接候选始终保留，目标内容不因历史清理被修改。
+// 入参：无运行入参；仅在系统允许创建测试符号链接时执行。
+// 返回：无返回值；断言部分失败、链接和目标保留及当前日志继续写入。
+TEST_F(LoggerTest, historical_cleanup_refuses_symbolic_file)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path current = this->LogFiles().front();
+    const std::filesystem::path target = this->root_ / "keep.txt";
+    const std::filesystem::path link = this->root_ / "data" / "logs" / "Open-ST-2020-01-01.log";
+    std::ofstream(target) << "preserve";
+    std::error_code error;
+    std::filesystem::create_symlink(target, link, error);
+    if (error)
+        GTEST_SKIP() << "Symbolic links unavailable: " << error.message();
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::PartialFailure);
+    EXPECT_EQ(result.failed, 1U);
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(this->ReadFile(target), "preserve");
+    OPEN_ST_LOG_ERROR("after refusing link");
+    EXPECT_NE(this->ReadFile(current).find("after refusing link"), std::string::npos);
+}
+
+// 验证目录重解析点导致维护无法开始，不能沿链接清理其他位置。
+// 入参：无运行入参；目标及链接均位于测试临时根目录。
+// 返回：无返回值；断言未删除文件、服务仍可写入且链接保持存在。
+TEST_F(LoggerTest, historical_cleanup_refuses_symbolic_directory)
+{
+    const std::filesystem::path target = this->root_ / "elsewhere";
+    const std::filesystem::path data = this->root_ / "data";
+    std::filesystem::create_directories(target);
+    std::filesystem::create_directory(data);
+    std::error_code error;
+    std::filesystem::create_directory_symlink(target, data / "logs", error);
+    if (error)
+        GTEST_SKIP() << "Directory symbolic links unavailable: " << error.message();
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path current = this->LogFiles().front();
+    const std::filesystem::path old = target / "Open-ST-2020-01-01.log";
+    std::ofstream(old) << "preserve";
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::Unavailable);
+    EXPECT_EQ(result.deleted, 0U);
+    EXPECT_EQ(this->ReadFile(old), "preserve");
+    OPEN_ST_LOG_ERROR("after refusing directory");
+    EXPECT_NE(this->ReadFile(current).find("after refusing directory"), std::string::npos);
+}
+
+// 验证硬链接别名不能绕过当前日志保护，也不能删除其他位置的共享文件对象。
+// 入参：无运行入参；仅在临时目录中创建当前和普通文件的硬链接。
+// 返回：无返回值；断言别名保留，原文件连续写入且无成功删除。
+TEST_F(LoggerTest, historical_cleanup_refuses_hardlink_aliases)
+{
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_));
+    const std::filesystem::path current = this->LogFiles().front();
+    const std::filesystem::path directory = this->root_ / "data" / "logs";
+    const std::filesystem::path currentAlias = directory / "Open-ST-2020-01-01.log";
+    const std::filesystem::path target = this->root_ / "keep.txt";
+    const std::filesystem::path targetAlias = directory / "Open-ST-2020-01-02.log";
+    std::ofstream(target) << "preserve";
+    std::error_code error;
+    std::filesystem::create_hard_link(current, currentAlias, error);
+    if (error)
+        GTEST_SKIP() << "Hard links unavailable: " << error.message();
+    std::filesystem::create_hard_link(target, targetAlias, error);
+    ASSERT_FALSE(error);
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs();
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::PartialFailure);
+    EXPECT_EQ(result.deleted, 0U);
+    EXPECT_TRUE(std::filesystem::exists(currentAlias));
+    EXPECT_TRUE(std::filesystem::exists(targetAlias));
+    EXPECT_EQ(this->ReadFile(target), "preserve");
+    OPEN_ST_LOG_ERROR("after refusing aliases");
+    EXPECT_NE(this->ReadFile(current).find("after refusing aliases"), std::string::npos);
+}
+
+// 验证正常轮转与维护并发时当前文件始终可写，旧候选消失不会导致日志状态损坏。
+// 入参：无运行入参；轮转限制及大量候选仅应用于当前测试目录。
+// 返回：无返回值；断言维护结束后日志仍运行且最终记录可从磁盘读取。
+TEST_F(LoggerTest, historical_cleanup_tolerates_concurrent_rotation)
+{
+    open_st::LogOptions options;
+    options.maxLines = 3;
+    options.retainedFiles = 3;
+    ASSERT_TRUE(open_st::Logger::Initialize(this->root_, options));
+    const std::filesystem::path directory = this->root_ / "data" / "logs";
+    for (unsigned int index = 1; index <= 100; ++index)
+        std::ofstream(directory / ("Open-ST-2020-01-01-" + std::to_string(index) + ".log")) << "old";
+    std::atomic<bool> start{};
+    std::thread writer(
+        // 与清理同时开始连续写入，触发正常行数轮转。
+        // 入参：引用捕获当前测试的开始标志。
+        // 返回：无返回值；写入完成后由测试线程回收。
+        [&start]()
+        {
+            while (!start.load())
+                std::this_thread::yield();
+            for (unsigned int index = 0; index < 100; ++index)
+                OPEN_ST_LOG_ERROR("concurrent maintenance ", index);
+        });
+    start.store(true);
+    const open_st::LogCleanupResult result = open_st::ClearHistoricalLogs();
+    writer.join();
+    EXPECT_EQ(result.status, open_st::LogCleanupStatus::Completed);
+    EXPECT_TRUE(open_st::GetLoggingDirectory().has_value());
+    OPEN_ST_LOG_ERROR("final maintenance marker");
+    const std::vector<std::filesystem::path> remaining = this->LogFiles();
+    EXPECT_LE(remaining.size(), options.retainedFiles);
+    bool finalFound = false;
+    for (const std::filesystem::path& path : remaining)
+        finalFound = finalFound || this->ReadFile(path).find("final maintenance marker") != std::string::npos;
+    EXPECT_TRUE(finalFound);
 }
 } // namespace

@@ -275,6 +275,28 @@ class SettingsWindowTest : public testing::Test
         // 入参：value 为质量值。
         // 返回：1 到 100 含端点为 true。
         callbacks.validJpegQuality = [](std::int64_t value) { return value >= 1 && value <= 100; };
+        // 用隔离计数器模拟维护，不打开真实目录或删除真实日志。
+        // 入参：无。
+        // 返回：当前测试指定的目录打开结果。
+        callbacks.openLogDirectory = [this]()
+        {
+            ++this->openDirectoryCount_;
+            return this->openDirectorySucceeds_;
+        };
+        // 模拟任务启动并记录请求次数，不清理真实文件。
+        // 入参：无。
+        // 返回：测试控制的任务启动结果。
+        callbacks.clearHistoricalLogs = [this]()
+        {
+            ++this->clearHistoryCount_;
+            this->maintenanceRunning_ = this->clearHistorySucceeds_;
+            return this->clearHistorySucceeds_;
+        };
+        // 提供关闭和重开窗口后仍可取得的模拟任务快照。
+        // 入参：无。
+        // 返回：测试中的运行状态和显示文字。
+        callbacks.maintenanceStatus = [this]()
+        { return open_st::SettingsMaintenanceStatus{this->maintenanceRunning_, this->maintenanceText_}; };
         return callbacks;
     }
 
@@ -426,6 +448,12 @@ class SettingsWindowTest : public testing::Test
     std::string hotkeyAtPrepare_;
     std::string hotkeyAtActivation_;
     std::vector<std::string> hotkeyEvents_;
+    int openDirectoryCount_{};
+    int clearHistoryCount_{};
+    bool openDirectorySucceeds_{true};
+    bool clearHistorySucceeds_{true};
+    bool maintenanceRunning_{};
+    std::wstring maintenanceText_{L"maintenance idle"};
     open_st::SettingsWindow window_;
 };
 
@@ -1329,5 +1357,261 @@ TEST_F(SettingsWindowTest, storage_case_only_edit_normalizes_without_rewriting_i
     const std::string saved{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     EXPECT_EQ(saved, original);
     EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+}
+// 验证非法草稿不阻断日志操作，确认取消不启动任务，运行期间只禁用清理按钮。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_ignores_invalid_draft_and_prevents_duplicate_task)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#000000");
+    ASSERT_NE(color, nullptr);
+    SetWindowTextW(color, L"#12");
+    this->SelectPage(3);
+    this->Click("settings.maintenance.open_directory");
+    EXPECT_EQ(this->openDirectoryCount_, 1);
+    this->confirm_ = false;
+    this->Click("settings.maintenance.clear_history");
+    EXPECT_EQ(this->clearHistoryCount_, 0);
+    this->confirm_ = true;
+    this->Click("settings.maintenance.clear_history");
+    EXPECT_EQ(this->clearHistoryCount_, 1);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.clear_history"))), FALSE);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.open_directory"))), FALSE);
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#12");
+    EXPECT_EQ(open_st::GetStringSetting("capture.selection_border_color"), "#000000");
+    this->window_.Close();
+    ASSERT_NE(this->Open(), nullptr);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.clear_history"))), FALSE);
+    this->maintenanceRunning_ = false;
+    this->maintenanceText_ = L"maintenance completed";
+    this->window_.RefreshTexts();
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.clear_history"))), FALSE);
+    EXPECT_NE(this->Control(L"Static", L"maintenance completed"), nullptr);
+}
+
+// 验证缺失维护回调时按钮确实禁用，未接入宿主不能显示为执行成功。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_missing_callbacks_are_disabled)
+{
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    callbacks.openLogDirectory = {};
+    callbacks.clearHistoricalLogs = {};
+    callbacks.maintenanceStatus = {};
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.open_directory"))), FALSE);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.maintenance.clear_history"))), FALSE);
+}
+
+// 验证目录打开失败与清理启动失败各自报告失败，失败后清理仍能重新确认启动。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_action_failures_remain_retryable)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->openDirectorySucceeds_ = false;
+    this->Click("settings.maintenance.open_directory");
+    EXPECT_NE(this->Control(L"Static", this->Text("settings.maintenance.open_failed")), nullptr);
+    this->clearHistorySucceeds_ = false;
+    this->Click("settings.maintenance.clear_history");
+    EXPECT_NE(this->Control(L"Static", this->Text("settings.maintenance.start_failed")), nullptr);
+    this->clearHistorySucceeds_ = true;
+    this->Click("settings.maintenance.clear_history");
+    EXPECT_EQ(this->clearHistoryCount_, 2);
+    EXPECT_TRUE(this->maintenanceRunning_);
+}
+
+// 验证恢复取消保留原始颜色和半成品数字，确认后立即保存且强制检查未变化的系统意图。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_replaces_invalid_draft_only_after_confirmation)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND color = this->Control(L"Edit", L"#000000");
+    const HWND quality = this->Control(L"Edit", L"95");
+    ASSERT_NE(color, nullptr);
+    ASSERT_NE(quality, nullptr);
+    SetWindowTextW(color, L"#12");
+    SetWindowTextW(quality, L"95.");
+    this->SelectPage(3);
+    this->confirm_ = false;
+    this->Click("settings.maintenance.restore_all");
+    std::array<wchar_t, 32> text{};
+    GetWindowTextW(quality, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"95.");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+    this->confirm_ = true;
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(this->hotkeyPrepareCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_EQ(this->appliedCount_, 1);
+    GetWindowTextW(quality, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"95");
+    GetWindowTextW(color, text.data(), static_cast<int>(text.size()));
+    EXPECT_STREQ(text.data(), L"#000000");
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+}
+
+// 验证恢复仅覆盖六项设置，保留未知字段、首次欢迎状态及保存目录记忆。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_preserves_noneditable_settings)
+{
+    this->Write("data/settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"zh-CN","startup.enabled":false,)"
+                R"("capture.hotkey":"Ctrl+Shift+F8","capture.selection_border_color":"#FFFFFF",)"
+                R"("export.default_format":"png","export.jpeg_quality":70,"onboarding.completed":true,)"
+                R"("capture.last_save_directory":"kept-directory","future.setting":"kept"}})");
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
+    EXPECT_EQ(open_st::GetStringSetting("capture.hotkey"), "Ctrl+Alt+Q");
+    EXPECT_EQ(open_st::GetStringSetting("capture.selection_border_color"), "#000000");
+    EXPECT_EQ(open_st::GetStringSetting("export.default_format"), "jpeg");
+    EXPECT_EQ(open_st::GetIntegerSetting("export.jpeg_quality"), 95);
+    EXPECT_EQ(open_st::GetBoolSetting("onboarding.completed"), true);
+    EXPECT_EQ(open_st::GetStringSetting("capture.last_save_directory"), "kept-directory");
+    EXPECT_EQ(open_st::GetStringSetting("future.setting"), "kept");
+}
+
+// 验证默认组合被占用和提交只读失败均保留草稿；已准备的候选必须撤销。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_prepare_and_write_failure_preserve_draft)
+{
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP","startup.enabled":true,)"
+                                      R"("capture.hotkey":"Ctrl+Alt+Q","capture.selection_border_color":"#000000",)"
+                                      R"("export.default_format":"jpeg","export.jpeg_quality":95}})");
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->SelectPage(3);
+    this->hotkeyPrepareSucceeds_ = false;
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_NE(this->Control(L"Static", this->Text("settings.maintenance.defaults_hotkey_failed")), nullptr);
+    EXPECT_EQ(this->appliedCount_, 0);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    this->hotkeyPrepareSucceeds_ = true;
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    ASSERT_NE(SetFileAttributesW((this->root_ / "data/settings.json").c_str(), FILE_ATTRIBUTE_NORMAL), FALSE);
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "zh-CN");
+}
+
+// 验证全部恢复即使同值也检查外部修改，冲突时不覆盖外部设置。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_checks_same_value_external_conflict)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP","startup.enabled":true,)"
+                                      R"("capture.hotkey":"Ctrl+Alt+Q","capture.selection_border_color":"#000000",)"
+                                      R"("export.default_format":"jpeg","export.jpeg_quality":95}})");
+    this->SelectPage(3);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_EQ(this->appliedCount_, 0);
+}
+
+// 验证默认候选在确认前冻结，确认期间默认资源变化不替换已展示的数值。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_uses_frozen_default_candidate)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    open_st::SettingsWindowTestAccess::SetConfirmation(
+        this->window_,
+        // 模拟确认窗口打开期间默认资源被外部修改。
+        // 入参：无。
+        // 返回：true，确认采用此前冻结的候选。
+        [this]()
+        {
+            this->Write("resources/default_settings.json",
+                        R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP","startup.enabled":false,)"
+                        R"("capture.hotkey":"Ctrl+Shift+F8","capture.selection_border_color":"#FFFFFF",)"
+                        R"("export.default_format":"png","export.jpeg_quality":70}})");
+            return true;
+        });
+    this->SelectPage(3);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
+    EXPECT_EQ(open_st::GetIntegerSetting("export.jpeg_quality"), 95);
+}
+
+// 验证坏默认在确认前被拒绝，坏用户文件在条件提交时被拒绝且不重建文件。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_rejects_invalid_defaults_and_corrupt_user_file)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->SelectPage(3);
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+                R"("capture.hotkey":"Ctrl+Alt+Q","capture.selection_border_color":"#12",)"
+                R"("export.default_format":"jpeg","export.jpeg_quality":95}})");
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(this->confirmationCount_, 0);
+    EXPECT_EQ(this->hotkeyPrepareCount_, 0);
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
+                R"("capture.hotkey":"Ctrl+Alt+Q","capture.selection_border_color":"#000000",)"
+                R"("export.default_format":"jpeg","export.jpeg_quality":95}})");
+    this->Write("data/settings.json", "{broken-user-file");
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(this->hotkeyCancelCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 0);
+    EXPECT_EQ(this->appliedCount_, 0);
+    std::ifstream input(this->root_ / "data/settings.json", std::ios::binary);
+    const std::string saved{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(saved, "{broken-user-file");
+}
+
+// 验证恢复在配置同值时仍应用自启与语言，副作用失败后应用按钮重试已保存目标。
+// 入参：无运行入参。
+// 返回：无，通过控件、文件及模拟调用断言验证结果。
+TEST_F(SettingsWindowTest, maintenance_restore_retries_effects_after_defaults_saved)
+{
+    int startupCount = 0;
+    bool startupSucceeds = false;
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 记录已持久化默认意图的系统应用请求，允许模拟失败后重试。
+    // 入参：target 为已保存的自启目标。
+    // 返回：startupSucceeds，表示本次模拟系统应用是否成功。
+    callbacks.startupApplied = [&startupCount, &startupSucceeds](bool target)
+    {
+        ++startupCount;
+        EXPECT_TRUE(target);
+        EXPECT_EQ(open_st::GetBoolSetting("startup.enabled"), true);
+        return startupSucceeds;
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->applySucceeds_ = false;
+    this->SelectPage(3);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(startupCount, 1);
+    EXPECT_EQ(this->appliedCount_, 1);
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->applySucceeds_ = true;
+    startupSucceeds = true;
+    this->Click("settings.apply");
+    EXPECT_EQ(startupCount, 2);
+    EXPECT_EQ(this->appliedCount_, 2);
+    EXPECT_EQ(this->hotkeyActivateCount_, 1);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
 }
 } // namespace

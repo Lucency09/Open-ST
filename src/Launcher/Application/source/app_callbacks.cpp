@@ -42,6 +42,18 @@ PinWindowCallbacks App::MakePinCallbacks()
 SettingsWindowCallbacks App::MakeSettingsCallbacks()
 {
     SettingsWindowCallbacks callbacks;
+    // 打开实际日志目录，不应用设置草稿。
+    // 入参：无。
+    // 返回：系统接受目录打开请求时为 true。
+    callbacks.openLogDirectory = [this]() { return this->OpenLogDirectory(); };
+    // 在确认后请求一次历史清理，工作线程由 App 持有。
+    // 入参：无。
+    // 返回：成功启动时为 true。
+    callbacks.clearHistoricalLogs = [this]() { return this->StartHistoricalLogCleanup(); };
+    // 查询清理状态，关闭或重开设置窗口不会丢失结果。
+    // 入参：无。
+    // 返回：忙状态和当前语言文字。
+    callbacks.maintenanceStatus = [this]() { return this->QueryLogMaintenanceStatus(); };
     // 为设置页共享颜色规范化规则，仅显式提交使用规范值。
     // 入参：value 为原始颜色文本。
     // 返回：合法规范值或空值。

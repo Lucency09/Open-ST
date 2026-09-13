@@ -29,6 +29,8 @@ class SingleInstance;
 class StartupRegistration;
 class WelcomeWindow;
 class WindowRenderer;
+class LogMaintenanceTask;
+struct SettingsMaintenanceStatus;
 class HotkeyManager;
 struct SettingsWindowCallbacks;
 
@@ -121,6 +123,26 @@ class App final
     // 入参：无。
     // 返回：无返回值；截图或模态提示期间延后处理，其余时消费告警并显示一次合并提示。
     void ReportDataReadWarnings();
+    // 在资源管理器打开实际日志目录，不创建目录或应用设置草稿。
+    // 入参：无。
+    // 返回：系统打开请求成功为 true。
+    bool OpenLogDirectory() noexcept;
+    // 为已确认操作启动唯一历史日志任务，后台不占据设置忙状态。
+    // 入参：无。
+    // 返回：启动成功为 true；退出中、已运行或创建失败为 false。
+    bool StartHistoricalLogCleanup() noexcept;
+    // 查询独立于设置窗口寿命的维护状态及本地化结果。
+    // 入参：无。
+    // 返回：忙状态和可显示文字，不消费结果。
+    SettingsMaintenanceStatus QueryLogMaintenanceStatus() const;
+    // 收取已完成任务并刷新打开的设置窗口，兼顾通知失败恢复。
+    // 入参：无。
+    // 返回：无；模态忙时延迟界面通知，不丢失结果。
+    void DrainLogMaintenance() noexcept;
+    // 请求取消并等待后台结束，必须先于 Logger 和通知窗口销毁。
+    // 入参：无。
+    // 返回：无。
+    void StopLogMaintenance() noexcept;
     // 对连续参数错误去重，延迟到截图或模态结束后提示。
     // 入参：invalidFields 为格式及质量错误位。
     // 返回：无。
@@ -268,6 +290,7 @@ class App final
     std::atomic<std::uint64_t> captureGate_{1}; // 低位为暂停标记，初始化期间拒绝截图。
     std::unique_ptr<SingleInstance> singleInstance_;
     std::unique_ptr<StartupRegistration> startup_;
+    std::unique_ptr<LogMaintenanceTask> logMaintenance_;
     std::unique_ptr<WelcomeWindow> welcomeWindow_;
     WindowRenderer* messageRenderer_{}; // 借用当前模态提示，语言切换时同步刷新。
     std::function<void()> messageStatusRefresh_;
