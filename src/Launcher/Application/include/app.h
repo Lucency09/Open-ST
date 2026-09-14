@@ -16,6 +16,10 @@ namespace open_st
 class FrozenDesktopFrame;
 class CaptureOverlaySession;
 class SelectionModel;
+class WindowSelectionSnapshot;
+class CaptureSelectionInput;
+struct SelectionSnapshot;
+struct PointI;
 class SettingsWindow;
 class SelectionOutputRenderer;
 class CaptureCompletion;
@@ -74,6 +78,7 @@ class App final
     friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
     friend struct AppPinTestAccess;
     friend struct AppHotkeyTestAccess;
+    friend struct AppSelectionTestAccess;
     struct PinOperation;
     // 集中组装贴图文本查询和异步业务命令回调。
     // 入参：无。
@@ -223,6 +228,42 @@ class App final
     // 入参：无。
     // 返回：无返回值；优先取消拖动，再清空已有选区，最后关闭无选区的覆盖会话。
     void CancelSelectionOrClose() noexcept;
+    // 在冻结帧捕获后、遮罩创建前采集窗口几何并建立首次候选。
+    // 入参：无；读取当前冻结桌面和鼠标物理位置。
+    // 返回：无返回值；识别失败保留手动框选，分配失败交由启动保护清理。
+    void InitializeWindowSelection();
+    // 生成仅供绘制的选区副本，候选不会改变正式模型或输出准入。
+    // 入参：无。
+    // 返回：正式选区优先，否则返回无控制点的候选绘制快照。
+    SelectionSnapshot SelectionForDrawing() const noexcept;
+    // 从当前会话的只读窗口几何更新悬停候选。
+    // 入参：point 为虚拟桌面物理鼠标坐标。
+    // 返回：绘制候选实际变化时 true；正式选区或按下锁定期间不变。
+    bool UpdateWindowCandidate(PointI point) noexcept;
+    // 用当前鼠标位置恢复悬停候选，读取失败则清空候选。
+    // 入参：无。
+    // 返回：无返回值；只更新几何，不请求输出或重抓屏幕。
+    void RefreshWindowCandidate() noexcept;
+    // 区分候选按下待判定与现有自由框选、移动和缩放。
+    // 入参：window 为所在遮罩，用于 DPI 容差；point 为物理按下位置。
+    // 返回：接受此次交互时 true，调用方随后获取鼠标捕获。
+    bool BeginSelectionInput(HWND window, PointI point) noexcept;
+    // 推进锁定候选的拖动判定或现有模型，未按下时更新悬停。
+    // 入参：point 为最新物理鼠标坐标。
+    // 返回：需要刷新绘制时 true。
+    bool UpdateSelectionInput(PointI point) noexcept;
+    // 结束按下交互，先提交单击或自由框选再由调用方释放鼠标捕获。
+    // 入参：point 为物理抬起位置，抬起也检查拖动阈值。
+    // 返回：无返回值；零面积自由框选恢复悬停状态。
+    void EndSelectionInput(PointI point) noexcept;
+    // 查询候选待判定或模型拖动是否仍在进行。
+    // 入参：无。
+    // 返回：任一交互进行中为 true。
+    bool HasSelectionInteraction() const noexcept;
+    // 先清除待判定状态并撤销模型交互，避免同步失捕误确认候选。
+    // 入参：无。
+    // 返回：处理了交互时 true；调用方负责释放捕获和刷新工具栏。
+    bool CancelSelectionInput() noexcept;
     // 结束当前截图会话并释放覆盖窗口及相关资源。
     // 入参：无。
     // 返回：无返回值；完成或模态忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
@@ -314,6 +355,9 @@ class App final
     std::unique_ptr<FrozenDesktopFrame> frozenDesktopFrame_;
     std::unique_ptr<CaptureOverlaySession> overlaySession_;
     std::unique_ptr<SelectionModel> selectionModel_;
+    std::unique_ptr<WindowSelectionSnapshot> windowSelection_;
+    std::unique_ptr<CaptureSelectionInput> selectionInput_;
+    std::optional<RECT> windowCandidate_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
 };
 } // namespace open_st

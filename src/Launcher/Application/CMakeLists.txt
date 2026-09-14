@@ -16,6 +16,11 @@ add_library(OpenST::Application ALIAS open_st_application)
 target_sources(open_st_application
     PRIVATE
         source/app.cpp
+        source/app_selection.cpp
+        source/window_selection_snapshot.cpp
+        private/window_selection_snapshot.h
+        source/capture_selection_input.cpp
+        private/capture_selection_input.h
         source/app_callbacks.cpp
         source/app_hotkeys.cpp
         source/app_maintenance.cpp
@@ -70,6 +75,7 @@ target_link_libraries(open_st_application
         uuid
         comctl32
         shell32
+        dwmapi
 )
 
 # private/ 只供本模块实现包含；生成的版本头也不对其他模块公开。

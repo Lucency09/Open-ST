@@ -2,6 +2,7 @@
 
 #include "capture_command_gate.h"
 #include "capture_completion.h"
+#include "capture_selection_input.h"
 #include "capture_storage_options.h"
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
@@ -9,6 +10,7 @@
 #include "save_directory.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
+#include "window_selection_snapshot.h"
 #include <app.h>
 #include <array>
 #include <capture_toolbar.h>
@@ -1302,6 +1304,7 @@ try
     this->frozenDesktopFrame_ = std::move(capturedFrame);
     this->selectionModel_ = std::make_unique<SelectionModel>();
     this->selectionModel_->SetBounds(bounds);
+    this->InitializeWindowSelection();
     this->overlaySession_ = std::make_unique<CaptureOverlaySession>();
     if (this->toolbarGate_ == nullptr)
     {
@@ -1344,7 +1347,7 @@ try
         }
         output.renderer = std::make_unique<OverlayRenderer>();
         if (!output.renderer->Initialize(output.window, previewFrame, borderColor, captureError) ||
-            !output.renderer->Render(this->selectionModel_->Snapshot(), captureError))
+            !output.renderer->Render(this->SelectionForDrawing(), captureError))
         {
             OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=",
                               DiagnosticOrFallback(WideToUtf8(captureError)));
@@ -1449,7 +1452,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             !(app->completionBusy_ && app->overlayInvalidated_))
         {
             std::wstring rendererError;
-            const SelectionSnapshot snapshot = app->selectionModel_->Snapshot();
+            const SelectionSnapshot snapshot = app->SelectionForDrawing();
             if (!output->renderer->Render(snapshot, rendererError))
             {
                 OPEN_ST_LOG_ERROR("Capture overlay rendering failed. detail=",
@@ -1467,7 +1470,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (app != nullptr && app->selectionModel_ != nullptr)
         {
             PointI point{};
-            if (TryGetCursorPoint(point) && app->selectionModel_->Begin(point))
+            if (TryGetCursorPoint(point) && app->BeginSelectionInput(window, point))
             {
                 app->InvalidateToolbarCommands();
                 SetFocus(window);
@@ -1475,7 +1478,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (GetCapture() != window)
                 {
                     OPEN_ST_LOG_WARNING("Failed to capture the mouse for a selection interaction.");
-                    (void)app->selectionModel_->CancelInteraction();
+                    (void)app->CancelSelectionInput();
                     app->InvalidateToolbarCommands();
                     UpdateOverlayCursor(*app->selectionModel_);
                     app->overlaySession_->Invalidate();
@@ -1490,8 +1493,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (app != nullptr && app->selectionModel_ != nullptr)
         {
             PointI point{};
-            if (app->selectionModel_->Phase() == SelectionPhase::Dragging && TryGetCursorPoint(point) &&
-                app->selectionModel_->Update(point))
+            if (TryGetCursorPoint(point) && app->UpdateSelectionInput(point))
             {
                 app->overlaySession_->Invalidate();
             }
@@ -1499,17 +1501,16 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         }
         return 0;
     case WM_LBUTTONUP:
-        if (app != nullptr && app->selectionModel_ != nullptr &&
-            app->selectionModel_->Phase() == SelectionPhase::Dragging)
+        if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
             PointI point{};
             if (TryGetCursorPoint(point))
             {
-                (void)app->selectionModel_->End(point);
+                app->EndSelectionInput(point);
             }
             else
             {
-                (void)app->selectionModel_->CancelInteraction();
+                (void)app->CancelSelectionInput();
             }
             if (GetCapture() == window)
             {
@@ -1521,20 +1522,18 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         }
         return 0;
     case WM_CAPTURECHANGED:
-        if (app != nullptr && app->selectionModel_ != nullptr &&
-            app->selectionModel_->Phase() == SelectionPhase::Dragging)
+        if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
-            (void)app->selectionModel_->CancelInteraction();
+            (void)app->CancelSelectionInput();
             app->InvalidateToolbarCommands();
             UpdateOverlayCursor(*app->selectionModel_);
             app->overlaySession_->Invalidate();
         }
         return 0;
     case WM_CANCELMODE:
-        if (app != nullptr && app->selectionModel_ != nullptr &&
-            app->selectionModel_->Phase() == SelectionPhase::Dragging)
+        if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
-            (void)app->selectionModel_->CancelInteraction();
+            (void)app->CancelSelectionInput();
             app->InvalidateToolbarCommands();
             if (GetCapture() == window)
             {
@@ -1635,9 +1634,8 @@ void App::CancelSelectionOrClose() noexcept
     {
         return;
     }
-    if (this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Dragging)
+    if (this->CancelSelectionInput())
     {
-        (void)this->selectionModel_->CancelInteraction();
         this->InvalidateToolbarCommands();
         if (this->overlaySession_ != nullptr)
         {
@@ -1653,6 +1651,7 @@ void App::CancelSelectionOrClose() noexcept
     if (this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Selected)
     {
         this->selectionModel_->Reset();
+        this->RefreshWindowCandidate();
         this->InvalidateToolbarCommands();
         UpdateOverlayCursor(*this->selectionModel_);
         if (this->overlaySession_ != nullptr)
@@ -1689,6 +1688,11 @@ void App::CloseOverlay() noexcept
         this->captureToolbar_.reset();
     }
     this->toolbarMonitor_ = nullptr;
+    if (this->selectionInput_)
+        this->selectionInput_->Cancel();
+    this->windowCandidate_.reset();
+    this->windowSelection_.reset();
+    this->selectionInput_.reset();
     if (this->outputRenderer_ != nullptr)
     {
         this->outputRenderer_->ReleaseImageResources();

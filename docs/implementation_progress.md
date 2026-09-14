@@ -1,8 +1,57 @@
 # Open-ST 实现进度
 
-更新时间：2026-09-13
+更新时间：2026-09-14
 当前开发版本：`0.3.0`；已发布版本：[v0.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.2.0)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
+
+## 2026-09-14 顶层窗口自动预选
+
+- [x] 按用户批准的 [窗口预选方案](design/window-selection-v0.3.md) 接入普通窗口、对话框和已有贴图。
+  桌面空白无候选；任务栏、标准菜单、工具提示保留阻挡；UIA 子控件识别仍后置。
+- [x] 候选只影响绘制，单击确认后才有控制点／工具栏和输出资格；按下锁定候选，超过物理拖动容差从原点自由框选。
+  抬起补判、取消、失捕和关闭清理已接入；已确认选区移动／缩放及选区外点击语义保留。
+- [x] 捕获后、遮罩创建前一次读取窗口元数据，完整前驱链校验后只保留物理几何；2048 节点及 32 ms 合作预算，
+  查询或拓扑异常退回手动框选，不重复抓屏、不向目标窗口发送消息、不创建后台轮询。
+- [x] 变动限于 Application 私有快照／输入／协调、SelectionModel 显式矩形采用及相应测试／CMake。
+  Common/WindowRenderer、OverlayRenderer 绘制、Capture 内部、Export 编码、PinWindow 产品源码未修改。
+- [x] 新增 32 项测试全部通过：快照 13（含真实自有重叠窗口及销毁后查询）、输入判定 8、矩形采用 4、App 编排 7。
+  App 编排测试使用真实取消／失捕消息与可控点输入，未把 SetCapture 失败或完整 StartCapture 首帧流程声称为桌面自动验收。
+- [x] 正常桌面权限下全量 505 项：492 通过、11 条件跳过、2 失败；应用模块 100 项在该轮全部通过。
+  两项失败分别是 D-066 后置的零冗余检查，以及既有 real_click_focus_keeps_three_window_order 在 SetCursorPos
+  前置条件返回 false；后者单独复核仍未通过，不归为本轮已证实的预选或贴图顺序故障，也不修改断言掩盖。
+  最初受限环境中既有桌面捕获 0x80070005 已在正常桌面权限的全量回归通过。
+- [x] Debug /W4 /WX 与 Release 构建通过，可运行产物已更新。原构建缓存引用已移除的 PowerShell 7.6.5 路径，
+  已只刷新本地缓存为当前可用运行时，未修改构建脚本。
+- [ ] 本功能的实际预选观感、跨屏／混合 DPI 和非标准窗口兼容性仍需实际使用反馈；不阻塞已完成设置功能，
+  不宣称逐像素透明命中、窗口快照与捕获原子一致，或无闪烁视觉验收已通过。
+- 日志：`testing/testoutput/window-selection-application.log`、`testing/testoutput/window-selection-full.log`、
+  `testing/testoutput/window-selection-gate-recheck.log`、`build/window-selection-debug.log`、`build/window-selection-release.log`。
+
+## 2026-09-14 贴图测试纠正与优化后置
+
+- [x] 用户批准仅纠正测试与记录，生产冗余优化后置（D-066）；PinWindow、WindowRenderer 等产品源码未修改。
+- [x] 零请求用例去除绝对空前驱前提，独立检查相对顺序、置顶和物理命中；保留 10 次调用与零请求断言。
+  当前仍观察到 10 条请求，因此如实失败；功能顺序及命中断言通过，不能把该结果写成优化完成。
+- [x] 模态恢复用例改用部分重叠的 128×96 贴图及自定义普通干扰窗，验证插入、顶部覆盖和取消置顶三场景的
+  有效前提、必要恢复请求、相对顺序、置顶及两点命中，当前通过。点命中不等于逐像素或无闪烁视觉验收。
+- [x] 对相应 PinWindow 窗口测试目标加 RUN_SERIAL，子 Agent 只读复核未发现阻断问题。
+- [x] Debug /W4 /WX 产品及测试构建通过；PinWindow 模块 33 项：31 通过、1 人工跳过、1 已知冗余优化失败。
+  本轮按范围执行模块回归，没有重跑全量或 Release；历史全量结果保留在下方。
+- [ ] 后置：生产零冗余优化及相关边界测试，后续重新确认范围；不作为当前已确认的层级恢复功能故障。
+- 日志：`build/pin-order-correction-debug.log`、`testing/testoutput/pin-order-correction-module.log`。
+
+## 2026-09-14 贴图层级失败验证（测试纠正前）
+
+- [x] 原两项测试连续三轮复现失败，未修改原断言、产品代码或正式工程配置。
+- [x] 本轮失败前驱即时确认为 Explorer 的 ThumbnailDeviceHelperWnd（cloaked=1，1×1），不构成贴图区域可见遮挡。
+  不能把此前观察到的输入法窗口作为本轮固定前驱的解释；也不追认所有历史同句柄的身份。
+- [x] 独立链接原贴图库补测：90 次正式 RepairOrder 调用均产生 1 条冗余上层位置请求，贴图相对顺序、置顶位及上层命中始终正确。
+- [x] 24 个前置有效的模态恢复场景全部恢复相对顺序、两点命中与置顶位：18 个可见遮挡场景，6 个取消置顶场景。
+  同进程与自有子进程、原测试 DPI 环境及 Per-Monitor V2 均纳入；不据此承诺全平台或无闪烁。
+- [ ] 后置优化：已确认多余位置请求，但未证实闪烁、卡顿或层级恢复功能故障；用户同意暂缓生产修改（D-066）。
+  原两项失败不再表述为两个功能 bug，测试判据纠正及最新回归另行记录；原验证结果保持不变。
+- 报告：[贴图层级验证](pin-window-order-validation-2026-09-14.md)；原始日志及探针位于
+  `testing/testoutput/pin-order-verification-20260913/`，沿用跨日前创建的目录名。
 
 ## 2026-09-13 日志与维护设置
 
@@ -17,8 +66,8 @@
 - [x] 全量执行 473 项：460 通过、11 条件跳过、2 失败。新增 25 项用例覆盖日志 8、后台任务 7、设置维护 10。
   新日志符号链接两项因平台权限条件跳过，其余新增用例有通过结果。
   末次恢复提示及原始编辑状态收尾后，Settings 再次回归 89 通过、1 人工跳过、0 失败。
-- [ ] 全量未全绿：两项失败仍为既有 PinWindowTest.repeated_correct_order_emits_no_position_requests 和
-  modal_exit_repairs_external_window_interleaving；不以其他测试通过替代这两项问题的处理。
+- 当时全量未全绿：两项失败为既有 PinWindowTest.repeated_correct_order_emits_no_position_requests 和
+  modal_exit_repairs_external_window_interleaving；2026-09-14 已完成判据纠正，最新模块结果见上方，保留历史全量记录。
 - [ ] 人工验收：资源管理器目录打开、真实历史日志占用时的提示、恢复确认内容和实际语言/自启生效、多语言/跨 DPI。
   自动清理仅用独立临时目录，恢复仅用模拟自启等边界；本轮没有清理真实用户日志或恢复真实用户设置。
 - 日志：`build/log-maintenance-debug-final.log`、`build/log-maintenance-release-final.log`、
@@ -446,7 +495,8 @@ OCR、翻译、代理、API Key 和图片上传提醒等设置随对应业务实
 - [x] 接入系统剪贴板、WIC JPEG/PNG 编码、系统保存对话框和上次保存目录；已接入格式和质量设置，默认 JPEG/95，支持 PNG。
 - [x] 应用图标设计与制作：用户定稿 A2（蓝青四角框＋圆头ST），已嵌入九尺寸ICO并接入托盘、设置窗口；Debug构建及EXE资源加载验证通过，废案已清理。
 - [x] 实现选区附近的截图工具栏，取消/保存/复制接入统一命令入口；按钮与快捷键共享防重入及代次校验，代码与自动验证完成，人工验收见上方记录。
-- [ ] 实现顶层窗口命中，再单独接入可降级的 UI Automation 子控件识别。
+- [x] 顶层窗口自动预选与单击确认已接入，验证和边界见顶部记录。
+- [ ] 单独接入可降级的 UI Automation 子控件识别，具体方案与排期待确认。
 - [ ] 完成截图标注对象、工具栏工具、颜色/线宽以及撤销/重做，并统一进入最终图像合成。
 - [ ] 完成综合颜色验收；HDR→SDR输出链不重复建设。冻结鼠标指针已于2026-09-13按用户要求后置，恢复时另行审核。
 - [x] 按 D-047/D-048 接入 Windows 原生 HDR Tone Map、White Level Adjustment 与 Color Management；

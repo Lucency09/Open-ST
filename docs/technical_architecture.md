@@ -5,11 +5,18 @@
 
 本文同时记录已选定的目标架构和当前实现；技术选型不等于对应功能已完成。`0.2.0` 覆盖托盘、
 语言设置、桌面冻结与自由选区、HDR 到 SDR 转换、复制与 PNG/JPEG 保存、截图工具栏、多张置顶贴图、
-设置窗口框架、欢迎与当前用户开机启动。窗口/UIA 自动识别、标注、OCR 与翻译尚未实现；相关组件职责、
+设置窗口框架、欢迎与当前用户开机启动。0.3.0 已接入顶层窗口自动预选；UIA 子控件识别、标注、OCR 与翻译尚未实现；相关组件职责、
 数据流及降级条目为后续约束，具体状态见 [实现进度](implementation_progress.md)。
 
 已发布版本为 `0.2.0`，当前开发版本为 `0.3.0`；真实登录、自启禁用、跨会话、跨 DPI 及部分视觉验收仍待完成；
 阶段顺序和本轮验证状态以实现进度与决策D-052为准。
+
+窗口预选由 Application 私有 `WindowSelectionSnapshot` 在捕获后、遮罩创建前一次收集元数据，
+验证前驱链后仅发布物理矩形；悬停不查询实时 HWND。异常整体退回手动框选，采集有 2048 节点及 32 ms 合作预算。
+`CaptureSelectionInput` 只判定锁定候选的单击／拖动，App 管理真实鼠标捕获、取消及绘制副本。
+Graphics 的 `SelectionModel::SelectRectangle` 显式采用单击确认范围，OverlayRenderer 复用原矩形绘制；
+候选绘制副本不进入正式选区门禁，复制／保存／贴图仍要求 Selected。
+实现不修改 Common/WindowRenderer、PinWindow 层级、Capture 捕获内部或 Export 编码，新增系统依赖仅 Application PRIVATE dwmapi。
 
 ## 1. 最终技术组合
 

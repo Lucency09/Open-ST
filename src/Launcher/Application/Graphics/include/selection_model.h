@@ -94,6 +94,11 @@ class SelectionModel final
     // 返回：包含阶段、操作、矩形和八个控制点的值副本，后续模型变化不会修改该副本。
     [[nodiscard]] SelectionSnapshot Snapshot() const noexcept;
 
+    // 在没有正式选区及进行中操作时，直接采用候选矩形作为稳定选区。
+    // 入参：rectangle：待采用的虚拟桌面物理像素半开矩形，按桌面边界求交而不平移。
+    // 返回：非空交集被采用时为 true；状态不允许或交集为空时为 false 且不改模型。
+    [[nodiscard]] bool SelectRectangle(RectI rectangle) noexcept;
+
     // 按按下位置开始创建、移动或缩放选区。
     // 入参：point：鼠标按下的虚拟桌面物理像素坐标。
     // 返回：操作被接受并进入拖动状态时为 true；边界无效、已经拖动或点在已有选区外时为 false。

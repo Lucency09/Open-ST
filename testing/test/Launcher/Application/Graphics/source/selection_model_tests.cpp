@@ -49,6 +49,99 @@ open_st::PointI CenterFor(const open_st::SelectionModel& selection, open_st::Sel
 }
 } // namespace
 
+// 验证直接采用候选按桌面边界裁切而不平移，负坐标与跨屏范围保持物理像素语义。
+// 入参：无。
+// 返回：无返回值；断言正式选区、八个控制点与稳定状态。
+TEST(SelectionModelTest, selects_rectangle_by_intersection_with_desktop_bounds)
+{
+    open_st::SelectionModel selection;
+    selection.SetBounds({-200, -100, 300, 200});
+    ASSERT_TRUE(selection.SelectRectangle({-400, -50, 100, 400}));
+    const open_st::SelectionSnapshot snapshot = selection.Snapshot();
+    ExpectRectangle(snapshot.rectangle, {-200, -50, 100, 200});
+    EXPECT_EQ(snapshot.phase, open_st::SelectionPhase::Selected);
+    EXPECT_EQ(snapshot.operation, open_st::SelectionOperation::None);
+    EXPECT_TRUE(snapshot.hasSelection);
+    EXPECT_TRUE(snapshot.showHandles);
+    EXPECT_EQ(snapshot.handles.size(), 8U);
+    const open_st::PointI topLeft = CenterFor(selection, open_st::SelectionHandle::TopLeft);
+    const open_st::PointI bottomRight = CenterFor(selection, open_st::SelectionHandle::BottomRight);
+    EXPECT_EQ(topLeft.x, -200);
+    EXPECT_EQ(topLeft.y, -50);
+    EXPECT_EQ(bottomRight.x, 100);
+    EXPECT_EQ(bottomRight.y, 200);
+}
+
+// 验证空候选、反向矩形、边界相切及未配置桌面时均不建立选区，失败后仍能正常采用。
+// 入参：无。
+// 返回：无返回值；断言拒绝期间状态保持以及后续单像素选区可用。
+TEST(SelectionModelTest, rejects_empty_rectangle_intersections_without_mutating_state)
+{
+    open_st::SelectionModel selection;
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 10, 10}));
+    selection.SetBounds({0, 0, 100, 100});
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 0, 20}));
+    EXPECT_FALSE(selection.SelectRectangle({50, 20, 10, 40}));
+    EXPECT_FALSE(selection.SelectRectangle({100, 20, 200, 40}));
+    EXPECT_FALSE(selection.SelectRectangle({-50, -30, 0, 0}));
+    EXPECT_EQ(selection.Phase(), open_st::SelectionPhase::Unselected);
+    EXPECT_EQ(selection.Operation(), open_st::SelectionOperation::None);
+    EXPECT_FALSE(selection.HasSelection());
+    ExpectRectangle(selection.Snapshot().rectangle, {});
+    ASSERT_TRUE(selection.SelectRectangle({99, 99, 100, 100}));
+    ExpectRectangle(selection.Snapshot().rectangle, {99, 99, 100, 100});
+}
+
+// 验证已有正式选区或拖动中的创建、移动、缩放均拒绝候选替换，取消仍恢复原操作基线。
+// 入参：无。
+// 返回：无返回值；断言拒绝不改变操作、活动控制点或取消结果。
+TEST(SelectionModelTest, rectangle_adoption_does_not_replace_active_selection_or_interaction)
+{
+    open_st::SelectionModel selection;
+    selection.SetBounds({0, 0, 200, 200});
+    ASSERT_TRUE(selection.Begin({20, 20}));
+    ASSERT_TRUE(selection.Update({100, 100}));
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 200, 200}));
+    EXPECT_EQ(selection.Operation(), open_st::SelectionOperation::Creating);
+    ExpectRectangle(selection.Snapshot().rectangle, {20, 20, 100, 100});
+    ASSERT_TRUE(selection.CancelInteraction());
+    ASSERT_TRUE(selection.SelectRectangle({20, 20, 100, 100}));
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 200, 200}));
+    ASSERT_TRUE(selection.Begin({60, 60}));
+    ASSERT_TRUE(selection.Update({70, 70}));
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 200, 200}));
+    EXPECT_EQ(selection.Operation(), open_st::SelectionOperation::Moving);
+    ASSERT_TRUE(selection.CancelInteraction());
+    ExpectRectangle(selection.Snapshot().rectangle, {20, 20, 100, 100});
+    ASSERT_TRUE(selection.Begin({100, 100}));
+    ASSERT_TRUE(selection.Update({150, 160}));
+    EXPECT_FALSE(selection.SelectRectangle({0, 0, 200, 200}));
+    EXPECT_EQ(selection.Operation(), open_st::SelectionOperation::Resizing);
+    EXPECT_EQ(selection.ActiveHandle(), open_st::SelectionHandle::BottomRight);
+    ASSERT_TRUE(selection.CancelInteraction());
+    ExpectRectangle(selection.Snapshot().rectangle, {20, 20, 100, 100});
+}
+
+// 验证直接采用后的选区仍可移动和缩放，复位后可采用另一候选且没有遗留拖动状态。
+// 入参：无。
+// 返回：无返回值；断言既有交互与第二次采用的几何结果。
+TEST(SelectionModelTest, adopted_rectangle_supports_existing_edits_and_reset)
+{
+    open_st::SelectionModel selection;
+    selection.SetBounds({0, 0, 200, 200});
+    ASSERT_TRUE(selection.SelectRectangle({20, 20, 100, 100}));
+    ASSERT_TRUE(selection.Begin({60, 60}));
+    ASSERT_TRUE(selection.End({70, 80}));
+    ExpectRectangle(selection.Snapshot().rectangle, {30, 40, 110, 120});
+    ASSERT_TRUE(selection.Begin({110, 120}));
+    ASSERT_TRUE(selection.End({140, 150}));
+    ExpectRectangle(selection.Snapshot().rectangle, {30, 40, 140, 150});
+    selection.Reset();
+    ASSERT_TRUE(selection.SelectRectangle({50, 60, 80, 90}));
+    EXPECT_EQ(selection.ActiveHandle(), open_st::SelectionHandle::None);
+    ExpectRectangle(selection.Snapshot().rectangle, {50, 60, 80, 90});
+}
+
 // 验证从四个方向拖动都产生同一个规范化半开矩形，避免反向拖动出现负宽高。
 // 入参：无运行时形参；宏参数 SelectionModelTest 为测试套件，creates_a_normalized_rectangle_from_every_drag_direction 为用例名。
 // 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。

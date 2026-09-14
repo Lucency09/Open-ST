@@ -18,6 +18,8 @@ target_sources(open_st_application_tests PRIVATE source/pin_window_integration_t
 target_sources(open_st_application_tests PRIVATE source/hotkey_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/save_image_dialog_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/log_maintenance_task_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/capture_selection_input_tests.cpp
+    source/window_selection_integration_tests.cpp)
 target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export OpenST::Common)
 target_include_directories(open_st_application_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Hotkeys/private")
@@ -30,6 +32,15 @@ target_link_options(open_st_application_tests PRIVATE
 )
 target_include_directories(open_st_application_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private")
 gtest_discover_tests(open_st_application_tests TEST_PREFIX "application." PROPERTIES LABELS "application;integration")
+
+# 窗口快照真实桌面检查独立串行，避免与其他桌面用例互相改变层级。
+add_executable(open_st_window_selection_tests source/window_selection_snapshot_tests.cpp)
+target_link_libraries(open_st_window_selection_tests PRIVATE OpenST::Application OpenST::Graphics
+    GTest::gtest_main user32 dwmapi)
+target_include_directories(open_st_window_selection_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private")
+gtest_discover_tests(open_st_window_selection_tests TEST_PREFIX "application."
+    PROPERTIES LABELS "application;desktop" TIMEOUT 45 RUN_SERIAL TRUE)
 
 # 独立链接系统输出替身，验证真实 App 导出编排而不操作用户剪贴板或文件对话框。
 add_executable(open_st_pin_export_integration_tests source/pin_export_integration_tests.cpp)

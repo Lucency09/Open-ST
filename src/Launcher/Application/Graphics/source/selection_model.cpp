@@ -213,6 +213,28 @@ SelectionSnapshot SelectionModel::Snapshot() const noexcept
     return snapshot;
 }
 
+// 在没有正式选区及进行中操作时，直接采用候选矩形作为稳定选区。
+// 入参：rectangle：待采用的虚拟桌面物理像素半开矩形，按桌面边界求交而不平移。
+// 返回：非空交集被采用时为 true；状态不允许或交集为空时为 false 且不改模型。
+bool SelectionModel::SelectRectangle(RectI rectangle) noexcept
+{
+    if (this->phase_ != SelectionPhase::Unselected || this->operation_ != SelectionOperation::None ||
+        this->bounds_.IsEmpty() || rectangle.IsEmpty())
+    {
+        return false;
+    }
+    const RectI clipped{std::max(rectangle.left, this->bounds_.left), std::max(rectangle.top, this->bounds_.top),
+                        std::min(rectangle.right, this->bounds_.right),
+                        std::min(rectangle.bottom, this->bounds_.bottom)};
+    if (clipped.IsEmpty())
+    {
+        return false;
+    }
+    this->rectangle_ = clipped;
+    this->FinishInteraction();
+    return true;
+}
+
 // 按按下位置开始创建、移动或缩放选区。
 // 入参：point：鼠标按下的虚拟桌面物理像素坐标。
 // 返回：操作被接受并进入拖动状态时为 true；边界无效、已经拖动或点在已有选区外时为 false。

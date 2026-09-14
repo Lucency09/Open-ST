@@ -20,7 +20,7 @@ gtest_discover_tests(open_st_pin_window_gate_tests TEST_PREFIX "pin_window."
     PROPERTIES LABELS "pin_window;desktop" TIMEOUT 45 RUN_SERIAL TRUE)
 
 gtest_discover_tests(open_st_pin_window_tests TEST_PREFIX "pin_window."
-    PROPERTIES LABELS "pin_window;integration" TIMEOUT 45)
+    PROPERTIES LABELS "pin_window;integration" TIMEOUT 45 RUN_SERIAL TRUE)
 
 add_executable(open_st_pin_window_manual_tests source/pin_window_manual_tests.cpp)
 target_link_libraries(open_st_pin_window_manual_tests PRIVATE
