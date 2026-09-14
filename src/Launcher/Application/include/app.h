@@ -15,6 +15,7 @@ namespace open_st
 {
 class FrozenDesktopFrame;
 class CaptureOverlaySession;
+struct CaptureOverlayOutput;
 class SelectionModel;
 class WindowSelectionSnapshot;
 class CaptureSelectionInput;
@@ -79,6 +80,7 @@ class App final
     friend struct AppPinTestAccess;
     friend struct AppHotkeyTestAccess;
     friend struct AppSelectionTestAccess;
+    friend struct AppOverlayTestAccess;
     struct PinOperation;
     // 集中组装贴图文本查询和异步业务命令回调。
     // 入参：无。
@@ -264,9 +266,15 @@ class App final
     // 入参：无。
     // 返回：处理了交互时 true；调用方负责释放捕获和刷新工具栏。
     bool CancelSelectionInput() noexcept;
+    // 用一次选区快照协调所有待绘制输出，并在图形调用返回后处理延迟关闭。
+    // 入参：window 为触发绘制的遮罩；drawOutput 为同步绘制边界，借用输出、快照和错误文本。
+    // 返回：无；失败按既有忙状态规则取消会话并报告，重入只保留下一批请求。
+    void RenderOverlays(
+        HWND window,
+        const std::function<bool(CaptureOverlayOutput&, const SelectionSnapshot&, std::wstring&)>& drawOutput);
     // 结束当前截图会话并释放覆盖窗口及相关资源。
     // 入参：无。
-    // 返回：无返回值；完成或模态忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
+    // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
     void CloseOverlay() noexcept;
     // 显示包含当前构建版本的本地化关于窗口。
     // 入参：无。
@@ -348,6 +356,7 @@ class App final
     HWND messageWindow_{};      // HWND_MESSAGE：接收热键、托盘和退出消息，不显示界面。
     bool trayAdded_{};          // 只有成功加入系统托盘后，析构时才发送 NIM_DELETE。
     bool overlayPreparing_{};   // 创建/显示 HWND 的同步消息期间禁止销毁正在使用的会话记录。
+    bool overlayRendering_{};   // 批次渲染期间保留会话资源，禁止重入输出或嵌套渲染。
     bool overlayInvalidated_{}; // 准备期间布局或窗口失效时，在同步调用返回后统一回收。
 
     // frozen frame、renderer 和 selection 仅在一次截图会话中存在；renderer 不把预览帧当作输出源。

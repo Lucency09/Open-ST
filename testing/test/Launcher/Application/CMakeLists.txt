@@ -13,6 +13,8 @@ add_subdirectory(SystemIntegration)
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp
     source/diagnostic_text_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/simple_message_window_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/overlay_paint_batch_tests.cpp
+    source/app_overlay_render_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/capture_toolbar_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/pin_window_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/hotkey_integration_tests.cpp)

@@ -16,6 +16,7 @@ add_library(OpenST::Application ALIAS open_st_application)
 target_sources(open_st_application
     PRIVATE
         source/app.cpp
+        source/app_overlay_render.cpp
         source/app_selection.cpp
         source/window_selection_snapshot.cpp
         private/window_selection_snapshot.h

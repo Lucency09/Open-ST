@@ -132,6 +132,13 @@ localization -> common
 
 `CaptureToolbar` 只依赖标准库、Windows SDK 及统一编译选项，不能依赖 Application 或其兄弟模块，也不链接 Common/WindowRenderer。App 将选区转换为物理像素 RECT，传入目标屏工作区和 DPI；工具栏只消费自己的按钮描述、状态、文本和命令回调。业务命令由 App 投递回消息窗口；工具栏不读 JSON、不持有冻结帧、不参与导出。普通按钮扩展使用稳定命令 ID，禁止以按钮排列下标作为业务 ID。
 
+遮罩重绘由 `app_overlay_render.cpp` 使用一份 `SelectionForDrawing` 快照统一编排。
+`CaptureOverlaySession::Paint` 在首次图形调用前固定并验证整批待绘制区域，再依登记顺序逐屏绘制；
+有效 WM_PAINT 触发窗即使没有普通更新区域也保留一次内部绘制机会。输入仍使全部输出失效，
+请求代次和每屏待重绘状态保留重入及绘制期间的新请求；没有新请求时不主动循环呈现。
+App 的渲染保护阻止嵌套输出、目标重建及会话提前释放；显示变化、销毁和退出在图形调用安全返回后统一收尾。
+Present(1, 0)、颜色验证和鼠标捕获归属保持原契约，统一批次不承诺跨显示器原子显示。
+
 `PinWindow` 只依赖 Common 日志与 Windows SDK，拥有独立 SDR 原图、图形资源及稳定 ID，不依赖兄弟模块。
 Application 从冻结选区生成贴图，以 `app_callbacks.cpp` 注入文字与命令；`app_pin.cpp` 负责复制保存编排。
 截图前仅暂停旧贴图输入与层级修复，真实窗口全程保持显示，由现有冻结遮罩直接覆盖。

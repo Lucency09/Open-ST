@@ -642,7 +642,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
             }
             return 0;
         }
-        if (this->completionBusy_ || this->dialogActive_ || this->shuttingDown_)
+        if (this->completionBusy_ || this->dialogActive_ || this->shuttingDown_ || this->overlayRendering_)
         {
             return 0;
         }
@@ -661,7 +661,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         return 0;
     }
     if ((this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
-         this->settingsBusy_) &&
+         this->settingsBusy_ || this->overlayRendering_) &&
         (message == WM_HOTKEY || message == WM_COMMAND || message == TRAY_MESSAGE))
     {
         return 0;
@@ -986,8 +986,8 @@ void App::UpdateCaptureGate() noexcept
         this->pinManager_->EndModal();
     }
     this->InvalidateToolbarCommands();
-    if (this->shuttingDown_ && !this->completionBusy_ && !this->dialogActive_ && !this->settingsBusy_ &&
-        !this->welcoming_ && (!this->pinManager_ || !this->pinManager_->IsBusy()))
+    if (this->shuttingDown_ && !this->overlayRendering_ && !this->completionBusy_ && !this->dialogActive_ &&
+        !this->settingsBusy_ && !this->welcoming_ && (!this->pinManager_ || !this->pinManager_->IsBusy()))
         PostQuitMessage(0);
 }
 
@@ -997,7 +997,7 @@ void App::UpdateCaptureGate() noexcept
 bool App::CanSubmitToolbarCommand() const noexcept
 {
     return !this->completionBusy_ && !this->dialogActive_ && !this->welcoming_ && !this->shuttingDown_ &&
-           !this->settingsBusy_ && !this->overlayPreparing_ && !this->overlayInvalidated_ &&
+           !this->settingsBusy_ && !this->overlayPreparing_ && !this->overlayRendering_ && !this->overlayInvalidated_ &&
            this->overlaySession_ != nullptr && this->selectionModel_ != nullptr &&
            this->selectionModel_->Phase() == SelectionPhase::Selected && this->selectionModel_->HasSelection();
 }
@@ -1233,7 +1233,7 @@ void App::StartCapture()
 try
 {
     if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
-        this->settingsBusy_ || this->hotkeyRecording_)
+        this->settingsBusy_ || this->hotkeyRecording_ || this->overlayRendering_)
     {
         return;
     }
@@ -1418,6 +1418,23 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         return DefWindowProcW(window, message, wParam, lParam);
     }
 
+    if (app != nullptr && app->overlayRendering_ &&
+        (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE || message == WM_DPICHANGED || message == WM_SIZE ||
+         message == WM_CLOSE || message == WM_DESTROY))
+    {
+        // Present 可重入窗口消息；先失效，外层批次返回后才允许释放或重建渲染目标。
+        app->overlayInvalidated_ = true;
+        if (message == WM_DESTROY)
+        {
+            SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+            if (output != nullptr)
+            {
+                output->window = nullptr;
+            }
+        }
+        return 0;
+    }
+
     if (app != nullptr && app->completionBusy_)
     {
         if (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE || message == WM_DPICHANGED ||
@@ -1444,25 +1461,28 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 1;
     case WM_PAINT:
     {
-        // BeginPaint/EndPaint 只负责验证 Win32 的无效区域；真正绘制由后面的 D2D 交换链完成。
-        PAINTSTRUCT paint{};
-        BeginPaint(window, &paint);
-        EndPaint(window, &paint);
-        if (output != nullptr && output->renderer != nullptr && app->selectionModel_ != nullptr &&
-            !(app->completionBusy_ && app->overlayInvalidated_))
+        if (output != nullptr)
         {
-            std::wstring rendererError;
-            const SelectionSnapshot snapshot = app->SelectionForDrawing();
-            if (!output->renderer->Render(snapshot, rendererError))
-            {
-                OPEN_ST_LOG_ERROR("Capture overlay rendering failed. detail=",
-                                  DiagnosticOrFallback(WideToUtf8(rendererError)));
-                app->CloseOverlay();
-                if (!app->completionBusy_)
+            app->RenderOverlays(
+                window,
+                // 在应用层集中调用实际图形边界；会话负责批次和输出顺序。
+                // 入参：frameOutput 为本次输出；snapshot 为本批快照；error 接收诊断。
+                // 返回：渲染资源存在且绘制成功为 true。
+                [](CaptureOverlayOutput& frameOutput, const SelectionSnapshot& snapshot, std::wstring& error)
                 {
-                    app->ShowCaptureError("capture.error.unknown");
-                }
-            }
+                    if (!frameOutput.renderer)
+                    {
+                        error = L"截图覆盖窗口缺少渲染资源。";
+                        return false;
+                    }
+                    return frameOutput.renderer->Render(snapshot, error);
+                });
+        }
+        else
+        {
+            PAINTSTRUCT paint{};
+            BeginPaint(window, &paint);
+            EndPaint(window, &paint);
         }
         return 0;
     }
@@ -1665,9 +1685,14 @@ void App::CancelSelectionOrClose() noexcept
 
 // 结束当前截图会话并释放覆盖窗口及相关资源。
 // 入参：无。
-// 返回：无返回值；完成或模态忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
+// 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
+    if (this->overlayRendering_)
+    {
+        this->overlayInvalidated_ = true;
+        return;
+    }
     if (this->toolbarGate_ != nullptr)
     {
         this->toolbarGate_->Invalidate();
@@ -1733,9 +1758,10 @@ void App::SaveSelection()
 void App::CompleteSelection(bool save)
 try
 {
-    if (this->completionBusy_ || this->dialogActive_ || this->overlayPreparing_ || this->completion_ == nullptr ||
-        this->overlaySession_ == nullptr || this->frozenDesktopFrame_ == nullptr || this->selectionModel_ == nullptr ||
-        this->selectionModel_->Phase() != SelectionPhase::Selected || !this->selectionModel_->HasSelection())
+    if (this->completionBusy_ || this->dialogActive_ || this->overlayPreparing_ || this->overlayRendering_ ||
+        this->completion_ == nullptr || this->overlaySession_ == nullptr || this->frozenDesktopFrame_ == nullptr ||
+        this->selectionModel_ == nullptr || this->selectionModel_->Phase() != SelectionPhase::Selected ||
+        !this->selectionModel_->HasSelection())
     {
         return;
     }

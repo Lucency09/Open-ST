@@ -4,6 +4,8 @@
 
 #include <overlay_renderer.h>
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,6 +18,18 @@ struct CaptureOverlayOutput final
 {
     HWND window{};
     std::unique_ptr<OverlayRenderer> renderer;
+
+  private:
+    friend class CaptureOverlaySession;
+    bool redrawPending_{};
+};
+
+enum class OverlayPaintResult
+{
+    Skipped,
+    Completed,
+    Interrupted,
+    Failed,
 };
 
 // 管理同一截图会话的多个 HWND；销毁前解除回调绑定，避免重复释放共享状态。
@@ -57,7 +71,13 @@ class CaptureOverlaySession final
     // 请求当前会话的所有覆盖窗口重绘，使跨屏选区显示保持同步。
     // 入参：无。
     // 返回：无返回值；仅标记重绘区域，实际绘制由窗口消息驱动。
-    void Invalidate() const noexcept;
+    void Invalidate() noexcept;
+    // 消费触发窗口的绘制消息，并在固定批次内绘制所有待更新输出。
+    // 入参：trigger 为收到 WM_PAINT 的窗口；drawOutput 为同步绘制边界；shouldStop 检查宿主失效；error 接收失败原因。
+    // 返回：无触发或重入为 Skipped；成功为 Completed；关闭或宿主失效为 Interrupted；窗口或绘制失败为 Failed。
+    [[nodiscard]] OverlayPaintResult Paint(HWND trigger,
+                                           const std::function<bool(CaptureOverlayOutput&, std::wstring&)>& drawOutput,
+                                           const std::function<bool()>& shouldStop, std::wstring& error);
     // 解除当前截图会话占用的鼠标捕获。
     // 入参：无。
     // 返回：无返回值；其他窗口持有的鼠标捕获保持不变。
@@ -65,11 +85,11 @@ class CaptureOverlaySession final
     // 显示已准备好的全部截图覆盖窗口，并激活光标所在窗口。
     // 入参：无。
     // 返回：无返回值；请求前台、键盘焦点及重绘，不报告系统拒绝激活的结果。
-    void Show() const noexcept;
+    void Show() noexcept;
     // 在模态操作结束后恢复截图覆盖窗口的焦点及选区显示。
     // 入参：无。
     // 返回：无返回值；无可激活窗口时不操作。
-    void RestoreFocus() const noexcept;
+    void RestoreFocus() noexcept;
     // 更新当前会话全部截图覆盖窗口的标题。
     // 入参：title：由宿主提供的本地化标题，本次调用借用。
     // 返回：无返回值；标题写入各窗口，不保存字符串引用。
@@ -80,6 +100,14 @@ class CaptureOverlaySession final
     void Close() noexcept;
 
   private:
+    // 在异常或正常退出批次时恢复准入，并补发批次中新增的无效请求。
+    // 入参：无。
+    // 返回：全部有效窗口重新失效成功为 true；关闭请求在此安全回收。
+    bool FinishPaint() noexcept;
     std::vector<std::unique_ptr<CaptureOverlayOutput>> outputs_;
+    std::uint64_t requestGeneration_{};
+    bool painting_{};
+    bool closePending_{};
+    bool invalidationFailed_{};
 };
 } // namespace open_st
