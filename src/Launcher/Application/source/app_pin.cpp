@@ -1,4 +1,5 @@
 // 将冻结选区接入独立贴图，并用稳定请求代次和模态快照协调复制保存。
+#include "capture_annotation_state.h"
 #include "capture_overlay_session.h"
 #include "capture_storage_options.h"
 #include "save_directory.h"
@@ -81,8 +82,10 @@ void App::PinSelection()
         try
         {
             const RectI rectangle = this->selectionModel_->Snapshot().rectangle;
+            const AnnotationSnapshot annotations =
+                this->annotation_ ? this->annotation_->Committed() : AnnotationSnapshot{};
             SdrSelectionFrame frame;
-            if (this->outputRenderer_->Render(*this->frozenDesktopFrame_, rectangle, frame, error))
+            if (this->GenerateAnnotatedSelection(rectangle, annotations, frame, error))
             {
                 const std::shared_ptr<const PinImage> image = PinImage::Create(
                     frame.Bounds().Width(), frame.Bounds().Height(), frame.Stride(), frame.Pixels(), error);
@@ -125,7 +128,7 @@ void App::PinSelection()
 bool App::PostPinCommand(std::uint64_t id, PinCommand command) noexcept
 {
     if (!IsWindow(this->messageWindow_) || (command != PinCommand::Copy && command != PinCommand::Save) ||
-        !this->pinManager_ || !this->pinManager_->Image(id) || this->completionBusy_ || this->dialogActive_ ||
+        !this->pinManager_ || !this->pinManager_->Image(id) || this->CompletionBusy() || this->dialogActive_ ||
         this->settingsBusy_ || this->welcoming_ || this->shuttingDown_ || this->overlaySession_ ||
         this->overlayPreparing_ || this->pendingPinId_ != 0 ||
         this->pinRequestSerial_ == (std::numeric_limits<std::uint64_t>::max)())
@@ -149,7 +152,7 @@ void App::DispatchPinCommand(PinCommand command, std::uint64_t request)
     if (request != this->pinRequestSerial_ || this->pendingPinId_ == 0 || command != this->pendingPinCommand_)
         return;
     const PinId id = std::exchange(this->pendingPinId_, 0);
-    if (!this->pinManager_ || this->completionBusy_ || this->dialogActive_ || this->settingsBusy_ || this->welcoming_ ||
+    if (!this->pinManager_ || this->CompletionBusy() || this->dialogActive_ || this->settingsBusy_ || this->welcoming_ ||
         this->shuttingDown_ || this->overlaySession_ || this->pinManager_->IsBusy())
         return;
     const std::shared_ptr<const PinImage> image = this->pinManager_->Image(id);

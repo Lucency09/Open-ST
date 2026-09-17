@@ -17,6 +17,19 @@ target_sources(open_st_application
     PRIVATE
         source/app.cpp
         source/app_overlay_render.cpp
+        source/app_annotation.cpp
+        source/app_annotation_properties.cpp
+        source/app_annotation_resources.cpp
+        source/app_annotation_text.cpp
+        source/annotation_interaction_controller.cpp
+        private/annotation_interaction_controller.h
+        source/overlay_input_queue.cpp
+        private/overlay_input_queue.h
+        source/annotation_style_dialog.cpp
+        source/annotation_choice_dialog.cpp
+        private/annotation_style_dialog.h
+        source/capture_annotation_state.cpp
+        private/capture_annotation_state.h
         source/app_selection.cpp
         source/window_selection_snapshot.cpp
         private/window_selection_snapshot.h
@@ -57,6 +70,7 @@ target_sources(open_st_application
 target_link_libraries(open_st_application
     PUBLIC
         open_st_project_options
+        OpenST::Annotation
     PRIVATE
         # 功能模块只作为 application 的实现细节，不传播给 launcher。
         OpenST::Hotkeys

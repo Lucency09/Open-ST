@@ -14,6 +14,7 @@ enum class NodeType
     KeyChord,
     Edit,
     Integer,
+    Swatch,
     Button
 };
 struct Node

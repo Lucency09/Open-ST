@@ -226,9 +226,9 @@ class Parser
             if (type == "checkbox" || source.contains("labelKey"))
                 node.textKey = this->String(source, "labelKey", path);
         }
-        else if (type == "text" || type == "button")
+        else if (type == "text" || type == "button" || type == "swatch")
         {
-            node.type = type == "text" ? NodeType::Text : NodeType::Button;
+            node.type = type == "text" ? NodeType::Text : type == "swatch" ? NodeType::Swatch : NodeType::Button;
             this->Keys(source, {"type", "id", "textKey", "width"}, path);
             node.textKey = this->String(source, "textKey", path);
         }

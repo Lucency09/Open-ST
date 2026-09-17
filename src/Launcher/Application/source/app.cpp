@@ -1,5 +1,7 @@
 // 实现应用启动退出、托盘与消息分派，并协调截图、工具栏、设置及图像输出。
 
+#include "annotation_interaction_controller.h"
+#include "capture_annotation_state.h"
 #include "capture_command_gate.h"
 #include "capture_completion.h"
 #include "capture_selection_input.h"
@@ -7,10 +9,12 @@
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
 #include "log_maintenance_task.h"
+#include "overlay_input_queue.h"
 #include "save_directory.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
 #include "window_selection_snapshot.h"
+#include <annotation_mosaic_source.h>
 #include <app.h>
 #include <array>
 #include <capture_toolbar.h>
@@ -20,6 +24,7 @@
 #include <frozen_desktop_frame.h>
 #include <hotkeys.h>
 #include <image_file_writer.h>
+#include <inline_text_editor.h>
 #include <log.h>
 #include <overlay_renderer.h>
 #include <pin_window_manager.h>
@@ -228,10 +233,15 @@ HCURSOR CursorForSelection(const open_st::SelectionModel& selection, open_st::Po
 }
 
 // 按最新鼠标位置和选区操作状态更新覆盖窗口光标。
-// 入参：selection：用于判断当前操作及命中位置的只读选区模型。
+// 入参：selection：只读选区模型；annotationTool：绘图工具不响应选区控制点。
 // 返回：无返回值；鼠标位置查询失败时保留现有光标。
-void UpdateOverlayCursor(const open_st::SelectionModel& selection) noexcept
+void UpdateOverlayCursor(const open_st::SelectionModel& selection, bool annotationTool = false) noexcept
 {
+    if (annotationTool)
+    {
+        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+        return;
+    }
     open_st::PointI point{};
     if (TryGetCursorPoint(point))
     {
@@ -245,7 +255,11 @@ namespace open_st
 // 创建应用协调器并保存进程模块实例。
 // 入参：instance：借用的当前程序模块句柄。
 // 返回：构造函数无返回值；窗口、设置及捕获资源留待运行时初始化。
-App::App(HINSTANCE instance) noexcept : instance_(instance) {}
+App::App(HINSTANCE instance)
+    : instance_(instance), annotationInteraction_(std::make_unique<AnnotationInteractionController>()),
+      overlayInput_(std::make_unique<OverlayInputQueue>())
+{
+}
 
 // 关闭应用持有的业务窗口和进程级服务并释放系统资源。
 // 入参：无。
@@ -478,6 +492,12 @@ int App::Run(int)
         }
         TranslateMessage(&message);
         DispatchMessageW(&message);
+        this->DrainOverlayPointers();
+        this->DrainAnnotationText();
+        if (this->overlayInvalidated_ && !this->overlayRendering_ && !this->annotationPreparing_ &&
+            !this->CompletionBusy())
+            this->CloseOverlay();
+        this->ReportAnnotationFailure();
         this->DrainLogMaintenance();
         this->ReportDataReadWarnings();
     }
@@ -496,7 +516,7 @@ int App::Run(int)
 void App::ReportDataReadWarnings()
 {
     if (this->overlaySession_ != nullptr || this->overlayPreparing_ || this->dialogActive_ || this->shuttingDown_ ||
-        this->completionBusy_ || this->settingsBusy_)
+        this->CompletionBusy() || this->settingsBusy_)
     {
         return;
     }
@@ -600,6 +620,21 @@ LRESULT CALLBACK App::WindowProc(HWND window, UINT message, WPARAM wParam, LPARA
 // 返回：已消费业务消息的处理结果；其他消息返回 DefWindowProcW 的结果。
 LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (message == WM_APP + 10)
+    {
+        this->DrainOverlayPointers();
+        return 0;
+    }
+    if (message == WM_APP + 9)
+    {
+        this->FinishAnnotationText(static_cast<std::uint64_t>(wParam), lParam != 0);
+        return 0;
+    }
+    if (message == WM_APP + 8)
+    {
+        this->DispatchAnnotationProperties(static_cast<std::uint64_t>(wParam));
+        return 0;
+    }
     if (message == WM_APP + 7)
     {
         if (this->logMaintenance_ && this->logMaintenance_->Snapshot().operation == static_cast<std::uint64_t>(wParam))
@@ -642,7 +677,8 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
             }
             return 0;
         }
-        if (this->completionBusy_ || this->dialogActive_ || this->shuttingDown_ || this->overlayRendering_)
+        if (this->CompletionBusy() || this->dialogActive_ || this->shuttingDown_ || this->overlayRendering_ ||
+            this->annotationPreparing_)
         {
             return 0;
         }
@@ -660,8 +696,13 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         }
         return 0;
     }
-    if ((this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
-         this->settingsBusy_ || this->overlayRendering_) &&
+    if (message == WM_HOTKEY && this->annotationInteraction_->TextActive())
+    {
+        this->DispatchHotkey(wParam, lParam, static_cast<DWORD>(GetMessageTime()));
+        return 0;
+    }
+    if ((this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+         this->settingsBusy_ || this->overlayRendering_ || this->annotationPreparing_) &&
         (message == WM_HOTKEY || message == WM_COMMAND || message == TRAY_MESSAGE))
     {
         return 0;
@@ -970,7 +1011,7 @@ HWND App::DialogOwner() const noexcept
 // 返回：无返回值；原子更新暂停标记和代次，使较早排队的截图请求失效。
 void App::UpdateCaptureGate() noexcept
 {
-    const bool paused = this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+    const bool paused = this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
                         this->settingsBusy_ || this->hotkeyRecording_;
     this->hotkeyBoundary_ = GetTickCount();
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
@@ -986,8 +1027,9 @@ void App::UpdateCaptureGate() noexcept
         this->pinManager_->EndModal();
     }
     this->InvalidateToolbarCommands();
-    if (this->shuttingDown_ && !this->overlayRendering_ && !this->completionBusy_ && !this->dialogActive_ &&
-        !this->settingsBusy_ && !this->welcoming_ && (!this->pinManager_ || !this->pinManager_->IsBusy()))
+    if (this->shuttingDown_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy() &&
+        !this->dialogActive_ && !this->settingsBusy_ && !this->welcoming_ &&
+        (!this->pinManager_ || !this->pinManager_->IsBusy()))
         PostQuitMessage(0);
 }
 
@@ -996,10 +1038,12 @@ void App::UpdateCaptureGate() noexcept
 // 返回：会话有效、选区稳定且不处于准备或模态忙状态时 true，否则 false。
 bool App::CanSubmitToolbarCommand() const noexcept
 {
-    return !this->completionBusy_ && !this->dialogActive_ && !this->welcoming_ && !this->shuttingDown_ &&
-           !this->settingsBusy_ && !this->overlayPreparing_ && !this->overlayRendering_ && !this->overlayInvalidated_ &&
-           this->overlaySession_ != nullptr && this->selectionModel_ != nullptr &&
-           this->selectionModel_->Phase() == SelectionPhase::Selected && this->selectionModel_->HasSelection();
+    return !this->CompletionBusy() && !this->dialogActive_ && !this->welcoming_ && !this->shuttingDown_ &&
+           !this->settingsBusy_ && !this->overlayPreparing_ && !this->overlayRendering_ &&
+           !this->annotationPreparing_ && !this->overlayInvalidated_ && this->overlaySession_ != nullptr &&
+           this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Selected &&
+           this->selectionModel_->HasSelection() && !this->HasSelectionInteraction() &&
+           this->annotationInteraction_->PendingProperty() == 0;
 }
 
 // 为截图完成命令预订处理位置并投递到 App 消息队列。
@@ -1007,8 +1051,7 @@ bool App::CanSubmitToolbarCommand() const noexcept
 // 返回：预订及消息投递成功时 true；状态无效、已有请求或投递失败时 false，并撤销失败预订。
 bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
 {
-    if (command != CaptureToolbarCommand::Cancel && command != CaptureToolbarCommand::Save &&
-        command != CaptureToolbarCommand::Copy && command != CaptureToolbarCommand::Pin)
+    if (command < CaptureToolbarCommand::Cancel || command > CaptureToolbarCommand::MosaicTool)
     {
         return false;
     }
@@ -1057,6 +1100,9 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
     case CaptureToolbarCommand::Pin:
         this->PinSelection();
         break;
+    default:
+        this->HandleAnnotationCommand(command);
+        break;
     }
     this->RefreshCaptureToolbar();
 }
@@ -1089,6 +1135,7 @@ try
         this->captureToolbar_->Hide();
         return;
     }
+    this->RefreshAnnotationToolbar();
     const RectI rectangle = this->selectionModel_->Snapshot().rectangle;
     const RECT selection{rectangle.left, rectangle.top, rectangle.right, rectangle.bottom};
     if (updateMonitor || this->toolbarMonitor_ == nullptr)
@@ -1183,6 +1230,21 @@ void App::CreateCaptureToolbar() noexcept
         this->captureToolbar_ = std::make_unique<CaptureToolbar>();
         std::vector<ToolbarButtonSpec> buttons{
             {CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "capture.toolbar.cancel", 0},
+            {CaptureToolbarCommand::SelectTool, ToolbarIcon::SelectTool, "annotation.tool.select", 1},
+            {CaptureToolbarCommand::PenTool, ToolbarIcon::PenTool, "annotation.tool.pen", 1},
+            {CaptureToolbarCommand::LineTool, ToolbarIcon::LineTool, "annotation.tool.line", 1},
+            {CaptureToolbarCommand::EllipseTool, ToolbarIcon::EllipseTool, "annotation.tool.ellipse", 1},
+            {CaptureToolbarCommand::EraserTool, ToolbarIcon::EraserTool, "annotation.tool.eraser", 1},
+            {CaptureToolbarCommand::TextTool, ToolbarIcon::TextTool, "annotation.tool.text", 1},
+            {CaptureToolbarCommand::MosaicTool, ToolbarIcon::MosaicTool, "annotation.tool.mosaic", 1},
+            {CaptureToolbarCommand::RectangleTool, ToolbarIcon::RectangleTool, "annotation.tool.rectangle", 1},
+            {CaptureToolbarCommand::ArrowTool, ToolbarIcon::ArrowTool, "annotation.tool.arrow", 1},
+            {CaptureToolbarCommand::FilledRectangleTool, ToolbarIcon::FilledRectangleTool, "annotation.tool.fill", 1},
+            {CaptureToolbarCommand::RoundedRectangleTool, ToolbarIcon::RoundedRectangleTool, "annotation.tool.rounded",
+             1},
+            {CaptureToolbarCommand::Undo, ToolbarIcon::Undo, "annotation.undo", 2},
+            {CaptureToolbarCommand::Redo, ToolbarIcon::Redo, "annotation.redo", 2},
+            {CaptureToolbarCommand::Style, ToolbarIcon::Style, "annotation.style.title", 2},
             {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "capture.toolbar.pin", 1},
             {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
             {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
@@ -1232,8 +1294,8 @@ void App::CreateCaptureToolbar() noexcept
 void App::StartCapture()
 try
 {
-    if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
-        this->settingsBusy_ || this->hotkeyRecording_ || this->overlayRendering_)
+    if (this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
+        this->settingsBusy_ || this->hotkeyRecording_ || this->overlayRendering_ || this->annotationPreparing_)
     {
         return;
     }
@@ -1306,6 +1368,7 @@ try
     this->selectionModel_->SetBounds(bounds);
     this->InitializeWindowSelection();
     this->overlaySession_ = std::make_unique<CaptureOverlaySession>();
+    this->InitializeAnnotationResources();
     if (this->toolbarGate_ == nullptr)
     {
         this->toolbarGate_ = std::make_unique<CaptureCommandGate>();
@@ -1346,8 +1409,10 @@ try
             return;
         }
         output.renderer = std::make_unique<OverlayRenderer>();
-        if (!output.renderer->Initialize(output.window, previewFrame, borderColor, captureError) ||
-            !output.renderer->Render(this->SelectionForDrawing(), captureError))
+        const bool initialized = output.renderer->Initialize(output.window, previewFrame, borderColor, captureError);
+        if (initialized)
+            output.renderer->SetMosaicSource(this->annotationSource_.get());
+        if (!initialized || !output.renderer->Render(this->SelectionForDrawing(), captureError))
         {
             OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=",
                               DiagnosticOrFallback(WideToUtf8(captureError)));
@@ -1391,6 +1456,29 @@ catch (const std::exception&)
 // 返回：已处理消息的 Win32 结果；无应用关联或未处理消息交给默认窗口过程。
 LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    const bool replay = message == WM_APP + 10;
+    PointI replayPoint{};
+    if (replay)
+    {
+        message = LOWORD(wParam);
+        wParam = HIWORD(wParam);
+        if (message != WM_LBUTTONDOWN && message != WM_MOUSEMOVE && message != WM_LBUTTONUP &&
+            message != WM_CANCELMODE && !(message == WM_KEYDOWN && wParam == VK_ESCAPE))
+            return 0;
+        const std::uint64_t packed = static_cast<std::uint64_t>(lParam);
+        replayPoint = {static_cast<std::int32_t>(packed & 0xffffffffU), static_cast<std::int32_t>(packed >> 32)};
+    }
+    // 重放使用排队时的物理点，普通输入保持既有全局光标查询。
+    // 入参：point为输出。返回：取得坐标时true。
+    const auto readPoint = [replay, replayPoint](PointI& point)
+    {
+        if (replay)
+        {
+            point = replayPoint;
+            return true;
+        }
+        return TryGetCursorPoint(point);
+    };
     App* app = reinterpret_cast<App*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE)
     {
@@ -1402,6 +1490,46 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
 
     CaptureOverlayOutput* output =
         app != nullptr && app->overlaySession_ != nullptr ? app->overlaySession_->Find(window) : nullptr;
+    if (app != nullptr && !app->CompletionBusy())
+    {
+        const bool pendingDown = !replay && app->overlayInput_->HasPendingDown();
+        const bool gesture = app->HasSelectionInteraction() || pendingDown;
+        const UINT modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0U) |
+                               ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0U) |
+                               ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0U);
+        const bool escape =
+            message == WM_KEYDOWN &&
+            (replay ? wParam == VK_ESCAPE : MatchSessionKey(wParam, lParam, modifiers) == SessionKeyCommand::Cancel);
+        const bool undoGesture = message == WM_KEYDOWN && gesture && !replay &&
+                                 MatchSessionKey(wParam, lParam, modifiers) == SessionKeyCommand::Undo;
+        const bool lost = message == WM_CAPTURECHANGED &&
+                          (app->HasSelectionInteraction() || (!app->overlayInput_->Draining() && pendingDown));
+        if (message == WM_CANCELMODE || lost || escape || undoGesture)
+        {
+            const bool deferred = app->annotationPreparing_ || app->overlayRendering_;
+            app->overlayInput_->BeginCancellation(replay, deferred, gesture);
+            if (deferred)
+            {
+                if (gesture || escape)
+                    app->QueueOverlayPointer(window, gesture ? WM_CANCELMODE : WM_KEYDOWN, gesture ? 0 : VK_ESCAPE, {});
+                return 0;
+            }
+            if ((escape || undoGesture) && pendingDown && !app->HasSelectionInteraction())
+                return 0;
+        }
+    }
+    if (app != nullptr && !app->overlayInvalidated_ && !app->CompletionBusy() &&
+        !(app->annotation_ && app->annotation_->EditingText()) &&
+        (app->annotationPreparing_ || app->overlayRendering_) &&
+        (message == WM_LBUTTONDOWN || message == WM_MOUSEMOVE || message == WM_LBUTTONUP))
+    {
+        PointI point{};
+        if (readPoint(point))
+            app->QueueOverlayPointer(window, message, wParam, point);
+        return 0;
+    }
+    if (app != nullptr && message == WM_LBUTTONDOWN)
+        app->overlayInput_->ObservePointerDown();
 
     // CreateWindow/ShowWindow 会同步派发消息；将失效延迟到调用返回，避免删除调用栈正在使用的记录。
     if (app != nullptr && app->overlayPreparing_)
@@ -1418,7 +1546,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         return DefWindowProcW(window, message, wParam, lParam);
     }
 
-    if (app != nullptr && app->overlayRendering_ &&
+    if (app != nullptr && (app->overlayRendering_ || app->annotationPreparing_) &&
         (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE || message == WM_DPICHANGED || message == WM_SIZE ||
          message == WM_CLOSE || message == WM_DESTROY))
     {
@@ -1435,7 +1563,23 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 0;
     }
 
-    if (app != nullptr && app->completionBusy_)
+    if (app != nullptr && app->annotationPreparing_ && message == WM_PAINT)
+    {
+        PAINTSTRUCT paint{};
+        BeginPaint(window, &paint);
+        EndPaint(window, &paint);
+        return 0;
+    }
+    if (app != nullptr && app->annotationInteraction_->TextActive() && message == WM_MOUSEACTIVATE)
+        return MA_NOACTIVATE;
+    if (app != nullptr && app->annotationInteraction_->TextActive() && message == WM_LBUTTONDOWN)
+    {
+        PointI point{};
+        if (readPoint(point))
+            app->HandleAnnotationTextClick(point);
+        return 0;
+    }
+    if (app != nullptr && (app->CompletionBusy() || app->annotationPreparing_))
     {
         if (message == WM_DISPLAYCHANGE || message == WM_SETTINGCHANGE || message == WM_DPICHANGED ||
             message == WM_CLOSE || message == WM_DESTROY)
@@ -1445,6 +1589,8 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             {
                 output->window = nullptr;
             }
+            if (app->annotationInteraction_->TextActive() && app->annotationInteraction_->CanClose())
+                (void)app->annotationInteraction_->RequestText(false);
             return 0;
         }
         if ((message >= WM_MOUSEFIRST && message <= WM_MOUSELAST) ||
@@ -1463,20 +1609,21 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
     {
         if (output != nullptr)
         {
-            app->RenderOverlays(
-                window,
-                // 在应用层集中调用实际图形边界；会话负责批次和输出顺序。
-                // 入参：frameOutput 为本次输出；snapshot 为本批快照；error 接收诊断。
-                // 返回：渲染资源存在且绘制成功为 true。
-                [](CaptureOverlayOutput& frameOutput, const SelectionSnapshot& snapshot, std::wstring& error)
-                {
-                    if (!frameOutput.renderer)
-                    {
-                        error = L"截图覆盖窗口缺少渲染资源。";
-                        return false;
-                    }
-                    return frameOutput.renderer->Render(snapshot, error);
-                });
+            app->RenderOverlays(window,
+                                // 在应用层集中调用实际图形边界；会话负责批次和输出顺序。
+                                // 入参：frameOutput 为本次输出；snapshot 为本批快照；error 接收诊断。
+                                // 返回：渲染资源存在且绘制成功为 true。
+                                [annotations = app->AnnotationForDrawing()](CaptureOverlayOutput& frameOutput,
+                                                                            const SelectionSnapshot& snapshot,
+                                                                            std::wstring& error)
+                                {
+                                    if (!frameOutput.renderer)
+                                    {
+                                        error = L"截图覆盖窗口缺少渲染资源。";
+                                        return false;
+                                    }
+                                    return frameOutput.renderer->Render(snapshot, annotations, error);
+                                });
         }
         else
         {
@@ -1489,8 +1636,14 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
     case WM_LBUTTONDOWN:
         if (app != nullptr && app->selectionModel_ != nullptr)
         {
+            app->CancelAnnotationPropertyRequest();
             PointI point{};
-            if (TryGetCursorPoint(point) && app->BeginSelectionInput(window, point))
+            if (app->annotation_ && app->annotation_->Tool() == CaptureAnnotationTool::Text && readPoint(point))
+            {
+                app->BeginAnnotationText(point);
+                return 0;
+            }
+            if (readPoint(point) && app->BeginSelectionInput(window, point))
             {
                 app->InvalidateToolbarCommands();
                 SetFocus(window);
@@ -1500,11 +1653,11 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
                     OPEN_ST_LOG_WARNING("Failed to capture the mouse for a selection interaction.");
                     (void)app->CancelSelectionInput();
                     app->InvalidateToolbarCommands();
-                    UpdateOverlayCursor(*app->selectionModel_);
+                    UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
                     app->overlaySession_->Invalidate();
                     return 0;
                 }
-                UpdateOverlayCursor(*app->selectionModel_);
+                UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
                 app->overlaySession_->Invalidate();
             }
         }
@@ -1513,18 +1666,22 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (app != nullptr && app->selectionModel_ != nullptr)
         {
             PointI point{};
-            if (TryGetCursorPoint(point) && app->UpdateSelectionInput(point))
+            if (readPoint(point))
             {
-                app->overlaySession_->Invalidate();
+                if ((wParam & MK_RBUTTON) == 0)
+                    app->annotationInteraction_->LeaveProperty();
+                app->UpdateAnnotationPropertyClick(point);
+                if (app->UpdateSelectionInput(point))
+                    app->overlaySession_->Invalidate();
             }
-            UpdateOverlayCursor(*app->selectionModel_);
+            UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
         }
         return 0;
     case WM_LBUTTONUP:
         if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
             PointI point{};
-            if (TryGetCursorPoint(point))
+            if (readPoint(point))
             {
                 app->EndSelectionInput(point);
             }
@@ -1536,21 +1693,25 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             {
                 ReleaseCapture();
             }
-            UpdateOverlayCursor(*app->selectionModel_);
+            UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
             app->overlaySession_->Invalidate();
             app->InvalidateToolbarCommands(true);
         }
         return 0;
     case WM_CAPTURECHANGED:
+        if (app != nullptr)
+            app->CancelAnnotationPropertyRequest();
         if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
             (void)app->CancelSelectionInput();
             app->InvalidateToolbarCommands();
-            UpdateOverlayCursor(*app->selectionModel_);
+            UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
             app->overlaySession_->Invalidate();
         }
         return 0;
     case WM_CANCELMODE:
+        if (app != nullptr)
+            app->CancelAnnotationPropertyRequest();
         if (app != nullptr && app->selectionModel_ != nullptr && app->HasSelectionInteraction())
         {
             (void)app->CancelSelectionInput();
@@ -1559,20 +1720,20 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             {
                 ReleaseCapture();
             }
-            UpdateOverlayCursor(*app->selectionModel_);
+            UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
             app->overlaySession_->Invalidate();
         }
         return 0;
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT && app != nullptr && app->selectionModel_ != nullptr)
         {
-            UpdateOverlayCursor(*app->selectionModel_);
+            UpdateOverlayCursor(*app->selectionModel_, app->IsAnnotationToolActive());
             return TRUE;
         }
         break;
     case WM_SIZE:
         if (output != nullptr && output->renderer != nullptr && wParam != SIZE_MINIMIZED &&
-            !(app->completionBusy_ && app->overlayInvalidated_))
+            !(app->CompletionBusy() && app->overlayInvalidated_))
         {
             RECT client{};
             GetClientRect(window, &client);
@@ -1582,7 +1743,7 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             {
                 OPEN_ST_LOG_ERROR("Failed to resize the capture overlay renderer.");
                 app->CloseOverlay();
-                if (!app->completionBusy_)
+                if (!app->CompletionBusy())
                 {
                     app->ShowCaptureError("capture.error.unknown");
                 }
@@ -1602,10 +1763,16 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
     case WM_KEYDOWN:
         if (app != nullptr)
         {
-            const UINT modifiers = ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0U) |
-                                   ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0U) |
-                                   ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0U);
+            const UINT modifiers = replay ? 0U
+                                          : ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0U) |
+                                                ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0U) |
+                                                ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0U);
             const SessionKeyCommand command = MatchSessionKey(wParam, lParam, modifiers);
+            if (command == SessionKeyCommand::Undo || command == SessionKeyCommand::Redo)
+            {
+                app->RestoreAnnotationEdit(command == SessionKeyCommand::Redo);
+                return 0;
+            }
             if (command == SessionKeyCommand::Cancel)
             {
                 app->CancelSelectionOrClose();
@@ -1621,10 +1788,32 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
             }
         }
         break;
+    case WM_KILLFOCUS:
+        if (app != nullptr)
+            app->CancelAnnotationPropertyRequest();
+        break;
+    case WM_MOUSELEAVE:
+        if (app != nullptr)
+            app->annotationInteraction_->LeaveProperty();
+        return 0;
+    case WM_RBUTTONDOWN:
+        if (app != nullptr)
+        {
+            PointI point{};
+            if (readPoint(point))
+                app->BeginAnnotationPropertyClick(window, point);
+            else
+                app->CancelAnnotationPropertyRequest();
+        }
+        return 0;
     case WM_RBUTTONUP:
         if (app != nullptr)
         {
-            app->CancelSelectionOrClose();
+            PointI point{};
+            if (readPoint(point))
+                app->EndAnnotationPropertyClick(point);
+            else
+                app->CancelAnnotationPropertyRequest();
         }
         return 0;
     case WM_DESTROY:
@@ -1645,12 +1834,13 @@ LRESULT CALLBACK App::OverlayProc(HWND window, UINT message, WPARAM wParam, LPAR
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-// 按层级处理 Esc 或右键取消操作。
+// 按层级处理 Esc 取消操作。
 // 入参：无。
 // 返回：无返回值；优先取消拖动，再清空已有选区，最后关闭无选区的覆盖会话。
 void App::CancelSelectionOrClose() noexcept
 {
-    if (this->completionBusy_)
+    this->CancelAnnotationPropertyRequest();
+    if (this->CompletionBusy())
     {
         return;
     }
@@ -1661,19 +1851,27 @@ void App::CancelSelectionOrClose() noexcept
         {
             this->overlaySession_->ReleaseMouse();
         }
-        UpdateOverlayCursor(*this->selectionModel_);
+        UpdateOverlayCursor(*this->selectionModel_, this->IsAnnotationToolActive());
         if (this->overlaySession_ != nullptr)
         {
             this->overlaySession_->Invalidate();
         }
         return;
     }
+    if (this->IsAnnotationToolActive())
+    {
+        this->HandleAnnotationCommand(CaptureToolbarCommand::SelectTool);
+        UpdateOverlayCursor(*this->selectionModel_);
+        return;
+    }
     if (this->selectionModel_ != nullptr && this->selectionModel_->Phase() == SelectionPhase::Selected)
     {
         this->selectionModel_->Reset();
+        if (this->annotation_)
+            this->annotation_->Clear();
         this->RefreshWindowCandidate();
         this->InvalidateToolbarCommands();
-        UpdateOverlayCursor(*this->selectionModel_);
+        UpdateOverlayCursor(*this->selectionModel_, this->IsAnnotationToolActive());
         if (this->overlaySession_ != nullptr)
         {
             this->overlaySession_->Invalidate();
@@ -1688,11 +1886,14 @@ void App::CancelSelectionOrClose() noexcept
 // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
-    if (this->overlayRendering_)
+    this->CancelAnnotationPropertyRequest();
+    if (!this->annotationInteraction_->CanClose() || this->annotationPreparing_ || this->overlayRendering_)
     {
         this->overlayInvalidated_ = true;
         return;
     }
+    this->overlayInput_->Reset();
+    (void)this->annotationInteraction_->CloseSession();
     if (this->toolbarGate_ != nullptr)
     {
         this->toolbarGate_->Invalidate();
@@ -1702,7 +1903,7 @@ void App::CloseOverlay() noexcept
     {
         this->captureToolbar_->Hide();
     }
-    if (this->completionBusy_)
+    if (this->CompletionBusy())
     {
         this->overlayInvalidated_ = true;
         return;
@@ -1718,6 +1919,8 @@ void App::CloseOverlay() noexcept
     this->windowCandidate_.reset();
     this->windowSelection_.reset();
     this->selectionInput_.reset();
+    this->annotation_.reset();
+    this->annotationFailure_ = false;
     if (this->outputRenderer_ != nullptr)
     {
         this->outputRenderer_->ReleaseImageResources();
@@ -1729,6 +1932,7 @@ void App::CloseOverlay() noexcept
         this->overlaySession_.reset();
     }
     this->selectionModel_.reset();
+    this->annotationSource_.reset();
     this->frozenDesktopFrame_.reset();
     this->overlayPreparing_ = false;
     this->overlayInvalidated_ = false;
@@ -1758,10 +1962,11 @@ void App::SaveSelection()
 void App::CompleteSelection(bool save)
 try
 {
-    if (this->completionBusy_ || this->dialogActive_ || this->overlayPreparing_ || this->overlayRendering_ ||
-        this->completion_ == nullptr || this->overlaySession_ == nullptr || this->frozenDesktopFrame_ == nullptr ||
-        this->selectionModel_ == nullptr || this->selectionModel_->Phase() != SelectionPhase::Selected ||
-        !this->selectionModel_->HasSelection())
+    if (this->CompletionBusy() || this->dialogActive_ || this->overlayPreparing_ || this->overlayRendering_ ||
+        this->annotationPreparing_ || this->completion_ == nullptr || this->overlaySession_ == nullptr ||
+        this->frozenDesktopFrame_ == nullptr || this->selectionModel_ == nullptr ||
+        this->selectionModel_->Phase() != SelectionPhase::Selected || !this->selectionModel_->HasSelection() ||
+        this->HasSelectionInteraction())
     {
         return;
     }
@@ -1776,6 +1981,8 @@ try
     try
     {
         const RectI selection = this->selectionModel_->Snapshot().rectangle;
+        const AnnotationSnapshot annotations =
+            this->annotation_ ? this->annotation_->Committed() : AnnotationSnapshot{};
         const HWND owner = this->overlaySession_->ActivationWindow();
         SdrSelectionFrame frame;
         SaveImageTarget target;
@@ -1786,11 +1993,8 @@ try
         // 从冻结桌面生成当前选区的 SDR 输出图像。
         // 入参：无显式入参；捕获 selection 及 App，借用输出 frame 和诊断 error。
         // 返回：会话未失效且转换成功时 true；布局失效或转换失败 false。
-        actions.generate = [this, selection, &frame, &error]()
-        {
-            return !this->overlayInvalidated_ &&
-                   this->outputRenderer_->Render(*this->frozenDesktopFrame_, selection, frame, error);
-        };
+        actions.generate = [this, selection, annotations, &frame, &error]()
+        { return this->GenerateAnnotatedSelection(selection, annotations, frame, error); };
         // 把已生成的选区图像适配为 Export 视图并发布到剪贴板。
         // 入参：无显式入参；捕获 owner，借用 frame 像素和 error 诊断输出。
         // 返回：剪贴板发布成功 true；失败 false 并写入诊断，不转移 frame 像素所有权。
@@ -1898,7 +2102,7 @@ catch (const std::exception&)
 // 返回：无返回值；失败保留状态提示，用户完成清理或确认退出后请求结束应用。
 void App::ShowCleanup()
 {
-    if (this->dialogActive_ || this->completionBusy_ || this->welcoming_ || this->shuttingDown_)
+    if (this->dialogActive_ || this->CompletionBusy() || this->welcoming_ || this->shuttingDown_)
     {
         return;
     }

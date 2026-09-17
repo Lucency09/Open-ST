@@ -83,7 +83,7 @@ struct AppSelectionTestAccess final
     // 返回：无返回值。
     static void Message(App& app, UINT message)
     {
-        (void)App::OverlayProc(app.messageWindow_, message, 0, 0);
+        (void)App::OverlayProc(app.messageWindow_, message, message == WM_KEYDOWN ? VK_ESCAPE : 0, 0);
     }
     // 判断是否仍保留按下／拖动交互。
     // 入参：app 为测试应用。
@@ -200,7 +200,7 @@ TEST_F(WindowSelectionIntegrationTest, release_without_move_and_return_to_origin
     ASSERT_TRUE(Access::Down(*this->app_, {20, 20}));
     Access::Up(*this->app_, {70, 60});
     this->ExpectRectangle({20, 20, 70, 60});
-    Access::Message(*this->app_, WM_RBUTTONUP);
+    Access::Message(*this->app_, WM_KEYDOWN);
     ASSERT_TRUE(Access::Down(*this->app_, {20, 20}));
     ASSERT_TRUE(Access::Move(*this->app_, {70, 60}));
     Access::Up(*this->app_, {20, 20});
@@ -208,12 +208,12 @@ TEST_F(WindowSelectionIntegrationTest, release_without_move_and_return_to_origin
     EXPECT_TRUE(Access::Drawing(*this->app_).hasSelection);
 }
 
-// 验证待判定失捕和取消消息都清状态；右键先取消操作，再退出无正式选区的会话。
+// 验证待判定失捕和取消消息都清状态；Esc 先取消操作，再退出无正式选区的会话。
 // 入参：无。
 // 返回：无返回值；不允许取消后的抬起提交旧候选。
-TEST_F(WindowSelectionIntegrationTest, pending_capture_loss_cancelmode_and_right_click_clear_context)
+TEST_F(WindowSelectionIntegrationTest, pending_capture_loss_cancelmode_and_escape_clear_context)
 {
-    for (const UINT message : {WM_CAPTURECHANGED, WM_CANCELMODE, WM_RBUTTONUP})
+    for (const UINT message : {WM_CAPTURECHANGED, WM_CANCELMODE, WM_KEYDOWN})
     {
         ASSERT_TRUE(Access::Down(*this->app_, {20, 20}));
         Access::Message(*this->app_, message);
@@ -222,7 +222,7 @@ TEST_F(WindowSelectionIntegrationTest, pending_capture_loss_cancelmode_and_right
         Access::Up(*this->app_, {20, 20});
         EXPECT_FALSE(Access::Model(*this->app_).hasSelection);
     }
-    Access::Message(*this->app_, WM_RBUTTONUP);
+    Access::Message(*this->app_, WM_KEYDOWN);
     EXPECT_FALSE(Access::Active(*this->app_));
 }
 
@@ -248,7 +248,7 @@ TEST_F(WindowSelectionIntegrationTest, confirmed_selection_stays_fixed_until_cle
     Access::Up(*this->app_, {20, 20});
     EXPECT_FALSE(Access::Move(*this->app_, {150, 150}));
     this->ExpectRectangle({10, 10, 90, 90});
-    Access::Message(*this->app_, WM_RBUTTONUP);
+    Access::Message(*this->app_, WM_KEYDOWN);
     (void)Access::Move(*this->app_, {150, 150});
     EXPECT_EQ(Access::Drawing(*this->app_).rectangle.left, 100);
     EXPECT_FALSE(Access::Model(*this->app_).hasSelection);

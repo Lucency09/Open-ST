@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <annotation.h>
+
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -19,6 +21,13 @@ struct CaptureOverlayOutput;
 class SelectionModel;
 class WindowSelectionSnapshot;
 class CaptureSelectionInput;
+class CaptureAnnotationState;
+class AnnotationMosaicSource;
+class AnnotationInteractionController;
+class OverlayInputQueue;
+struct AnnotationPropertyContext;
+class SdrSelectionFrame;
+struct RectI;
 struct SelectionSnapshot;
 struct PointI;
 class SettingsWindow;
@@ -47,7 +56,7 @@ class App final
     // 创建应用协调器并保存进程模块实例。
     // 入参：instance：借用的当前程序模块句柄。
     // 返回：构造函数无返回值；窗口、设置及捕获资源留待运行时初始化。
-    explicit App(HINSTANCE instance) noexcept;
+    explicit App(HINSTANCE instance);
     // 禁止复制构造，确保应用协调器及其系统资源只由原对象管理。
     // 入参：未命名的同类型 const 引用：拟复制的源对象。
     // 返回：函数已删除，调用会导致编译错误，无运行时返回结果。
@@ -81,6 +90,8 @@ class App final
     friend struct AppHotkeyTestAccess;
     friend struct AppSelectionTestAccess;
     friend struct AppOverlayTestAccess;
+    friend struct AppAnnotationTestAccess;
+    friend struct AppAnnotationTextTestAccess;
     struct PinOperation;
     // 集中组装贴图文本查询和异步业务命令回调。
     // 入参：无。
@@ -226,7 +237,7 @@ class App final
     // 入参：无。
     // 返回：会话有效、选区稳定且不处于准备或模态忙状态时 true，否则 false。
     bool CanSubmitToolbarCommand() const noexcept;
-    // 按层级处理 Esc 或右键取消操作。
+    // 按层级处理 Esc 取消操作。
     // 入参：无。
     // 返回：无返回值；优先取消拖动，再清空已有选区，最后关闭无选区的覆盖会话。
     void CancelSelectionOrClose() noexcept;
@@ -266,6 +277,82 @@ class App final
     // 入参：无。
     // 返回：处理了交互时 true；调用方负责释放捕获和刷新工具栏。
     bool CancelSelectionInput() noexcept;
+    // 判断当前是否选中绘图工具。
+    // 入参：无。返回：正式选区处于绘图工具时 true。
+    bool IsAnnotationToolActive() const noexcept;
+    // 固定本批标注预览，包括未提交草稿。
+    // 入参：无。返回：共享不可变快照。
+    AnnotationSnapshot AnnotationForDrawing() const noexcept;
+    // 处理工具、撤销和样式命令，保持完成操作的独立语义。
+    // 入参：command 为已消费的工具栏命令。返回：无。
+    void HandleAnnotationCommand(CaptureToolbarCommand command) noexcept;
+    // 刷新互斥工具选中态及历史按钮。
+    // 入参：无。返回：无。
+    void RefreshAnnotationToolbar() noexcept;
+    // 撤销/重做已提交事务，活动手势只取消。
+    // 入参：redo 指定方向。返回：无。
+    void RestoreAnnotationEdit(bool redo) noexcept;
+    // 通过原生样式窗口修改当前工具默认值。
+    // 入参：无。返回：无，取消或失败保留此前样式。
+    void EditAnnotationStyle() noexcept;
+    // 在空闲右键按下时锁定元素与会话，不改变当前工具。
+    // 入参：window 为点击屏窗口；point 为桌面物理点。返回：无。
+    void BeginAnnotationPropertyClick(HWND window, PointI point) noexcept;
+    // 检测右键是否已经拖出点击容差，移回原点也不恢复点击资格。
+    // 入参：point 为当前物理点。返回：无。
+    void UpdateAnnotationPropertyClick(PointI point) noexcept;
+    // 消费有效右键抬起，将稳定 ID 请求投递到消息窗口。
+    // 入参：point 为抬起物理点。返回：无。
+    void EndAnnotationPropertyClick(PointI point) noexcept;
+    // 撤销尚未分派的右键动作，保留全局递增请求序号。
+    // 入参：无。返回：无。
+    void CancelAnnotationPropertyRequest() noexcept;
+    // 校验并消费排队的单元素编辑请求。
+    // 入参：serial 为请求序号。返回：无。
+    void DispatchAnnotationProperties(std::uint64_t serial) noexcept;
+    // 模态编辑一个固定修订中的元素，确认一次提交到历史。
+    // 入参：id、revision 定位目标。返回：无，失败保留旧文档。
+    void EditAnnotationElement(std::uint64_t id, std::uint64_t revision) noexcept;
+    // 初始化冻结来源的标注资源，并注入事务前准备回调。
+    // 入参：无。返回：无，失败由截图创建入口处理。
+    void InitializeAnnotationResources();
+    // 在寿命保护内准备候选马赛克来源。
+    // 入参：document/selection 为目标快照。返回：准备成功且会话有效时true。
+    bool PrepareAnnotationPreview(const AnnotationSnapshot& document, RectI selection) noexcept;
+    // 汇总完成流程和控制器文字忙状态，不保留状态镜像。
+    // 入参：无。返回：当前是否禁止其他完成操作。
+    bool CompletionBusy() const noexcept;
+    // 获取属性输入的当前会话上下文。
+    // 入参：无。返回：仅同步调用期间有效的借用值。
+    AnnotationPropertyContext AnnotationPropertyContextForInput() const noexcept;
+    // 消费控制器中延后的文字完成请求。
+    // 入参：无。返回：无。
+    void DrainAnnotationText() noexcept;
+    // 文字状态变化后协调重绘、焦点和会话关闭。
+    // 入参：无。返回：无。
+    void CompleteAnnotationTextBoundary() noexcept;
+    // 开始新文字或固定ID的原位编辑，窗口只管理输入缓存。
+    // 入参：point 为新建落点；id=0新建，非零重新编辑。返回：无。
+    void BeginAnnotationText(PointI point, std::uint64_t id = 0) noexcept;
+    // 处理当前原位编辑之外的点击，避免同一次点击启动其他动作。
+    // 入参：point 为桌面物理位置。返回：无。
+    void HandleAnnotationTextClick(PointI point) noexcept;
+    // 消费已排队的文字结束请求，控件回调返回后才销毁窗口。
+    // 入参：serial 为会话序号；accept 区分确认/取消。返回：无。
+    void FinishAnnotationText(std::uint64_t serial, bool accept) noexcept;
+    // 暂存图形调用重入的指针事件，保留实际坐标和顺序。
+    // 入参：window/message/flags/point为输入采样。返回：无。
+    void QueueOverlayPointer(HWND window, UINT message, WPARAM flags, PointI point) noexcept;
+    // 图形调用返回后重放采样，不在准备中丢掉抬起或提交半笔。
+    // 入参：无。返回：无。
+    void DrainOverlayPointers() noexcept;
+    // 在主消息分派返回后显示一次标注提交失败，避免持有鼠标捕获时进入模态。
+    // 入参：无。返回：无。
+    void ReportAnnotationFailure() noexcept;
+    // 统一从固定的冻结来源和标注修订生成最终图像。
+    // 入参：selection 为裁剪、annotations 为提交快照，frame/error 接收结果。返回：完整生成时 true。
+    bool GenerateAnnotatedSelection(RectI selection, const AnnotationSnapshot& annotations, SdrSelectionFrame& frame,
+                                    std::wstring& error);
     // 用一次选区快照协调所有待绘制输出，并在图形调用返回后处理延迟关闭。
     // 入参：window 为触发绘制的遮罩；drawOutput 为同步绘制边界，借用输出、快照和错误文本。
     // 返回：无；失败按既有忙状态规则取消会话并报告，重入只保留下一批请求。
@@ -366,6 +453,12 @@ class App final
     std::unique_ptr<SelectionModel> selectionModel_;
     std::unique_ptr<WindowSelectionSnapshot> windowSelection_;
     std::unique_ptr<CaptureSelectionInput> selectionInput_;
+    std::unique_ptr<CaptureAnnotationState> annotation_;
+    std::unique_ptr<AnnotationMosaicSource> annotationSource_;
+    std::unique_ptr<AnnotationInteractionController> annotationInteraction_;
+    std::unique_ptr<OverlayInputQueue> overlayInput_;
+    bool annotationPreparing_{};
+    bool annotationFailure_{};
     std::optional<RECT> windowCandidate_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
 };

@@ -167,5 +167,66 @@ TEST(ToolbarGeometryTest, invalid_or_too_small_geometry_keeps_previous_layout)
     EXPECT_EQ(layout.bounds.left, 1);
     EXPECT_EQ(layout.bounds.bottom, 4);
 }
+
+// 验证扩展工具命令保持原四项数值，所有新增命令和对应图标均通过真实创建校验。
+// 入参：无。
+// 返回：无；重复新增命令仍被拒绝。
+TEST(ToolbarGeometryTest, accepts_annotation_commands_without_renumbering_existing_commands)
+{
+    EXPECT_EQ(static_cast<unsigned int>(CaptureToolbarCommand::Cancel), 1U);
+    EXPECT_EQ(static_cast<unsigned int>(CaptureToolbarCommand::Save), 2U);
+    EXPECT_EQ(static_cast<unsigned int>(CaptureToolbarCommand::Copy), 3U);
+    EXPECT_EQ(static_cast<unsigned int>(CaptureToolbarCommand::Pin), 4U);
+    std::vector<ToolbarButtonSpec> specs;
+    for (unsigned int index = 0; index < 16; ++index)
+    {
+        specs.push_back({static_cast<CaptureToolbarCommand>(index + 1), static_cast<ToolbarIcon>(index), "tool", 0});
+    }
+    EXPECT_TRUE(ValidateButtons(specs).success);
+    specs.back().command = CaptureToolbarCommand::SelectTool;
+    EXPECT_FALSE(ValidateButtons(specs).success);
+}
+
+// 验证窄工作区按可见按钮换行，不在行首遗留分隔线，各屏 DPI 下按钮均完整可达。
+// 入参：无。
+// 返回：无；布局保持组内顺序且按钮及分隔线不越出工具栏。
+TEST(ToolbarGeometryTest, wraps_annotation_buttons_with_row_local_separators)
+{
+    std::vector<ToolbarButtonSpec> specs;
+    std::vector<ToolbarButtonState> states;
+    for (unsigned int index = 0; index < 16; ++index)
+    {
+        const CaptureToolbarCommand command = static_cast<CaptureToolbarCommand>(index + 1);
+        specs.push_back({command, static_cast<ToolbarIcon>(index), "tool", index / 3});
+        states.push_back({command});
+    }
+    for (UINT dpi : {96U, 144U, 192U})
+    {
+        ToolbarLayout layout;
+        const LONG width = MulDiv(120, static_cast<int>(dpi), 96);
+        ASSERT_TRUE(BuildLayout(specs, states, {0, 0, 50, 50}, {0, 0, width, 600}, dpi, layout).success);
+        EXPECT_LE(layout.bounds.right, width);
+        EXPECT_GT(layout.bounds.bottom - layout.bounds.top, MulDiv(34, static_cast<int>(dpi), 96));
+        for (const RECT& button : layout.buttons)
+        {
+            EXPECT_GE(button.left, 0);
+            EXPECT_LE(button.right, layout.bounds.right - layout.bounds.left);
+            EXPECT_LE(button.bottom, layout.bounds.bottom - layout.bounds.top);
+            EXPECT_EQ(button.right - button.left, MulDiv(30, static_cast<int>(dpi), 96));
+        }
+        for (const RECT& separator : layout.separators)
+        {
+            EXPECT_GT(separator.left, MulDiv(3, static_cast<int>(dpi), 96));
+            EXPECT_LT(separator.top, separator.bottom);
+            EXPECT_LE(separator.bottom, layout.bounds.bottom - layout.bounds.top);
+        }
+        for (std::size_t index = 1; index < layout.buttons.size(); ++index)
+        {
+            const RECT& previous = layout.buttons[index - 1];
+            const RECT& current = layout.buttons[index];
+            EXPECT_TRUE(current.top > previous.top || current.left >= previous.right);
+        }
+    }
+}
 } // namespace
 } // namespace open_st::toolbar_detail

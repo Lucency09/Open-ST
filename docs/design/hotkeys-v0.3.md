@@ -49,7 +49,8 @@ Hotkeys 返回命令与错误类别；是否允许截图、选区代次、模态
 - A–Z、0–9：至少包含 Ctrl 或 Alt，可再含 Shift。
 - F1–F11、F13–F24：允许单键或 Ctrl/Alt/Shift 组合。
 - 不开放 Win、F12、纯修饰键、导航/编辑键、OEM 标点、多媒体键、鼠标键和多段序列。
-- Ctrl+C、Ctrl+S 与现有截图会话操作冲突，明确拒绝作为全局截图组合。
+- Ctrl+C、Ctrl+S 与截图会话操作冲突，明确拒绝作为全局截图组合。
+  M1 标注接入后，同样保留 Ctrl+Z、Ctrl+Y、Ctrl+Shift+Z 给撤销／重做；旧配置若占用这些组合按既有非法配置路径提示并回退，不静默改写设置。
 
 这些本轮产品取舍已随方案批准。Windows 保留的 Win 组合及 F12 限制见
 [RegisterHotKey 官方说明](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)。

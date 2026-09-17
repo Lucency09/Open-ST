@@ -3,6 +3,7 @@
 # graphics 负责从原生冻结桌面派生 BGRA8 预览，并管理截图选区与覆盖窗口呈现。
 add_subdirectory(Capture)
 add_subdirectory(HDR)
+add_subdirectory(Annotation)
 
 add_library(open_st_graphics STATIC)
 add_library(OpenST::Graphics ALIAS open_st_graphics)
@@ -10,6 +11,11 @@ add_library(OpenST::Graphics ALIAS open_st_graphics)
 target_sources(open_st_graphics
     PRIVATE
         source/sdr_selection_frame.cpp
+        source/annotation_drawing.cpp
+        source/annotation_text_geometry.cpp
+        source/annotation_mosaic_source.cpp
+        private/annotation_text_geometry.h
+        private/annotation_drawing.h
         source/selection_output_renderer.cpp
         source/desktop_preview.cpp
         source/outside_mask_layout.cpp
@@ -22,6 +28,9 @@ target_sources(open_st_graphics
         FILE_SET HEADERS
         BASE_DIRS include
         FILES
+            include/annotation_hit_test.h
+            include/annotation_erasure.h
+            include/annotation_mosaic_source.h
             include/sdr_selection_frame.h
             include/selection_output_renderer.h
             include/desktop_preview.h
@@ -33,11 +42,15 @@ target_link_libraries(open_st_graphics
     PUBLIC
         OpenST::Capture
         OpenST::HDR
+        OpenST::Annotation
     PRIVATE
         OpenST::Common
         d2d1
+        dwrite
         d3d11
         dxgi
+        windowscodecs
+        ole32
 )
 
 target_include_directories(open_st_graphics PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private")

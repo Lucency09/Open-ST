@@ -1,6 +1,9 @@
 // 协调窗口预选与单击／拖动输入，保持绘制候选和正式选区的输出资格分离。
 
+#include "capture_annotation_state.h"
+#include "capture_overlay_session.h"
 #include "capture_selection_input.h"
+#include "overlay_input_queue.h"
 #include "window_selection_snapshot.h"
 
 #include <algorithm>
@@ -17,6 +20,8 @@ namespace open_st
 // 返回：无返回值；采集失败仅退回自由框选，分配异常交由 StartCapture 保护处理。
 void App::InitializeWindowSelection()
 {
+    this->CancelAnnotationPropertyRequest();
+    this->annotation_ = std::make_unique<CaptureAnnotationState>();
     this->windowCandidate_.reset();
     this->selectionInput_ = std::make_unique<CaptureSelectionInput>();
     this->windowSelection_ = std::make_unique<WindowSelectionSnapshot>();
@@ -42,6 +47,8 @@ SelectionSnapshot App::SelectionForDrawing() const noexcept
         snapshot.hasSelection = true;
         snapshot.showHandles = false;
     }
+    if (this->IsAnnotationToolActive())
+        snapshot.showHandles = false;
     return snapshot;
 }
 
@@ -84,8 +91,11 @@ void App::RefreshWindowCandidate() noexcept
 // 返回：已开始待判定或模型交互时 true。
 bool App::BeginSelectionInput(HWND window, PointI point) noexcept
 {
+    this->CancelAnnotationPropertyRequest();
     if (!this->selectionModel_ || this->HasSelectionInteraction())
         return false;
+    if (this->IsAnnotationToolActive())
+        return this->annotation_->BeginDraw(point, this->selectionModel_->Snapshot().rectangle);
     (void)this->UpdateWindowCandidate(point);
     if (this->selectionModel_->Phase() == SelectionPhase::Unselected && this->windowCandidate_ && this->selectionInput_)
     {
@@ -97,7 +107,12 @@ bool App::BeginSelectionInput(HWND window, PointI point) noexcept
                                             std::max(1, GetSystemMetricsForDpi(SM_CYDRAG, dpi)));
     }
     this->windowCandidate_.reset();
-    return this->selectionModel_->Begin(point);
+    const bool selected = this->selectionModel_->Phase() == SelectionPhase::Selected;
+    const RectI before = this->selectionModel_->Snapshot().rectangle;
+    const bool accepted = this->selectionModel_->Begin(point);
+    if (accepted && selected && this->annotation_)
+        this->annotation_->BeginCrop(before);
+    return accepted;
 }
 
 // 首次超过容差时从原按下点创建自由选区，其余输入沿用模型。
@@ -107,6 +122,22 @@ bool App::UpdateSelectionInput(PointI point) noexcept
 {
     if (!this->selectionModel_)
         return false;
+    if (this->annotation_ && this->annotation_->Drawing())
+    {
+        if (!this->annotation_->UpdateDraw(point))
+        {
+            this->annotationFailure_ = !this->overlayInput_->CancellationPending();
+            if (this->annotation_->Tool() == CaptureAnnotationTool::Mosaic)
+                return true;
+            this->annotation_->Cancel();
+            if (this->overlaySession_)
+                this->overlaySession_->ReleaseMouse();
+            this->InvalidateToolbarCommands();
+        }
+        else if (this->annotation_->Tool() == CaptureAnnotationTool::Mosaic)
+            this->annotationFailure_ = false;
+        return true;
+    }
     if (this->selectionInput_ && this->selectionInput_->Pending())
     {
         const PointI origin = this->selectionInput_->Origin();
@@ -119,7 +150,20 @@ bool App::UpdateSelectionInput(PointI point) noexcept
         return true;
     }
     if (this->selectionModel_->Phase() == SelectionPhase::Dragging)
-        return this->selectionModel_->Update(point);
+    {
+        const bool changed = this->selectionModel_->Update(point);
+        if (changed && this->annotation_ &&
+            !this->annotation_->UpdateCrop(this->selectionModel_->Snapshot().rectangle,
+                                           this->selectionModel_->Operation() == SelectionOperation::Moving))
+        {
+            (void)this->CancelSelectionInput();
+            this->annotationFailure_ = !this->overlayInput_->CancellationPending();
+            if (this->overlaySession_)
+                this->overlaySession_->ReleaseMouse();
+            this->InvalidateToolbarCommands();
+        }
+        return changed;
+    }
     return this->UpdateWindowCandidate(point);
 }
 
@@ -130,6 +174,14 @@ void App::EndSelectionInput(PointI point) noexcept
 {
     if (!this->selectionModel_)
         return;
+    if (this->annotation_ && this->annotation_->Drawing())
+    {
+        const bool failed = this->annotation_->EndDraw(point) == AnnotationCommitResult::Failed;
+        this->annotationFailure_ = failed && !this->overlayInput_->CancellationPending();
+        if (failed && this->annotation_->Drawing())
+            this->annotation_->Cancel();
+        return;
+    }
     if (this->selectionInput_ && this->selectionInput_->Pending())
     {
         const CaptureSelectionFinish finish = this->selectionInput_->Finish(point);
@@ -140,7 +192,25 @@ void App::EndSelectionInput(PointI point) noexcept
             (void)this->selectionModel_->End(point);
     }
     else if (this->selectionModel_->Phase() == SelectionPhase::Dragging)
+    {
+        const bool moving = this->selectionModel_->Operation() == SelectionOperation::Moving;
+        const RectI before = this->annotation_ ? this->annotation_->BeforeSelection() : RectI{};
         (void)this->selectionModel_->End(point);
+        if (this->annotation_ && this->annotation_->Active())
+        {
+            const RectI selection = this->selectionModel_->Snapshot().rectangle;
+            if (!this->annotation_->UpdateCrop(selection, moving) ||
+                this->annotation_->EndCrop(selection) == AnnotationCommitResult::Failed)
+            {
+                this->annotation_->Cancel();
+                this->selectionModel_->Reset();
+                (void)this->selectionModel_->SelectRectangle(before);
+                this->annotationFailure_ = !this->overlayInput_->CancellationPending();
+            }
+        }
+    }
+    if (this->annotation_)
+        this->annotation_->SetTool(CaptureAnnotationTool::Select);
     (void)this->UpdateWindowCandidate(point);
 }
 
@@ -149,7 +219,8 @@ void App::EndSelectionInput(PointI point) noexcept
 // 返回：至少一种交互进行中时 true。
 bool App::HasSelectionInteraction() const noexcept
 {
-    return (this->selectionInput_ && this->selectionInput_->Pending()) ||
+    return (this->annotation_ && this->annotation_->Active()) ||
+           (this->selectionInput_ && this->selectionInput_->Pending()) ||
            (this->selectionModel_ && this->selectionModel_->Phase() == SelectionPhase::Dragging);
 }
 
@@ -162,6 +233,8 @@ bool App::CancelSelectionInput() noexcept
         return false;
     if (this->selectionInput_)
         this->selectionInput_->Cancel();
+    if (this->annotation_)
+        this->annotation_->Cancel();
     if (this->selectionModel_)
         (void)this->selectionModel_->CancelInteraction();
     this->RefreshWindowCandidate();

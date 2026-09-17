@@ -3,6 +3,7 @@
 # 选区状态模型使用纯几何测试；覆盖渲染器另以隐藏窗口验证实际 GPU 往返像素。
 add_subdirectory(Capture)
 add_subdirectory(HDR)
+add_subdirectory(Annotation)
 
 add_executable(open_st_selection_tests source/selection_model_tests.cpp)
 target_link_libraries(
@@ -21,6 +22,10 @@ gtest_discover_tests(
 add_executable(
     open_st_graphics_tests
     source/selection_output_renderer_tests.cpp
+    source/annotation_output_tests.cpp
+    source/annotation_hit_test_tests.cpp
+    source/annotation_erasure_tests.cpp
+    source/annotation_text_mosaic_tests.cpp
     source/desktop_preview_tests.cpp
     source/outside_mask_layout_tests.cpp
     source/overlay_settings_tests.cpp
@@ -49,6 +54,12 @@ gtest_discover_tests(
     TEST_PREFIX "graphics."
     PROPERTIES LABELS "graphics;integration"
 )
+
+# 独立有限几何压力测试记录墙钟时间，CTest 总限时 45 秒，不以机器相关帧率判定通过。
+add_executable(open_st_annotation_geometry_pressure_tests source/annotation_geometry_pressure_tests.cpp)
+target_link_libraries(open_st_annotation_geometry_pressure_tests PRIVATE OpenST::Graphics GTest::gtest_main)
+gtest_discover_tests(open_st_annotation_geometry_pressure_tests TEST_PREFIX "graphics."
+    PROPERTIES LABELS "graphics;geometry_pressure" TIMEOUT 45)
 
 # 像素搬运基准仅在 Release 且显式环境开关开启时执行；不访问桌面、不设置机器相关耗时阈值。
 add_executable(open_st_pixel_copy_benchmarks source/pixel_copy_benchmark_tests.cpp)

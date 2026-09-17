@@ -57,7 +57,9 @@ bool IsSupportedHotkey(HotkeyChord chord) noexcept
 {
     if ((chord.modifiers & ~(MOD_CONTROL | MOD_ALT | MOD_SHIFT)) != 0)
         return false;
-    if (chord.modifiers == MOD_CONTROL && (chord.key == 'C' || chord.key == 'S'))
+    if ((chord.modifiers == MOD_CONTROL &&
+         (chord.key == 'C' || chord.key == 'S' || chord.key == 'Z' || chord.key == 'Y')) ||
+        (chord.modifiers == (MOD_CONTROL | MOD_SHIFT) && chord.key == 'Z'))
         return false;
     if (chord.key >= VK_F1 && chord.key <= VK_F24)
         return chord.key != VK_F12;
@@ -150,6 +152,13 @@ SessionKeyCommand MatchSessionKey(WPARAM key, LPARAM keyData, UINT modifiers) no
 {
     if (key == VK_ESCAPE)
         return SessionKeyCommand::Cancel;
+    if ((keyData & (static_cast<LPARAM>(1) << 30)) == 0)
+    {
+        if (key == 'Z' && modifiers == MOD_CONTROL)
+            return SessionKeyCommand::Undo;
+        if ((key == 'Y' && modifiers == MOD_CONTROL) || (key == 'Z' && modifiers == (MOD_CONTROL | MOD_SHIFT)))
+            return SessionKeyCommand::Redo;
+    }
     if ((keyData & (static_cast<LPARAM>(1) << 30)) != 0 || (modifiers & (MOD_ALT | MOD_SHIFT)) != 0)
         return SessionKeyCommand::None;
     const bool control = (modifiers & MOD_CONTROL) != 0;

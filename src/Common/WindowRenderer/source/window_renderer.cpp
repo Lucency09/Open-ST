@@ -1,5 +1,6 @@
 // 将布局树和宿主回调绑定到 Win32 控件，管理排版、输入及模态消息循环。
 
+#include "edit_support.h"
 #include "renderer_model.h"
 #include <algorithm>
 #include <array>
@@ -18,49 +19,9 @@ namespace open_st
 {
 namespace
 {
-// 读取编辑框原始文本，保留空字符串和用户尚未完成的输入。
-// 入参：window 为借用的原生编辑框。
-// 返回：文本副本；分配失败抛出异常，不改写控件。
-std::wstring ReadEditText(HWND window)
-{
-    const int length = GetWindowTextLengthW(window);
-    std::wstring value(static_cast<std::size_t>(length) + 1, L'\0');
-    const int copied = GetWindowTextW(window, value.data(), length + 1);
-    value.resize(static_cast<std::size_t>(copied));
-    return value;
-}
-// 将宿主 UTF-8 草稿转换为 Win32 显示字符串。
-// 入参：value 为原始 UTF-8 字节。
-// 返回：宽字符串；非空非法编码抛出异常，空值保持为空。
-std::wstring EditWide(std::string_view value)
-{
-    if (value.empty())
-        return {};
-    const int count =
-        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), nullptr, 0);
-    if (count == 0)
-        throw std::runtime_error("Invalid edit UTF-8");
-    std::wstring result(static_cast<std::size_t>(count), L'\0');
-    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
-                        count);
-    return result;
-}
-// 将原生文本转换为宿主字符串草稿使用的 UTF-8。
-// 入参：value 为完整原始编辑内容。
-// 返回：UTF-8 副本；非法 UTF-16 抛出异常，空值保持为空。
-std::string EditUtf8(std::wstring_view value)
-{
-    if (value.empty())
-        return {};
-    const int count = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()),
-                                          nullptr, 0, nullptr, nullptr);
-    if (count == 0)
-        throw std::runtime_error("Invalid edit UTF-16");
-    std::string result(static_cast<std::size_t>(count), '\0');
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), result.data(),
-                        count, nullptr, nullptr);
-    return result;
-}
+using renderer_detail::EditUtf8;
+using renderer_detail::EditWide;
+using renderer_detail::ReadEditText;
 // 严格解析十进制整数并验证布局范围，不夹取或改写原始输入。
 // 入参：text 为编辑内容；minimum、maximum 为允许的数值边界。
 // 返回：完整可表示且在范围内的整数；空、未完成或非法输入返回空值。
@@ -127,6 +88,9 @@ struct WindowRenderer::Impl
         std::function<RendererBoolResult()> readBool;
         std::function<RendererChangeResult(bool)> changeBool;
         std::function<RendererIntegerResult()> readInteger;
+        std::function<RendererColorResult()> readColor;
+        std::uint32_t rgb{};
+        bool hasColor{};
         std::function<RendererChangeResult(std::optional<std::int64_t>)> changeInteger;
         std::function<RendererKeyChordResult()> readChord;
         std::function<RendererChangeResult(RendererKeyChord)> changeChord;
@@ -294,6 +258,8 @@ struct WindowRenderer::Impl
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Button && !control.action)
                 return {"action_missing", {}, id};
+            if (control.node->type == NodeType::Swatch && !control.readColor)
+                return {"field_binding_missing", {}, id};
         }
         return {};
     }
@@ -340,7 +306,7 @@ struct WindowRenderer::Impl
         NONCLIENTMETRICSW metrics{sizeof(metrics)};
         HFONT candidate{};
         if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, this->dpi))
-            candidate = CreateFontIndirectW(&metrics.lfMessageFont);
+            candidate = renderer_detail::CreateEditFont(metrics.lfMessageFont);
         if (candidate == nullptr)
             candidate = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         const HFONT previous = this->font;
@@ -378,6 +344,10 @@ struct WindowRenderer::Impl
     // 入参：control：输入输出内部控件状态，已绑定所需读取和选项查询回调。
     // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
     RendererResult RefreshControl(Control& control);
+    // 将缓存的数值颜色绘制为通用色块，不在绘制消息内调用宿主读取或动作。
+    // 入参：draw 为系统提供的借用绘制上下文与控件标识。
+    // 返回：匹配到色块并处理为 true；其他控件为 false。
+    bool DrawSwatch(const DRAWITEMSTRUCT& draw) const noexcept;
     // 将原生按钮、复选框和下拉框通知转换为宿主回调。
     // 入参：wParam：WM_COMMAND 的控件编号及通知码；lParam：发出通知的 HWND。
     // 返回：无返回值；忙或程序刷新时忽略，拒绝输入恢复已接受值，未在本层收敛的异常交由窗口过程处理。
@@ -529,7 +499,7 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     if (node.type == NodeType::Checkbox)
         height = std::max(this->Scale(24),
                           this->TextHeight(control.text, std::max(1, actualWidth - this->Scale(24))) + this->Scale(4));
-    if (node.type == NodeType::Button)
+    if (node.type == NodeType::Button || node.type == NodeType::Swatch)
         height = std::max(this->Scale(28), height + this->Scale(10));
     if (place)
     {
@@ -768,6 +738,18 @@ bool WindowRenderer::Impl::CreateControls()
             if (!control.errorWindow)
                 return false;
         }
+        else if (node.type == NodeType::Swatch)
+        {
+            const bool clickable = static_cast<bool>(control.action);
+            control.window =
+                CreateWindowExW(0, clickable ? L"BUTTON" : L"STATIC", control.text.c_str(),
+                                WS_CHILD | WS_VISIBLE | (clickable ? WS_TABSTOP | BS_OWNERDRAW : SS_OWNERDRAW), 0, 0, 1,
+                                1, parent, id, instance, nullptr);
+            control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
+                                                  parent, nullptr, instance, nullptr);
+            if (control.errorWindow == nullptr)
+                return false;
+        }
         else
         {
             const bool button = node.type == NodeType::Button;
@@ -793,7 +775,7 @@ bool WindowRenderer::Impl::CreateControls()
     {
         if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox ||
             control.node->type == NodeType::KeyChord || control.node->type == NodeType::Edit ||
-            control.node->type == NodeType::Integer)
+            control.node->type == NodeType::Integer || control.node->type == NodeType::Swatch)
         {
             const RendererResult result = this->RefreshControl(control);
             if (!result)
@@ -808,11 +790,76 @@ bool WindowRenderer::Impl::CreateControls()
     return true;
 }
 
+// 将缓存的数值颜色绘制为通用色块，不在绘制消息内调用宿主读取或动作。
+// 入参：draw 为系统提供的借用绘制上下文与控件标识。
+// 返回：匹配到色块并处理为 true；其他控件为 false。
+bool WindowRenderer::Impl::DrawSwatch(const DRAWITEMSTRUCT& draw) const noexcept
+{
+    for (const auto& [id, control] : this->controls)
+    {
+        if (control.window != draw.hwndItem || control.node->type != NodeType::Swatch)
+            continue;
+        const int saved = SaveDC(draw.hDC);
+        FillRect(draw.hDC, &draw.rcItem, GetSysColorBrush(COLOR_BTNFACE));
+        RECT sample = draw.rcItem;
+        const int inset = std::max(1, this->Scale(3));
+        InflateRect(&sample, -inset, -inset);
+        if (control.hasColor && !IsRectEmpty(&sample))
+        {
+            const COLORREF color = RGB((control.rgb >> 16U) & 255U, (control.rgb >> 8U) & 255U, control.rgb & 255U);
+            const HBRUSH brush = CreateSolidBrush(color);
+            if (brush != nullptr)
+            {
+                FillRect(draw.hDC, &sample, brush);
+                DeleteObject(brush);
+            }
+        }
+        RECT edge = draw.rcItem;
+        DrawEdge(draw.hDC, &edge, (draw.itemState & ODS_SELECTED) != 0 ? EDGE_SUNKEN : EDGE_RAISED, BF_RECT);
+        if (control.action && (draw.itemState & ODS_FOCUS) != 0)
+        {
+            RECT focus = draw.rcItem;
+            InflateRect(&focus, -1, -1);
+            DrawFocusRect(draw.hDC, &focus);
+        }
+        if (saved != 0)
+            RestoreDC(draw.hDC, saved);
+        return true;
+    }
+    return false;
+}
+
 // 重读下拉框或复选框的草稿并刷新可选项及字段错误。
 // 入参：control：输入输出内部控件状态，已绑定所需读取和选项查询回调。
 // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
+    if (control.node->type == NodeType::Swatch)
+    {
+        try
+        {
+            const RendererColorResult value = control.readColor();
+            if (value.success && value.rgb > 0xFFFFFF)
+            {
+                this->Report({"invalid_color", {}, control.node->id});
+                return {"invalid_color", {}, control.node->id};
+            }
+            if (value.success)
+            {
+                control.rgb = value.rgb;
+                control.hasColor = true;
+            }
+            control.error = value.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            InvalidateRect(control.window, nullptr, FALSE);
+            return {};
+        }
+        catch (...)
+        {
+            this->Report({"callback_failed", {}, control.node->id});
+            return {"callback_failed", {}, control.node->id};
+        }
+    }
     if (control.node->type == NodeType::Edit || control.node->type == NodeType::Integer)
     {
         try
@@ -978,7 +1025,8 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
             this->Arrange();
             return;
         }
-        if (control.node->type == NodeType::Button && HIWORD(wParam) == BN_CLICKED)
+        if ((control.node->type == NodeType::Button || control.node->type == NodeType::Swatch) &&
+            HIWORD(wParam) == BN_CLICKED)
         {
             this->Invoke(id);
             return;
@@ -1330,6 +1378,10 @@ LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARA
             impl->Command(wParam, lParam);
             return 0;
         }
+        if (impl != nullptr && message == WM_DRAWITEM)
+        {
+            return impl->DrawSwatch(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam)) ? TRUE : FALSE;
+        }
         if (impl != nullptr && message == WM_HSCROLL)
         {
             impl->SliderCommand(wParam, reinterpret_cast<HWND>(lParam));
@@ -1404,6 +1456,8 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
     case WM_COMMAND:
         this->Command(wParam, lParam);
         return 0;
+    case WM_DRAWITEM:
+        return this->DrawSwatch(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam)) ? TRUE : FALSE;
     case WM_HSCROLL:
         this->SliderCommand(wParam, reinterpret_cast<HWND>(lParam));
         return 0;
@@ -1701,6 +1755,25 @@ RendererResult WindowRenderer::BindOptions(std::string_view id, std::function<Re
     return {};
 }
 
+// 绑定数值 RGB 色块读取及可选动作，不解析颜色字符串或持有业务样式。
+// 入参：id 为 swatch 控件；read 读取 24 位 RGB 与字段错误；action 为空表示只读色样。
+// 返回：绑定成功返回空错误码；类型、空读取回调或重复绑定错误返回结构化结果。
+RendererResult WindowRenderer::BindColor(std::string_view id, std::function<RendererColorResult()> read,
+                                         std::function<void()> action)
+{
+    Impl::Control* control{};
+    const RendererResult found = this->impl_->Find(id, NodeType::Swatch, control);
+    if (!found)
+        return found;
+    if (!read)
+        return {"empty_callback", {}, std::string(id)};
+    if (control->readColor)
+        return {"duplicate_binding", {}, std::string(id)};
+    control->readColor = std::move(read);
+    control->action = std::move(action);
+    return {};
+}
+
 // 将布局按钮绑定到宿主业务动作。
 // 入参：id：布局中的按钮 ID；callback：按钮触发时同步调用的无参动作，移入渲染器。
 // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
@@ -1817,17 +1890,24 @@ RendererResult WindowRenderer::Show(const RendererWindowOptions& options)
             style |= WS_THICKFRAME | WS_MAXIMIZEBOX;
         RECT bounds{0, 0, this->impl_->Scale(this->impl_->layout.width),
                     this->impl_->Scale(this->impl_->layout.height)};
-        AdjustWindowRectExForDpi(&bounds, style, FALSE, WS_EX_CONTROLPARENT, this->impl_->dpi);
+        const DWORD extendedStyle = WS_EX_CONTROLPARENT | (options.topmost ? WS_EX_TOPMOST : 0);
+        AdjustWindowRectExForDpi(&bounds, style, FALSE, extendedStyle, this->impl_->dpi);
         const int width = std::min(bounds.right - bounds.left, monitor.rcWork.right - monitor.rcWork.left);
         const int height = std::min(bounds.bottom - bounds.top, monitor.rcWork.bottom - monitor.rcWork.top);
         const std::wstring title = this->impl_->text(this->impl_->layout.titleKey);
         const HWND window =
-            CreateWindowExW(WS_EX_CONTROLPARENT, mainClass.lpszClassName, title.c_str(), style,
+            CreateWindowExW(extendedStyle, mainClass.lpszClassName, title.c_str(), style,
                             monitor.rcWork.left + (monitor.rcWork.right - monitor.rcWork.left - width) / 2,
                             monitor.rcWork.top + (monitor.rcWork.bottom - monitor.rcWork.top - height) / 2, width,
                             height, options.owner, nullptr, instance, this->impl_.get());
         if (window == nullptr)
             return {"window_creation_failed", {}, {}};
+        if (options.topmost &&
+            !SetWindowPos(window, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE))
+        {
+            DestroyWindow(window);
+            return {"window_position_failed", {}, {}};
+        }
         this->impl_->dpi = GetDpiForWindow(window);
         this->impl_->RefreshFont();
         this->impl_->Arrange();
@@ -1962,7 +2042,7 @@ RendererResult WindowRenderer::RefreshValues()
         {
             if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox &&
                 control.node->type != NodeType::KeyChord && control.node->type != NodeType::Edit &&
-                control.node->type != NodeType::Integer)
+                control.node->type != NodeType::Integer && control.node->type != NodeType::Swatch)
                 continue;
             const RendererResult result = this->impl_->RefreshControl(control);
             if (!result)
@@ -1975,6 +2055,36 @@ RendererResult WindowRenderer::RefreshValues()
     {
         this->impl_->refreshing = false;
         return {"callback_failed", {}, {}};
+    }
+}
+
+// 仅重读指定控件的绑定值，不覆盖其他编辑框中的未完成输入。
+// 入参：id 为具有值绑定的控件 ID。
+// 返回：复用单控件刷新结果；错误线程、窗口缺失、未知 ID 或无值控件返回结构化错误。
+RendererResult WindowRenderer::RefreshValue(std::string_view id)
+{
+    const RendererResult checked = this->impl_->Check();
+    if (!checked)
+        return checked;
+    if (this->impl_->window == nullptr)
+        return {"window_missing", {}, std::string(id)};
+    const auto found = this->impl_->controls.find(id);
+    if (found == this->impl_->controls.end())
+        return {"unknown_id", {}, std::string(id)};
+    const NodeType type = found->second.node->type;
+    if (type != NodeType::Select && type != NodeType::Checkbox && type != NodeType::KeyChord &&
+        type != NodeType::Edit && type != NodeType::Integer && type != NodeType::Swatch)
+        return {"wrong_control_type", {}, std::string(id)};
+    try
+    {
+        const RendererResult result = this->impl_->RefreshControl(found->second);
+        if (result)
+            this->impl_->Arrange();
+        return result;
+    }
+    catch (...)
+    {
+        return {"callback_failed", {}, std::string(id)};
     }
 }
 
@@ -2107,7 +2217,7 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
         return {"unknown_id", {}, std::string(id)};
     if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox &&
         found->second.node->type != NodeType::KeyChord && found->second.node->type != NodeType::Edit &&
-        found->second.node->type != NodeType::Integer)
+        found->second.node->type != NodeType::Integer && found->second.node->type != NodeType::Swatch)
         return {"wrong_control_type", {}, std::string(id)};
     found->second.error = std::move(text);
     if (found->second.errorWindow != nullptr)

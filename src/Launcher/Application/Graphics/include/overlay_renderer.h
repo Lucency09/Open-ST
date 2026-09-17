@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <annotation.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +15,7 @@ namespace open_st
 struct SelectionSnapshot;
 struct OutputPreviewFrame;
 struct OverlayRendererTestAccess;
+class AnnotationMosaicSource;
 
 // 使用 D3D11 + DXGI 交换链 + Direct2D 1.1 设备上下文呈现截图覆盖窗口。
 // Windows/DirectX COM 对象隐藏在 Impl 中，避免把大量系统头暴露给调用模块。
@@ -38,12 +41,11 @@ class OverlayRenderer final
     OverlayRenderer& operator=(const OverlayRenderer&) = delete;
 
     // 为指定截图覆盖窗口建立绘制资源并上传该屏不可变预览。
-    // 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选 #RRGGBB
-    // 边框色，缺失或非法用黑色；errorMessage：输出参数，接收失败诊断。
+    // 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选
+    // #RRGGBB 边框色，缺失或非法用黑色；errorMessage：输出参数，接收失败诊断。
     // 返回：窗口、预览、显示身份和图形资源全部有效时为 true；输入校验或初始化失败时为 false。
     [[nodiscard]] bool Initialize(HWND window, const OutputPreviewFrame& frame,
-                                   std::optional<std::string_view> configuredBorderColor,
-                                   std::wstring& errorMessage);
+                                  std::optional<std::string_view> configuredBorderColor, std::wstring& errorMessage);
 
     // 根据覆盖窗口客户区大小重建交换链绘制目标。
     // 入参：width、height：新的客户区物理像素宽高；errorMessage：输出参数，失败时写入诊断。
@@ -54,6 +56,15 @@ class OverlayRenderer final
     // 入参：snapshot：按值传入的虚拟桌面物理像素选区状态；errorMessage：输出参数，接收失效或绘制失败原因。
     // 返回：绘制并呈现成功时为 true；未初始化、显示状态过期或图形调用失败时为 false。
     [[nodiscard]] bool Render(SelectionSnapshot snapshot, std::wstring& errorMessage);
+    // 在同一冻结预览上绘制调用期间借用的不可变标注，再绘制选区控件。
+    // 入参：snapshot：选区快照；annotations：只读标注快照；errorMessage：失败诊断。
+    // 返回：完整绘制与呈现成功为 true；错误时为 false，不保留标注借用。
+    [[nodiscard]] bool Render(SelectionSnapshot snapshot, const AnnotationSnapshot& annotations,
+                              std::wstring& errorMessage);
+    // 为已初始化的覆盖窗口借用完整冻结桌面的共享马赛克来源。
+    // 入参：source 为会话来源或 nullptr；宿主须先释放覆盖窗口再销毁来源。
+    // 返回：无；替换来源及 Reset 会释放旧目标的缓存引用。
+    void SetMosaicSource(AnnotationMosaicSource* source) noexcept;
     // 结束当前覆盖渲染会话并释放设备、交换链和绘制资源。
     // 入参：无。
     // 返回：无返回值；渲染器恢复未初始化状态。
@@ -62,9 +73,15 @@ class OverlayRenderer final
   private:
     friend struct OverlayRendererTestAccess;
     // 绘制冻结预览、选区外暗层与控制点，并按调用方要求提交交换链。
-    // 入参：snapshot：虚拟桌面物理像素选区快照；present：是否调用 Present；errorMessage：输出参数，接收失效或绘制错误原因。
-    // 返回：完成绘制及所请求呈现时为 true；未初始化、显示配置过期、窗口或图形调用失败时为 false。
+    // 入参：snapshot：虚拟桌面物理像素选区快照；present：是否调用
+    // Present；errorMessage：输出参数，接收失效或绘制错误原因。 返回：完成绘制及所请求呈现时为
+    // true；未初始化、显示配置过期、窗口或图形调用失败时为 false。
     [[nodiscard]] bool DrawFrame(SelectionSnapshot snapshot, bool present, std::wstring& errorMessage);
+    // 在原生目标颜色域中合成标注并按要求呈现，保留无标注调用兼容性。
+    // 入参：snapshot：选区；annotations：本次借用快照；present：是否提交；errorMessage：诊断。
+    // 返回：绘制成功为 true；图形或标注错误为 false。
+    [[nodiscard]] bool DrawFrame(SelectionSnapshot snapshot, const AnnotationSnapshot& annotations, bool present,
+                                 std::wstring& errorMessage);
     // 为集成测试读取当前 GPU 后缓冲，验证实际绘制像素。
     // 入参：frame：输出参数，接收回读的预览格式和像素；errorMessage：输出参数，接收图形回读失败原因。
     // 返回：后缓冲成功复制到 CPU 内存时为 true；资源获取、复制准备或映射失败时为 false。

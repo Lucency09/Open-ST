@@ -1,6 +1,8 @@
 // 文件职责：从冻结桌面裁切并拼接选区，对 HDR 执行 SDR 转换并保留 SDR 原始像素。
 
+#include "annotation_drawing.h"
 #include <algorithm>
+#include <annotation_mosaic_source.h>
 #include <climits>
 #include <color_conversion.h>
 #include <cstring>
@@ -163,6 +165,62 @@ catch (const std::exception&)
     output = {};
     this->ReleaseImageResources();
     errorMessage = L"无法分配选区图像资源。";
+    return false;
+}
+// 在原有色调映射之后叠加标准 sRGB 标注，空文档直接使用原有输出路径。
+// 入参：desktop：原生冻结桌面；selection：物理选区；annotations：只读快照；output：结果；errorMessage：诊断。
+// 返回：输出完整有效时为 true；失败清空 output 并返回 false。
+bool SelectionOutputRenderer::Render(const FrozenDesktopFrame& desktop, RectI selection,
+                                     const AnnotationSnapshot& annotations, SdrSelectionFrame& output,
+                                     std::wstring& errorMessage, AnnotationMosaicSource* source)
+try
+{
+    if (!annotations || annotations->empty())
+    {
+        return this->Render(desktop, selection, output, errorMessage);
+    }
+    output = {};
+    errorMessage.clear();
+    bool mosaic{};
+    for (const AnnotationObject& object : *annotations)
+    {
+        if (!IsValidAnnotation(object))
+        {
+            errorMessage = L"标注几何或样式无效。";
+            return false;
+        }
+        mosaic = mosaic || object.kind == AnnotationKind::Mosaic;
+    }
+    std::unique_ptr<AnnotationMosaicSource> temporary;
+    if (mosaic && source == nullptr)
+    {
+        temporary = std::make_unique<AnnotationMosaicSource>(desktop);
+        source = temporary.get();
+    }
+    if (mosaic && (!source->IsFor(desktop) || !source->Prepare(annotations, selection, errorMessage)))
+    {
+        if (errorMessage.empty())
+            errorMessage = L"马赛克来源不属于当前冻结会话。";
+        return false;
+    }
+    SdrSelectionFrame base;
+    if (!this->Render(desktop, selection, base, errorMessage))
+    {
+        return false;
+    }
+    std::vector<std::uint8_t> pixels;
+    if (!CompositeAnnotations(selection, annotations, base.Pixels(), pixels, errorMessage, source))
+    {
+        return false;
+    }
+    output = SdrSelectionFrame(selection, std::move(pixels));
+    return output.IsValid();
+}
+catch (const std::exception&)
+{
+    output = {};
+    this->ReleaseImageResources();
+    errorMessage = L"无法分配标注输出资源。";
     return false;
 }
 } // namespace open_st

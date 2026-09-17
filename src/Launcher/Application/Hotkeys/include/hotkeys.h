@@ -40,7 +40,9 @@ enum class SessionKeyCommand
     None,
     Copy,
     Save,
-    Cancel
+    Cancel,
+    Undo,
+    Redo
 };
 
 // 保留截图窗口原有固定键语义，Esc 不受重复和修饰键限制。

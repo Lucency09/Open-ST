@@ -5,7 +5,8 @@
 
 本文同时记录已选定的目标架构和当前实现；技术选型不等于对应功能已完成。`0.2.0` 覆盖托盘、
 语言设置、桌面冻结与自由选区、HDR 到 SDR 转换、复制与 PNG/JPEG 保存、截图工具栏、多张置顶贴图、
-设置窗口框架、欢迎与当前用户开机启动。0.3.0 已接入顶层窗口自动预选；UIA 子控件识别、标注、OCR 与翻译尚未实现；相关组件职责、
+设置窗口框架、欢迎与当前用户开机启动。0.3.0 已接入顶层窗口自动预选及 M1／M2／M3 标注，包含画笔、局部橡皮擦、
+原位文字和多档马赛克；UIA 子控件识别、OCR 与翻译尚属后续阶段；相关组件职责、
 数据流及降级条目为后续约束，具体状态见 [实现进度](implementation_progress.md)。
 
 已发布版本为 `0.2.0`，当前开发版本为 `0.3.0`；真实登录、自启禁用、跨会话、跨 DPI 及部分视觉验收仍待完成；
@@ -165,6 +166,13 @@ D3D11 与 DXGI 的关系可以理解为：D3D11 管“GPU 如何创建和处理�
 `Application/Export` 借用自身的 `SdrImageView`，将图像编码为带 sRGB 语义的不透明 PNG/JPEG，或构造兼容的 `CF_DIB` 剪贴板数据。该模块不依赖兄弟 Graphics、Settings 或 Localization；视图适配、保存对话框与错误本地化由 Application 完成。全部编码成功后才写目标文件；本次新建文件写入失败时按句柄清理残缺文件，覆盖已有文件不承诺中途失败后原内容完整，不创建临时截图文件。
 
 Application 以 `CopySelection` / `SaveSelection` 为统一业务入口，由 Ctrl+C/Enter 和 Ctrl+S 触发；仅接受稳定且非空的选区。私有 `CaptureCompletion` 通过同步回调协调转换、复制、选择路径、保存和记录目录。保存取消或输出失败保留选区与冻结帧并恢复焦点；成功关闭会话，目录记录失败只单独告警。忙状态阻止重复命令和选区修改；模态对话框期间布局失效只标记取消，返回后停止输出并回收，避免回调仍借用数据时销毁会话。当前不实现双击完成；工具栏和独立 Hotkeys 模块已接入，快捷键设置由 Settings 草稿及 App 注册事务协调。系统保存对话框初始格式来自设置（默认 JPEG），质量默认为 95、允许 1–100。App 在进入保存忙态后读取一次固定参数，截图与贴图共用规则；本次对话框中临时切换不写回默认。时间戳文件名使用对应后缀，扩展名冲突在原窗口内修正并再次确认；返回后不改目标路径。Export 只消费显式 ImageEncodingOptions，PNG 忽略 JPEG 质量。
+
+M1 标注对象归 `Graphics/Annotation`，只使用标准库；App 拥有工具／草稿与选区共同历史，
+Graphics 用同一几何实现预览和输出。预览保持原生底图，HDR 标注色转为线性 scRGB 并乘该屏参考白。
+最终输出经 `App::GenerateAnnotatedSelection` 同时接入复制、保存与贴图：空文档直达旧裁切链，
+非空文档在 SDR 基底上叠加 WIC/D2D 预乘透明层。文档和图像不写临时文件，不上传或保存编辑历史。
+选区平移时对象整体平移，边界调整仅改变裁剪；一个拖动事务对应一步撤销。
+实现与验证限制见 [M1 收尾](annotation-m1-implementation-2026-09-16.md)。
 
 ### 2.6 DirectComposition
 
@@ -342,7 +350,7 @@ A2 图标仍由 Launcher RC 嵌入 EXE，Application 拥有大小 HICON，窗口
 系统圆角，Windows 10 使用标准窗口。尚未加入跨 DPI 图标资源重载、任意自绘主题或独立安装包。
 真实跨屏观感、高对比度及辅助技术仍需人工验收，自动控件和 DPI 消息测试不能代替这些检查。
 
-### 通用提示窗口复用
+### 通用提示与属性窗口复用
 
 Application 的错误提示和关于窗口通过同一 Renderer 的顶层 `content` 布局创建，文本仍由 Application
 调用 GetUiText 后提供。`content` 与 `pages` 必须恰好声明一个；前者不创建页签，Settings 的原 pages 协议保持兼容。
@@ -352,6 +360,21 @@ Application 管理弹窗期间的重入防护，Renderer 不含设置键、错�
 原本禁用的 owner 不被误启用。线程消息 hook 接续宿主导航及无 HWND 消息；收到 WM_QUIT 时销毁窗口并原码重投，
 外层循环继续处理退出。GetMessage 失败返回结构化错误；正常关闭返回成功，不触发备用弹窗。
 错误/关于窗口创建失败保留宿主最小 MessageBox 兜底；其他系统对话框本轮不迁移。
+
+标注样式窗口也由 Application 的 annotation_style_dialog 适配公共 Renderer，原 Toolbar 内的独立窗口实现已移除。
+颜色文本由 Annotation 解析；通用 swatch 只消费数值 RGB，RefreshValue 保留其他控件的未完成输入，topmost 用于遮罩上的模态窗口。
+CaptureAnnotationState 统一持有绘制／属性预览及共同历史，纯文档追加、样式替换和平移由 Annotation 实现；App 只协调事务与重绘。
+M2／M3 进一步将路径、局部擦痕、正文及马赛克参数保存在 Annotation 的共享不可变载荷中，状态层统一管理对象和正文事务。
+原位正文使用 Common/WindowRenderer 的独立 InlineTextEditor（系统 RichEdit），不借完整表单窗口覆盖画布，也不让 App 实现 IME 或文字撤销。
+Application 内的 AnnotationInteractionController 拥有右键点击资格、属性请求、原位输入控件和延后完成状态，
+通过窄接口借用 CaptureAnnotationState，CloseSession 清除会话借用但不重置请求序号；提交失败 Resume 同一原位控件。
+OverlayInputQueue 单独拥有延后指针事件、重放与取消屏障，独立限制 8192 条，防止输入预算与文档路径预算相互影响。
+App 保留输入分派、跨屏生命周期、属性表单事务编排及重绘／输出；CompletionBusy() 查询宿主模态／输出忙状态与控制器 TextActive()，
+不保存第二份文字忙标志。两个组件均为 Application 私有类型，不新增 CMake 模块或兄弟依赖。
+Annotation 统一字号、马赛克档位与基础样式校验，编辑状态层统一橡皮档位，界面复用列表；
+文档线宽 (0, 256]、工具默认线宽 [1, 256] 和界面预设子集保持各自契约。旧 Style／单快照预算包装已移除。
+Graphics 私有链接 DirectWrite，字形几何供绘制／命中／擦除共用；AnnotationMosaicSource 绑定单次冻结帧并共用未标注 SDR 网格来源。
+来源准备与绘制的重入输入由 App 保存物理坐标并延后分派，取消／失捕建立屏障；原位热键转发必须核对活动注册、时效和真实前台焦点。
 
 ### 2.19 本地化文本模块
 
@@ -463,7 +486,8 @@ D3D11 能满足 60 FPS、HDR 图面和低延迟呈现目标，因此首版不使
 
 ### 4.1 一次截图会话
 
-以下为完整目标流程；当前实现自由矩形选区、复制和保存、工具栏与贴图；冻结指针、窗口/UIA 命中、标注、OCR 与翻译尚未接入。
+以下为完整目标流程；当前实现自由矩形选区、顶层窗口预选、复制和保存、工具栏、贴图及 M1／M2／M3 标注；
+冻结指针、UIA 子控件命中、OCR 与翻译尚未接入。标注的文字、跨屏、属性与擦除、输出一致性四组实机检查已获用户确认通过；具体验收范围与未单独记录的平台组合见[实现进度](implementation_progress.md)。
 
 1. 全局快捷键或托盘命令到达隐藏消息窗口。
 2. 在任何遮罩窗口出现之前枚举显示器，通过 `DuplicateOutput1` 优先捕获各输出的原生 SDR/HDR plane；全部成功后原子发布 `FrozenDesktopFrame`。

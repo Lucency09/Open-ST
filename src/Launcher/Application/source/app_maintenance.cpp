@@ -100,7 +100,7 @@ void App::DrainLogMaintenance() noexcept
 {
     try
     {
-        if (!this->logMaintenance_ || this->settingsBusy_ || this->dialogActive_ || this->completionBusy_ ||
+        if (!this->logMaintenance_ || this->settingsBusy_ || this->dialogActive_ || this->CompletionBusy() ||
             this->welcoming_ || this->shuttingDown_)
             return;
         const LogMaintenanceSnapshot snapshot = this->logMaintenance_->Snapshot();

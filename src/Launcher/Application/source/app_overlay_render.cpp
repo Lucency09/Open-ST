@@ -59,10 +59,14 @@ void App::RenderOverlays(
         OPEN_ST_LOG_ERROR("Capture overlay batch rendering failed. detail=", WideToUtf8(error));
         this->overlayInvalidated_ = true;
     }
+    // 整批图形调用已返回，现可应用重入期间保留的输入与取消屏障。
+    // 它们产生下一批失效，不能改变刚完成批次的固定快照。
+    if (!failed && !this->overlayInvalidated_ && !this->shuttingDown_)
+        this->DrainOverlayPointers();
     if (this->overlayInvalidated_ || this->shuttingDown_)
     {
         this->CloseOverlay();
-        if (failed && !this->completionBusy_ && !this->shuttingDown_)
+        if (failed && !this->CompletionBusy() && !this->shuttingDown_)
         {
             this->ShowCaptureError("capture.error.unknown");
         }

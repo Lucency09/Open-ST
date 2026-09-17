@@ -88,7 +88,7 @@ TEST(ChordTest, parses_and_normalizes_supported_chords)
     HotkeyChord chord{};
     ASSERT_TRUE(ParseHotkey("Shift+Alt+Ctrl+Q", chord));
     EXPECT_EQ(SerializeHotkey(chord), "Ctrl+Alt+Shift+Q");
-    for (const std::string_view text : {"Alt+0", "Ctrl+Z", "F1", "F11", "F13", "F24", "Shift+F8"})
+    for (const std::string_view text : {"Alt+0", "Ctrl+B", "F1", "F11", "F13", "F24", "Shift+F8"})
     {
         EXPECT_TRUE(ParseHotkey(text, chord)) << text;
         EXPECT_FALSE(SerializeHotkey(chord).empty());
@@ -100,9 +100,10 @@ TEST(ChordTest, parses_and_normalizes_supported_chords)
 // 返回：无；通过断言报告实际行为与预期的差异。
 TEST(ChordTest, rejects_invalid_text_without_changing_output)
 {
-    for (const std::string_view text : {"", "Q", "Shift+Q", "Ctrl+C", "Ctrl+S", "F12", "F0", "F25",
-                                        "Win+Q", "Ctrl", "Ctrl+Ctrl+Q", "Ctrl+Q+S", "Ctrl++Q", "Ctrl+Q+",
-                                        " Ctrl+Q", "Ctrl+Q ", "Ctrl+Home", "Alt+OEM_PLUS"})
+    for (const std::string_view text :
+         {"",        "Q",       "Shift+Q", "Ctrl+C",    "Ctrl+S",      "Ctrl+Z",      "Ctrl+Y",   "Ctrl+Shift+Z",
+          "F12",     "F0",      "F25",     "Win+Q",     "Ctrl",        "Ctrl+Ctrl+Q", "Ctrl+Q+S", "Ctrl++Q",
+          "Ctrl+Q+", " Ctrl+Q", "Ctrl+Q ", "Ctrl+Home", "Alt+OEM_PLUS"})
     {
         HotkeyChord chord = FIRST;
         EXPECT_FALSE(ParseHotkey(text, chord)) << text;
@@ -137,6 +138,21 @@ TEST(SessionKeyTest, preserves_existing_capture_commands)
     EXPECT_EQ(MatchSessionKey('S', 0, MOD_CONTROL | MOD_SHIFT), SessionKeyCommand::None);
     EXPECT_EQ(MatchSessionKey(VK_RETURN, 0, MOD_ALT), SessionKeyCommand::None);
     EXPECT_EQ(MatchSessionKey(VK_ESCAPE, repeated, MOD_CONTROL | MOD_ALT | MOD_SHIFT), SessionKeyCommand::Cancel);
+}
+
+// 验证标注撤销与两种重做组合，只消费首次按下并拒绝额外 Alt。
+// 入参：无。返回：无，以断言报告映射及全局冲突保护。
+TEST(SessionKeyTest, maps_annotation_history_without_global_shortcut_conflicts)
+{
+    constexpr LPARAM repeated = static_cast<LPARAM>(1) << 30;
+    EXPECT_EQ(MatchSessionKey('Z', 0, MOD_CONTROL), SessionKeyCommand::Undo);
+    EXPECT_EQ(MatchSessionKey('Y', 0, MOD_CONTROL), SessionKeyCommand::Redo);
+    EXPECT_EQ(MatchSessionKey('Z', 0, MOD_CONTROL | MOD_SHIFT), SessionKeyCommand::Redo);
+    EXPECT_EQ(MatchSessionKey('Z', repeated, MOD_CONTROL), SessionKeyCommand::None);
+    EXPECT_EQ(MatchSessionKey('Z', 0, MOD_CONTROL | MOD_ALT), SessionKeyCommand::None);
+    EXPECT_FALSE(IsSupportedHotkey({MOD_CONTROL, 'Z'}));
+    EXPECT_FALSE(IsSupportedHotkey({MOD_CONTROL, 'Y'}));
+    EXPECT_FALSE(IsSupportedHotkey({MOD_CONTROL | MOD_SHIFT, 'Z'}));
 }
 
 // 验证候选提交前不分派、提交后严格核对 ID 和完整组合。

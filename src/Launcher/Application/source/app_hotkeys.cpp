@@ -1,7 +1,9 @@
 // 连接快捷键注册与设置、消息门禁和本地化，保持兄弟模块互不依赖。
 
+#include "annotation_interaction_controller.h"
 #include <app.h>
 #include <hotkeys.h>
+#include <inline_text_editor.h>
 #include <log.h>
 #include <settings.h>
 #include <settings_window.h>
@@ -63,9 +65,8 @@ std::wstring App::HotkeyStatusText() const
 {
     const std::optional<std::string> saved = GetStringSetting("capture.hotkey");
     HotkeyChord chord;
-    const std::wstring savedText = saved && ParseHotkey(*saved, chord)
-                                       ? std::wstring(saved->begin(), saved->end())
-                                       : GetUiText("settings.hotkey.invalid");
+    const std::wstring savedText = saved && ParseHotkey(*saved, chord) ? std::wstring(saved->begin(), saved->end())
+                                                                       : GetUiText("settings.hotkey.invalid");
     return GetUiText("hotkey.configured", {{L"hotkey", savedText}}) + L"\n" +
            this->HotkeyText(this->hotkeyCleanupPending_ ? "hotkey.cleanup_pending" : "hotkey.active");
 }
@@ -110,7 +111,39 @@ void App::DispatchHotkey(WPARAM id, LPARAM data, DWORD time)
             (void)this->settingsWindow_->ProcessRecordedHotkey(LOWORD(data), HIWORD(data), time);
         return;
     }
-    if (this->completionBusy_ || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_)
+    if (this->annotationInteraction_->TextActive())
+    {
+        // 用户配置的全局组合也可能是编辑键；已核验身份后交由持焦点的原位组件处理。
+        // 其他截图组合在正文编辑期间继续暂停，不改变用户注册配置。
+        if (!this->overlayInvalidated_ && !this->shuttingDown_ && LOWORD(data) == MOD_CONTROL)
+        {
+            switch (HIWORD(data))
+            {
+            case 'A':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::SelectAll);
+                break;
+            case 'C':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::Copy);
+                break;
+            case 'V':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::Paste);
+                break;
+            case 'X':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::Cut);
+                break;
+            case 'Z':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::Undo);
+                break;
+            case 'Y':
+                (void)this->annotationInteraction_->InvokeTextCommand(InlineEditCommand::Redo);
+                break;
+            default:
+                break;
+            }
+        }
+        return;
+    }
+    if (this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ || this->settingsBusy_)
         return;
     this->StartCapture();
 }

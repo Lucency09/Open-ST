@@ -122,16 +122,16 @@ struct CaptureToolbar::Impl
         }
         const Button& button = this->buttons[index];
         const bool enabled = IsWindowEnabled(button.window) != FALSE;
-        const COLORREF background =
-            enabled && button.pressed
-                ? RGB(185, 219, 243)
-                : (enabled && (button.hovered || this->states[index].checked) ? RGB(218, 237, 250)
-                                                                              : RGB(244, 244, 244));
+        const bool checked = this->states[index].checked;
+        const COLORREF background = checked                     ? RGB(80, 80, 80)
+                                    : enabled && button.pressed ? RGB(185, 219, 243)
+                                    : enabled && button.hovered ? RGB(218, 237, 250)
+                                                                : RGB(244, 244, 244);
         const HBRUSH brush = CreateSolidBrush(background);
         FillRect(draw.hDC, &draw.rcItem, brush);
         DeleteObject(brush);
-        const HPEN pen =
-            CreatePen(PS_SOLID, std::max(1, this->Scale(1)), enabled ? RGB(69, 69, 69) : RGB(170, 170, 170));
+        const COLORREF foreground = !enabled ? RGB(170, 170, 170) : checked ? RGB(255, 255, 255) : RGB(69, 69, 69);
+        const HPEN pen = CreatePen(PS_SOLID, std::max(1, this->Scale(1)), foreground);
         const HGDIOBJ oldPen = SelectObject(draw.hDC, pen);
         const HGDIOBJ oldBrush = SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
         const int left = (draw.rcItem.right - this->Scale(16)) / 2;
@@ -161,6 +161,44 @@ struct CaptureToolbar::Impl
         };
         switch (this->specs[index].icon)
         {
+        case ToolbarIcon::TextTool:
+            line(2, 2, 14, 2);
+            line(8, 2, 8, 14);
+            line(5, 14, 11, 14);
+            break;
+        case ToolbarIcon::MosaicTool:
+            rectangle(1, 1, 15, 15);
+            line(6, 1, 6, 15);
+            line(10, 1, 10, 15);
+            line(1, 6, 15, 6);
+            line(1, 10, 15, 10);
+            break;
+        case ToolbarIcon::PenTool:
+            line(2, 14, 4, 8);
+            line(4, 8, 12, 1);
+            line(12, 1, 15, 4);
+            line(15, 4, 7, 12);
+            line(7, 12, 2, 14);
+            line(4, 8, 7, 12);
+            break;
+        case ToolbarIcon::LineTool:
+            line(2, 14, 14, 2);
+            break;
+        case ToolbarIcon::EllipseTool:
+        {
+            const POINT first = point(1, 3);
+            const POINT last = point(15, 13);
+            Ellipse(draw.hDC, first.x, first.y, last.x, last.y);
+            break;
+        }
+        case ToolbarIcon::EraserTool:
+            line(2, 9, 9, 2);
+            line(9, 2, 15, 8);
+            line(15, 8, 8, 15);
+            line(8, 15, 2, 9);
+            line(5, 6, 11, 12);
+            line(8, 15, 15, 15);
+            break;
         case ToolbarIcon::Cancel:
             line(4, 4, 13, 13);
             line(12, 4, 3, 13);
@@ -182,6 +220,65 @@ struct CaptureToolbar::Impl
             line(11, 7, 14, 10);
             line(3, 10, 14, 10);
             line(8, 10, 8, 16);
+            break;
+        case ToolbarIcon::SelectTool:
+            line(3, 1, 3, 14);
+            line(3, 1, 13, 10);
+            line(3, 14, 7, 10);
+            line(7, 10, 13, 10);
+            line(7, 10, 10, 16);
+            break;
+        case ToolbarIcon::RectangleTool:
+            rectangle(1, 3, 15, 13);
+            break;
+        case ToolbarIcon::ArrowTool:
+            line(2, 14, 14, 2);
+            line(6, 2, 14, 2);
+            line(14, 2, 14, 10);
+            break;
+        case ToolbarIcon::FilledRectangleTool:
+        {
+            const HBRUSH fill = CreateSolidBrush(foreground);
+            SelectObject(draw.hDC, fill);
+            rectangle(1, 3, 15, 13);
+            SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
+            DeleteObject(fill);
+            break;
+        }
+        case ToolbarIcon::RoundedRectangleTool:
+        {
+            const POINT first = point(1, 3);
+            const POINT last = point(15, 13);
+            const HBRUSH fill = CreateSolidBrush(foreground);
+            SelectObject(draw.hDC, fill);
+            RoundRect(draw.hDC, first.x, first.y, last.x, last.y, this->Scale(5), this->Scale(5));
+            SelectObject(draw.hDC, GetStockObject(NULL_BRUSH));
+            DeleteObject(fill);
+            break;
+        }
+        case ToolbarIcon::Undo:
+            line(6, 2, 2, 6);
+            line(2, 6, 6, 10);
+            line(2, 6, 12, 6);
+            line(12, 6, 14, 8);
+            line(14, 8, 14, 13);
+            line(14, 13, 6, 13);
+            break;
+        case ToolbarIcon::Redo:
+            line(10, 2, 14, 6);
+            line(14, 6, 10, 10);
+            line(14, 6, 4, 6);
+            line(4, 6, 2, 8);
+            line(2, 8, 2, 13);
+            line(2, 13, 10, 13);
+            break;
+        case ToolbarIcon::Style:
+            line(1, 4, 15, 4);
+            line(1, 8, 15, 8);
+            line(1, 12, 15, 12);
+            rectangle(4, 2, 7, 6);
+            rectangle(10, 6, 13, 10);
+            rectangle(5, 10, 8, 14);
             break;
         }
         SelectObject(draw.hDC, oldBrush);
@@ -318,10 +415,10 @@ LRESULT CALLBACK CaptureToolbar::Impl::WindowProc(HWND window, UINT message, WPA
         RoundRect(dc, 0, 0, client.right, client.bottom, self->Scale(6), self->Scale(6));
         const HPEN divider = CreatePen(PS_SOLID, 1, RGB(190, 190, 190));
         SelectObject(dc, divider);
-        for (int x : self->layout.separators)
+        for (const RECT& separator : self->layout.separators)
         {
-            MoveToEx(dc, x, self->Scale(8), nullptr);
-            LineTo(dc, x, client.bottom - self->Scale(8));
+            MoveToEx(dc, separator.left, separator.top, nullptr);
+            LineTo(dc, separator.left, separator.bottom);
         }
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);

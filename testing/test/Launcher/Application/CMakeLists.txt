@@ -15,6 +15,10 @@ add_executable(open_st_application_tests source/capture_overlay_session_tests.cp
 target_sources(open_st_application_tests PRIVATE source/simple_message_window_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/overlay_paint_batch_tests.cpp
     source/app_overlay_render_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/annotation_integration_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/overlay_input_queue_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/capture_annotation_state_tests.cpp
+    source/annotation_style_dialog_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/capture_toolbar_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/pin_window_integration_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/hotkey_integration_tests.cpp)
@@ -47,11 +51,31 @@ gtest_discover_tests(open_st_window_selection_tests TEST_PREFIX "application."
 # 独立链接系统输出替身，验证真实 App 导出编排而不操作用户剪贴板或文件对话框。
 add_executable(open_st_pin_export_integration_tests source/pin_export_integration_tests.cpp)
 target_link_libraries(open_st_pin_export_integration_tests PRIVATE
-    OpenST::Application OpenST::PinWindow OpenST::Export OpenST::Capture OpenST::Settings OpenST::Localization OpenST::Common GTest::gtest_main)
+    OpenST::Application OpenST::Graphics OpenST::PinWindow OpenST::Export OpenST::Capture OpenST::Settings OpenST::Localization OpenST::Common GTest::gtest_main)
 target_include_directories(open_st_pin_export_integration_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Settings/private"
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Localization/private"
     "${PROJECT_SOURCE_DIR}/src/Common/private")
 gtest_discover_tests(open_st_pin_export_integration_tests TEST_PREFIX "application."
+    PROPERTIES LABELS "application;integration" TIMEOUT 45)
+
+# 独立替换样式弹窗，验证右键元素属性的真实 App 事务和模态边界。
+add_executable(open_st_annotation_properties_tests source/annotation_properties_tests.cpp)
+target_link_libraries(open_st_annotation_properties_tests PRIVATE
+    OpenST::Application OpenST::Graphics OpenST::CaptureToolbar GTest::gtest_main)
+target_include_directories(open_st_annotation_properties_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private")
+gtest_discover_tests(open_st_annotation_properties_tests TEST_PREFIX "application."
+    PROPERTIES LABELS "application;integration" TIMEOUT 45)
+
+# 原位文字窗口真实集成，与属性弹窗替身隔离。
+add_executable(open_st_annotation_text_integration_tests source/annotation_text_integration_tests.cpp)
+target_link_libraries(open_st_annotation_text_integration_tests PRIVATE
+    OpenST::Application OpenST::Graphics OpenST::WindowRenderer OpenST::Hotkeys GTest::gtest_main)
+target_include_directories(open_st_annotation_text_integration_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Hotkeys/private"
+    "${PROJECT_SOURCE_DIR}/src/Common/WindowRenderer/private")
+gtest_discover_tests(open_st_annotation_text_integration_tests TEST_PREFIX "application."
     PROPERTIES LABELS "application;integration" TIMEOUT 45)

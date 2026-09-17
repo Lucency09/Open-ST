@@ -1,4 +1,6 @@
 // 在独立测试链接中替换系统输出入口，验证 App 贴图导出而不写真实剪贴板或图片。
+#include "capture_annotation_state.h"
+#include "capture_overlay_session.h"
 #include "capture_storage_options.h"
 #include "json_file_test_access.h"
 #include "save_image_dialog.h"
@@ -166,6 +168,116 @@ struct AppPinTestAccess final
     }
 };
 
+struct AppAnnotationTestAccess final
+{
+    // 建立两个真实隐藏遮罩及一条可撤销标注，选区覆盖当前鼠标以确保按下输入前提有效。
+    // 入参：app 为已有消息窗口的隔离宿主；windows 接收会话借用句柄。
+    // 返回：全部建立成功为 true，不设置鼠标位置或创建图形设备。
+    static bool Initialize(App& app, std::array<HWND, 2>& windows)
+    {
+        POINT cursor{};
+        if (!GetCursorPos(&cursor))
+        {
+            return false;
+        }
+        app.selectionModel_ = std::make_unique<SelectionModel>();
+        app.selectionModel_->SetBounds({cursor.x - 500, cursor.y - 500, cursor.x + 500, cursor.y + 500});
+        const RectI crop{cursor.x - 100, cursor.y - 100, cursor.x + 100, cursor.y + 100};
+        if (!app.selectionModel_->SelectRectangle(crop))
+        {
+            return false;
+        }
+        app.annotation_ = std::make_unique<CaptureAnnotationState>();
+        app.annotation_->SetTool(CaptureAnnotationTool::Rectangle);
+        if (!app.annotation_->BeginDraw({cursor.x - 40, cursor.y - 40}, crop) ||
+            app.annotation_->EndDraw({cursor.x + 40, cursor.y + 40}) != AnnotationCommitResult::Committed)
+        {
+            return false;
+        }
+        app.overlaySession_ = std::make_unique<CaptureOverlaySession>();
+        WNDCLASSW windowClass{};
+        windowClass.lpfnWndProc = App::OverlayProc;
+        windowClass.hInstance = GetModuleHandleW(nullptr);
+        windowClass.lpszClassName = L"OpenST.AnnotationNoticeTest";
+        if (RegisterClassW(&windowClass) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        {
+            return false;
+        }
+        app.overlayPreparing_ = true;
+        for (HWND& window : windows)
+        {
+            window = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, windowClass.lpszClassName, L"", WS_POPUP,
+                                     crop.left, crop.top, 200, 200, nullptr, nullptr, windowClass.hInstance, &app);
+            if (window == nullptr)
+            {
+                app.overlayPreparing_ = false;
+                return false;
+            }
+            app.overlaySession_->Add(window);
+        }
+        app.overlayPreparing_ = false;
+        return !app.overlayInvalidated_;
+    }
+
+    // 触发真实标注错误提示编排，显示边界由本文件的替身接收。
+    // 入参：app 为隔离宿主。
+    // 返回：无。
+    static void Report(App& app)
+    {
+        app.annotationFailure_ = true;
+        app.ReportAnnotationFailure();
+    }
+
+    // 查询保护所有遮罩输入的完成忙状态。
+    // 入参：app 为隔离宿主。
+    // 返回：整个提示期间应为 true。
+    static bool Busy(const App& app)
+    {
+        return app.completionBusy_;
+    }
+
+    // 借用标注文档及历史，用于确认跨窗口消息不会修改编辑状态。
+    // 入参：app 为隔离宿主。
+    // 返回：会话持有的状态引用。
+    static CaptureAnnotationState& State(App& app)
+    {
+        return *app.annotation_;
+    }
+
+    // 调用实际撤销入口，明确验证存在可撤销历史时的忙状态门禁。
+    // 入参：app 为隔离宿主。
+    // 返回：无。
+    static void Undo(App& app)
+    {
+        app.RestoreAnnotationEdit(false);
+    }
+
+    // 检查截图会话及共享模型是否仍存活。
+    // 入参：app 为隔离宿主。
+    // 返回：两者均存在为 true。
+    static bool Active(const App& app)
+    {
+        return app.overlaySession_ != nullptr && app.selectionModel_ != nullptr && app.annotation_ != nullptr;
+    }
+
+    // 检查跨屏窗口变化是否已经登记为待回收状态。
+    // 入参：app 为隔离宿主。
+    // 返回：已登记失效为 true。
+    static bool Invalidated(const App& app)
+    {
+        return app.overlayInvalidated_;
+    }
+
+    // 确认当前鼠标确实位于裁剪内，避免用无效按下掩盖消息门禁缺陷。
+    // 入参：app 为隔离宿主。
+    // 返回：当前物理鼠标可启动绘制为 true。
+    static bool CursorInside(const App& app)
+    {
+        POINT cursor{};
+        return GetCursorPos(&cursor) && app.selectionModel_->Contains({cursor.x, cursor.y});
+    }
+};
+
 class PinExportIntegrationTest : public testing::Test
 {
   protected:
@@ -303,6 +415,80 @@ TEST_F(PinExportIntegrationTest, write_failure_keeps_pin_and_protects_error_owne
     EXPECT_FALSE(GetStringSetting("capture.last_save_directory").has_value());
     ASSERT_TRUE(AppPinTestAccess::Execute(*this->app_, this->id_, PinCommand::Copy));
     EXPECT_EQ(probe.copies, 1);
+}
+
+// 验证标注错误提示保护非 owner 遮罩，真实鼠标按下与直接撤销都无法修改有效编辑文档。
+// 入参：无；提示窗口由替身接收，鼠标位置只读且须位于选区内。
+// 返回：无；提示结束后原历史仍可实际撤销，证明忙期间未消费历史。
+TEST_F(PinExportIntegrationTest, annotation_notice_blocks_other_overlay_input_and_undo)
+{
+    std::array<HWND, 2> windows{};
+    ASSERT_TRUE(AppAnnotationTestAccess::Initialize(*this->app_, windows));
+    const AnnotationSnapshot original = AppAnnotationTestAccess::State(*this->app_).Committed();
+    ASSERT_NE(original, nullptr);
+    ASSERT_TRUE(AppAnnotationTestAccess::State(*this->app_).CanUndo());
+    // 在提示调用栈内向另一个窗口发送真实输入，并验证独立撤销入口的业务门禁。
+    // 入参：owner 为错误提示的实际 owner；捕获会话句柄与原快照只在本次同步调用期间借用。
+    // 返回：无；不设置键盘状态，因此 Z 消息只验证输入拦截，撤销语义由直接入口确认。
+    probe.duringNotice = [this, windows, original](HWND owner)
+    {
+        ASSERT_TRUE(owner == windows[0] || owner == windows[1]);
+        const HWND other = owner == windows[0] ? windows[1] : windows[0];
+        EXPECT_TRUE(AppAnnotationTestAccess::Busy(*this->app_));
+        ASSERT_TRUE(AppAnnotationTestAccess::CursorInside(*this->app_));
+        SendMessageW(other, WM_LBUTTONDOWN, MK_LBUTTON, 0);
+        EXPECT_FALSE(AppAnnotationTestAccess::State(*this->app_).Active());
+        SendMessageW(other, WM_MOUSEMOVE, MK_LBUTTON, 0);
+        SendMessageW(other, WM_LBUTTONUP, 0, 0);
+        SendMessageW(other, WM_KEYDOWN, 'Z', 0);
+        SendMessageW(other, WM_RBUTTONUP, 0, 0);
+        AppAnnotationTestAccess::Undo(*this->app_);
+        EXPECT_EQ(AppAnnotationTestAccess::State(*this->app_).Committed(), original);
+        EXPECT_EQ(AppAnnotationTestAccess::State(*this->app_).Tool(), CaptureAnnotationTool::Rectangle);
+        EXPECT_TRUE(AppAnnotationTestAccess::State(*this->app_).CanUndo());
+        EXPECT_FALSE(AppAnnotationTestAccess::State(*this->app_).CanRedo());
+    };
+    AppAnnotationTestAccess::Report(*this->app_);
+    EXPECT_EQ(probe.notices, 1);
+    EXPECT_FALSE(AppAnnotationTestAccess::Busy(*this->app_));
+    ASSERT_TRUE(AppAnnotationTestAccess::Active(*this->app_));
+    AppAnnotationTestAccess::Undo(*this->app_);
+    EXPECT_EQ(AppAnnotationTestAccess::State(*this->app_).Committed(), nullptr);
+    EXPECT_TRUE(AppAnnotationTestAccess::State(*this->app_).CanRedo());
+}
+
+// 验证错误提示期间另一屏的显示变化或关闭请求只登记失效，提示返回后才销毁整个截图会话。
+// 入参：无；分别使用 WM_DISPLAYCHANGE 和 WM_CLOSE，不创建真实提示窗口。
+// 返回：无；回调栈内两个 HWND 及文档保留，外层返回后全部回收。
+TEST_F(PinExportIntegrationTest, annotation_notice_defers_other_overlay_invalidation_until_return)
+{
+    for (UINT message : {WM_DISPLAYCHANGE, WM_CLOSE})
+    {
+        std::array<HWND, 2> windows{};
+        ASSERT_TRUE(AppAnnotationTestAccess::Initialize(*this->app_, windows));
+        const AnnotationSnapshot original = AppAnnotationTestAccess::State(*this->app_).Committed();
+        // 同步注入非 owner 屏的失效请求，核验提示仍借用的窗口和文档没有提前销毁。
+        // 入参：owner 为实际提示 owner；捕获的 message 为本轮失效消息。
+        // 返回：无；资源回收只能发生在此回调返回后。
+        probe.duringNotice = [this, windows, original, message](HWND owner)
+        {
+            ASSERT_TRUE(owner == windows[0] || owner == windows[1]);
+            const HWND other = owner == windows[0] ? windows[1] : windows[0];
+            EXPECT_TRUE(AppAnnotationTestAccess::Busy(*this->app_));
+            SendMessageW(other, message, 0, 0);
+            EXPECT_TRUE(AppAnnotationTestAccess::Invalidated(*this->app_));
+            ASSERT_TRUE(AppAnnotationTestAccess::Active(*this->app_));
+            EXPECT_EQ(AppAnnotationTestAccess::State(*this->app_).Committed(), original);
+            EXPECT_TRUE(IsWindow(windows[0]));
+            EXPECT_TRUE(IsWindow(windows[1]));
+        };
+        AppAnnotationTestAccess::Report(*this->app_);
+        EXPECT_FALSE(AppAnnotationTestAccess::Busy(*this->app_));
+        EXPECT_FALSE(AppAnnotationTestAccess::Active(*this->app_));
+        EXPECT_FALSE(IsWindow(windows[0]));
+        EXPECT_FALSE(IsWindow(windows[1]));
+    }
+    EXPECT_EQ(probe.notices, 2);
 }
 
 // 验证文件成功保存后目录编码异常只触发次要警告，贴图仍能继续复制。

@@ -19,14 +19,42 @@ enum class CaptureToolbarCommand : std::uint32_t
     Cancel = 1,
     Save,
     Copy,
-    Pin
+    Pin,
+    SelectTool,
+    RectangleTool,
+    ArrowTool,
+    FilledRectangleTool,
+    RoundedRectangleTool,
+    Undo,
+    Redo,
+    Style,
+    PenTool,
+    LineTool,
+    EllipseTool,
+    EraserTool,
+    TextTool,
+    MosaicTool
 };
 enum class ToolbarIcon
 {
     Cancel,
     Save,
     Copy,
-    Pin
+    Pin,
+    SelectTool,
+    RectangleTool,
+    ArrowTool,
+    FilledRectangleTool,
+    RoundedRectangleTool,
+    Undo,
+    Redo,
+    Style,
+    PenTool,
+    LineTool,
+    EllipseTool,
+    EraserTool,
+    TextTool,
+    MosaicTool
 };
 
 struct ToolbarButtonSpec

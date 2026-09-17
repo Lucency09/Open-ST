@@ -136,28 +136,65 @@ TEST_F(CaptureToolbarWindowTest, rejects_duplicate_commands)
     EXPECT_FALSE(IsWindow(this->toolbar_.NativeHandle()));
 }
 
+// 验证选中工具保持深灰背景，鼠标悬停或业务暂时禁用不会把选中态替换为瞬时反馈。
+// 入参：无；在内存 GDI 目标中执行真实工具栏自绘。
+// 返回：无；像素颜色符合持久选中态，清除 checked 后恢复普通背景。
+TEST_F(CaptureToolbarWindowTest, checked_tool_remains_dark_during_hover_and_busy)
+{
+    ASSERT_TRUE(
+        this->Create({{CaptureToolbarCommand::RectangleTool, ToolbarIcon::RectangleTool, "rectangle", 0}}).success);
+    ASSERT_TRUE(this->toolbar_.UpdatePlacement({100, 100, 400, 300}, {0, 0, 1920, 1080}, 96).success);
+    const HWND button = GetDlgItem(this->toolbar_.NativeHandle(), 1);
+    ASSERT_NE(button, nullptr);
+    const HDC dc = CreateCompatibleDC(nullptr);
+    ASSERT_NE(dc, nullptr);
+    const HBITMAP bitmap = CreateBitmap(30, 28, 1, 32, nullptr);
+    if (bitmap == nullptr)
+    {
+        DeleteDC(dc);
+        FAIL() << "Cannot allocate test bitmap";
+    }
+    const HGDIOBJ original = SelectObject(dc, bitmap);
+    DRAWITEMSTRUCT draw{ODT_BUTTON, 1, 0, ODA_DRAWENTIRE, 0, button, dc, {0, 0, 30, 28}, 0};
+    std::array<ToolbarButtonState, 1> states{{{CaptureToolbarCommand::RectangleTool, true, true, true}}};
+    EXPECT_TRUE(this->toolbar_.UpdateButtonStates(states).success);
+    SendMessageW(button, WM_MOUSEMOVE, 0, MAKELPARAM(1, 1));
+    SendMessageW(this->toolbar_.NativeHandle(), WM_DRAWITEM, 1, reinterpret_cast<LPARAM>(&draw));
+    EXPECT_EQ(GetPixel(dc, 1, 1), RGB(80, 80, 80));
+    this->toolbar_.SetBusy(true);
+    SendMessageW(this->toolbar_.NativeHandle(), WM_DRAWITEM, 1, reinterpret_cast<LPARAM>(&draw));
+    EXPECT_EQ(GetPixel(dc, 1, 1), RGB(80, 80, 80));
+    states[0].checked = false;
+    EXPECT_TRUE(this->toolbar_.UpdateButtonStates(states).success);
+    SendMessageW(this->toolbar_.NativeHandle(), WM_DRAWITEM, 1, reinterpret_cast<LPARAM>(&draw));
+    EXPECT_EQ(GetPixel(dc, 1, 1), RGB(244, 244, 244));
+    SelectObject(dc, original);
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+}
+
 // 验证插入图钉后复制仍在最右，图钉按稳定命令 ID 提交并遵守忙状态和重复提交限制。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；断言四按钮位置、语言刷新、命令 ID、选区代次及拒绝重复提交。
 TEST_F(CaptureToolbarWindowTest, pin_entry_preserves_order_and_command_gates)
 {
-    ASSERT_TRUE(this->Create({
-        {CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "cancel", 0},
-        {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "pin", 1},
-        {CaptureToolbarCommand::Save, ToolbarIcon::Save, "save", 1},
-        {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "copy", 1}}).success);
+    ASSERT_TRUE(this->Create({{CaptureToolbarCommand::Cancel, ToolbarIcon::Cancel, "cancel", 0},
+                              {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "pin", 1},
+                              {CaptureToolbarCommand::Save, ToolbarIcon::Save, "save", 1},
+                              {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "copy", 1}})
+                    .success);
     this->Show();
     const HWND pin = this->Button(L"Pin to screen");
     ASSERT_NE(pin, nullptr);
-    const std::array<HWND, 4> buttons{
-        this->Button(L"Cancel"), pin, this->Button(L"Save"), this->Button(L"Copy")};
+    const std::array<HWND, 4> buttons{this->Button(L"Cancel"), pin, this->Button(L"Save"), this->Button(L"Copy")};
     RECT previous{};
     for (std::size_t index = 0; index < buttons.size(); ++index)
     {
         ASSERT_NE(buttons[index], nullptr);
         RECT current{};
         ASSERT_TRUE(GetWindowRect(buttons[index], &current));
-        if (index != 0) EXPECT_LE(previous.right, current.left);
+        if (index != 0)
+            EXPECT_LE(previous.right, current.left);
         previous = current;
     }
     EXPECT_EQ(static_cast<std::uint32_t>(CaptureToolbarCommand::Cancel), 1U);

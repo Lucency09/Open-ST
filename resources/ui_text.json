@@ -6,6 +6,91 @@
     "ja-JP"
   ],
   "texts": {
+    "annotation.element.properties": {
+      "zh-CN": "元素属性",
+      "en-US": "Element properties",
+      "ja-JP": "要素のプロパティ"
+    },
+    "annotation.tool.select": {
+      "zh-CN": "选择：移动或调整截图区域",
+      "en-US": "Select: move or resize capture area",
+      "ja-JP": "選択：キャプチャ範囲の移動・サイズ変更"
+    },
+    "annotation.tool.rectangle": {
+      "zh-CN": "空心矩形",
+      "en-US": "Rectangle outline",
+      "ja-JP": "四角形の枠"
+    },
+    "annotation.tool.arrow": {
+      "zh-CN": "箭头",
+      "en-US": "Arrow",
+      "ja-JP": "矢印"
+    },
+    "annotation.tool.fill": {
+      "zh-CN": "直角实心矩形",
+      "en-US": "Filled rectangle",
+      "ja-JP": "塗りつぶし四角形"
+    },
+    "annotation.tool.rounded": {
+      "zh-CN": "圆角实心矩形",
+      "en-US": "Filled rounded rectangle",
+      "ja-JP": "塗りつぶし角丸四角形"
+    },
+    "annotation.undo": {
+      "zh-CN": "撤销（Ctrl+Z，最多128步）",
+      "en-US": "Undo (Ctrl+Z, up to 128 steps)",
+      "ja-JP": "元に戻す（Ctrl+Z、最大128回）"
+    },
+    "annotation.redo": {
+      "zh-CN": "重做（Ctrl+Y）",
+      "en-US": "Redo (Ctrl+Y)",
+      "ja-JP": "やり直す（Ctrl+Y）"
+    },
+    "annotation.style.title": {
+      "zh-CN": "绘图样式",
+      "en-US": "Drawing style",
+      "ja-JP": "描画スタイル"
+    },
+    "annotation.style.color": {
+      "zh-CN": "颜色（#RRGGBB）",
+      "en-US": "Color (#RRGGBB)",
+      "ja-JP": "色（#RRGGBB）"
+    },
+    "annotation.style.transparency": {
+      "zh-CN": "透明度（%）",
+      "en-US": "Transparency (%)",
+      "ja-JP": "透明度（%）"
+    },
+    "annotation.style.width": {
+      "zh-CN": "线宽（像素）",
+      "en-US": "Line width (pixels)",
+      "ja-JP": "線幅（ピクセル）"
+    },
+    "annotation.style.invalid": {
+      "zh-CN": "请输入有效的 #RRGGBB 颜色及 0–100% 的透明度。",
+      "en-US": "Enter a valid #RRGGBB color and transparency from 0 to 100%.",
+      "ja-JP": "有効な #RRGGBB の色と 0～100% の透明度を入力してください。"
+    },
+    "annotation.style.preview_failed": {
+      "zh-CN": "暂时无法预览此属性。请重试或取消。",
+      "en-US": "Unable to preview these properties. Retry or cancel.",
+      "ja-JP": "この属性をプレビューできません。再試行するかキャンセルしてください。"
+    },
+    "annotation.style.ok": {
+      "zh-CN": "确定",
+      "en-US": "OK",
+      "ja-JP": "OK"
+    },
+    "annotation.style.cancel": {
+      "zh-CN": "取消",
+      "en-US": "Cancel",
+      "ja-JP": "キャンセル"
+    },
+    "annotation.edit_failed": {
+      "zh-CN": "无法完成本次标注编辑，已有内容已保留。请减少标注后重试，或先完成本次截图。",
+      "en-US": "The annotation edit could not be completed. Existing content was kept. Reduce annotations and try again, or finish this capture first.",
+      "ja-JP": "注釈の編集を完了できませんでした。既存の内容は保持されています。注釈を減らして再試行するか、このキャプチャを先に完了してください。"
+    },
     "capture.toolbar.pin": {
       "zh-CN": "固定到屏幕",
       "en-US": "Pin to screen",
@@ -785,6 +870,76 @@
       "zh-CN": "默认配置已保存，但部分设置未能生效或尚需完成处理。可点击“应用”重试。",
       "en-US": "Defaults were saved, but some settings could not be applied or still need processing. Click Apply to retry.",
       "ja-JP": "既定値は保存しましたが、一部の設定を適用できないか、処理が残っています。「適用」で再試行してください。"
+    },
+    "annotation.tool.pen": {
+      "zh-CN": "自由画笔",
+      "en-US": "Freehand pen",
+      "ja-JP": "ペン"
+    },
+    "annotation.tool.line": {
+      "zh-CN": "直线",
+      "en-US": "Line",
+      "ja-JP": "直線"
+    },
+    "annotation.tool.ellipse": {
+      "zh-CN": "空心椭圆",
+      "en-US": "Ellipse",
+      "ja-JP": "楕円"
+    },
+    "annotation.tool.eraser": {
+      "zh-CN": "局部橡皮擦",
+      "en-US": "Local eraser",
+      "ja-JP": "部分消しゴム"
+    },
+    "annotation.eraser.title": {
+      "zh-CN": "橡皮擦设置",
+      "en-US": "Eraser settings",
+      "ja-JP": "消しゴム設定"
+    },
+    "annotation.eraser.diameter": {
+      "zh-CN": "橡皮直径（物理像素）",
+      "en-US": "Diameter (physical pixels)",
+      "ja-JP": "直径（物理ピクセル）"
+    },
+    "annotation.tool.text": {
+      "zh-CN": "文字：在截图上输入",
+      "en-US": "Text: type on capture",
+      "ja-JP": "文字：キャプチャ上に入力"
+    },
+    "annotation.tool.mosaic": {
+      "zh-CN": "马赛克（矩形区域）",
+      "en-US": "Mosaic (rectangle)",
+      "ja-JP": "モザイク（矩形範囲）"
+    },
+    "annotation.text.size": {
+      "zh-CN": "字号（物理像素）",
+      "en-US": "Font size (physical pixels)",
+      "ja-JP": "文字サイズ（物理ピクセル）"
+    },
+    "annotation.text.edit": {
+      "zh-CN": "编辑文字",
+      "en-US": "Edit text",
+      "ja-JP": "文字を編集"
+    },
+    "annotation.text.invalid": {
+      "zh-CN": "文字为空、格式无效或暂时无法提交，请修改或取消。",
+      "en-US": "Text is empty, invalid, or cannot be committed. Edit or cancel.",
+      "ja-JP": "文字が空か無効、または確定できません。編集するかキャンセルしてください。"
+    },
+    "annotation.text.limit": {
+      "zh-CN": "文字过长，请缩短后重试。本次超限输入未接受。",
+      "en-US": "The text is too long. Shorten it and retry; this input was not accepted.",
+      "ja-JP": "文字が長すぎます。短くして再試行してください。今回の入力は受け付けられませんでした。"
+    },
+    "annotation.mosaic.title": {
+      "zh-CN": "马赛克设置",
+      "en-US": "Mosaic settings",
+      "ja-JP": "モザイク設定"
+    },
+    "annotation.mosaic.block": {
+      "zh-CN": "方块边长（物理像素）：4 细 / 8 中 / 16 粗 / 32 很粗",
+      "en-US": "Block size (physical pixels): 4 fine / 8 medium / 16 coarse / 32 extra coarse",
+      "ja-JP": "ブロック幅（物理ピクセル）：4細かい / 8中 / 16粗い / 32最も粗い"
     }
   }
 }

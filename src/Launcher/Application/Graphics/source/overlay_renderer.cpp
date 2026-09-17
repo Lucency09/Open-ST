@@ -1,5 +1,6 @@
 // 文件职责：实现每屏遮罩的 D3D/D2D 资源和绘制，保留选区原像素并检查显示配置失效。
 
+#include <annotation_mosaic_source.h>
 #include <color_conversion.h>
 #include <desktop_preview.h>
 #include <display_color_state.h>
@@ -7,6 +8,7 @@
 #include <selection_model.h>
 #include <windows_util.h>
 
+#include "annotation_drawing.h"
 #include "outside_mask_layout.h"
 #include "overlay_settings.h"
 
@@ -90,6 +92,7 @@ struct OverlayRenderer::Impl final
     DXGI_FORMAT pixelFormat{DXGI_FORMAT_UNKNOWN};
     float uiWhiteScale{1.0F};
     OutputColorMetadata colorMetadata{};
+    AnnotationMosaicSource* mosaicSource{};
     ComPtr<ID3D11Device> d3dDevice;
     ComPtr<ID3D11DeviceContext> d3dContext;
     ComPtr<IDXGISwapChain3> swapChain;
@@ -155,7 +158,23 @@ OverlayRenderer::OverlayRenderer() : impl_(std::make_unique<Impl>()) {}
 // 销毁覆盖渲染器并释放其拥有的图形资源。
 // 入参：无。
 // 返回：无返回值；析构完成对应资源清理。
-OverlayRenderer::~OverlayRenderer() = default;
+OverlayRenderer::~OverlayRenderer()
+{
+    this->Reset();
+}
+
+// 为已初始化的覆盖窗口借用完整冻结桌面的共享马赛克来源。
+// 入参：source 为会话来源或 nullptr；宿主须先释放覆盖窗口再销毁来源。
+// 返回：无；替换来源时释放旧目标的缓存引用。
+void OverlayRenderer::SetMosaicSource(AnnotationMosaicSource* source) noexcept
+{
+    if (this->impl_->mosaicSource != source)
+    {
+        if (this->impl_->mosaicSource != nullptr)
+            this->impl_->mosaicSource->ReleaseTarget(this->impl_->d2dContext.Get());
+        this->impl_->mosaicSource = source;
+    }
+}
 
 // 为指定截图覆盖窗口建立绘制资源并上传该屏不可变预览。
 // 入参：window：借用的覆盖窗口句柄；frame：调用期间有效的单屏预览，上传后不再借用其像素；configuredBorderColor：调用期间借用的可选
@@ -450,10 +469,28 @@ bool OverlayRenderer::Render(SelectionSnapshot snapshot, std::wstring& errorMess
     return this->DrawFrame(snapshot, true, errorMessage);
 }
 
+// 在原有预览上绘制不可变标注快照，借用仅持续本次同步调用。
+// 入参：snapshot：选区状态；annotations：标注快照；errorMessage：失败诊断。
+// 返回：绘制及呈现成功为 true，否则为 false。
+bool OverlayRenderer::Render(SelectionSnapshot snapshot, const AnnotationSnapshot& annotations,
+                             std::wstring& errorMessage)
+{
+    return this->DrawFrame(snapshot, annotations, true, errorMessage);
+}
+
 // 绘制冻结预览、选区外暗层与控制点，并按调用方要求提交交换链。
 // 入参：snapshot：虚拟桌面物理像素选区快照；present：是否调用 Present；errorMessage：输出参数，接收失效或绘制错误原因。
 // 返回：完成绘制及所请求呈现时为 true；未初始化、显示配置过期、窗口或图形调用失败时为 false。
 bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::wstring& errorMessage)
+{
+    return this->DrawFrame(snapshot, {}, present, errorMessage);
+}
+
+// 在单次绘制周期中呈现冻结底图、正式选区内标注和选区控件。
+// 入参：snapshot：选区；annotations：只读快照；present：是否提交交换链；errorMessage：失败诊断。
+// 返回：完成所需绘制和呈现为 true，失败为 false 且不呈现部分画面。
+bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, const AnnotationSnapshot& annotations, bool present,
+                                std::wstring& errorMessage)
 {
     errorMessage.clear();
     if (!this->impl_->d2dContext || !this->impl_->frameBitmap || !this->impl_->targetBitmap || !this->impl_->dimBrush ||
@@ -507,6 +544,15 @@ bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, bool present, std::w
 
     if (snapshot.hasSelection)
     {
+        if (!DrawAnnotations(
+                this->impl_->d2dContext.Get(), annotations, snapshot.rectangle,
+                {static_cast<double>(this->impl_->frameBounds.left), static_cast<double>(this->impl_->frameBounds.top)},
+                this->impl_->pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT, this->impl_->uiWhiteScale, errorMessage,
+                this->impl_->mosaicSource))
+        {
+            static_cast<void>(this->impl_->d2dContext->EndDraw());
+            return false;
+        }
         // 保留完整全局选区轮廓，由呈现目标裁剪；不能先取本屏交集，否则拼缝会出现伪边框。
         const D2D1_RECT_F selectionRectangle = ToClientRectangle(snapshot.rectangle, this->impl_->frameBounds);
         FillOnePixelOutline(this->impl_->d2dContext.Get(), selectionRectangle, this->impl_->selectionBrush.Get());
@@ -614,6 +660,7 @@ void OverlayRenderer::Reset() noexcept
     }
 
     // 按资源依赖的逆序释放：画刷/位图 → D2D target/context/device → swap chain → D3D device。
+    this->SetMosaicSource(nullptr);
     this->impl_->handleFillBrush.Reset();
     this->impl_->selectionBrush.Reset();
     this->impl_->dimBrush.Reset();
