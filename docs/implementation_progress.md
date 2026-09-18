@@ -1,14 +1,18 @@
 # Open-ST 实现进度
 
 更新时间：2026-09-19
-当前开发版本：`0.3.0`；已发布版本：[v0.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.2.0)。
+当前开发版本：`0.3.0`；已发布版本：[v0.3.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.3.0)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
 ## 2026-09-19 v0.3.0 发布
 
 - [x] 用户明确授权本次公开发布；范围为当前 v0.3.0 的截图标注、安装与更新等已实现内容。
 - [x] 发布说明列出未签名、既有 D-066 和未完成实机分支；仅发布 Setup、ZIP、SHA256SUMS，不上传开发机路径记录或用户数据。
-- [ ] 提交发行源码，从该提交的干净检出重建并核对三件资产；完成 GitHub 草稿上传和正式 Latest 发布后补记结果。
+- [x] 发行源码提交为 `1d1fe220723efb1db56b6994f4bfde81bc987dd3`，标签 `v0.3.0`；从该提交的独立干净检出构建，记录 `dirty=false`，没有纳入本地 `.gitignore` 改动。
+- [x] 三件资产上传后核对远端 SHA-256，与本地全部一致；GitHub Release 已正式公开并设为 Latest：[v0.3.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.3.0)。
+- Setup：26,329,836 字节，SHA-256 `16dc28c94b484b30ecef3d81c28fed3ad3a048888da1881ce6f5e63df87d3844`。
+- ZIP：669,112 字节，SHA-256 `e3ad350e8abe49b616288354a3ca4ca2c253714d7bc7944e88811fe863639615`。
+- 本次发布未修改产品逻辑，沿用已记录的 771 项回归与实机证据；从发行提交重新完成 Release／Setup／ZIP 构建与校验。未签名及所有后置验收限制已写入发行说明，发布不将这些项目标记为通过。
 
 ## 2026-09-18 安装与发布方案设计
 
