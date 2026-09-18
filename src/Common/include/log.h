@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <file_lease.h>
 #include <log_detail.h>
 
 #include <cstddef>
@@ -16,7 +17,8 @@ enum class LogCleanupStatus
     Completed,
     PartialFailure,
     Unavailable,
-    Cancelled
+    Cancelled,
+    Busy
 };
 
 struct LogCleanupResult
@@ -26,6 +28,7 @@ struct LogCleanupResult
     std::size_t failed{};
     std::size_t retained{};
     std::size_t alreadyMissing{};
+    FileLeaseError coordinationError{};
 };
 
 // 查询当前初始化日志服务所用目录，不创建目录或启动服务。
@@ -46,9 +49,14 @@ bool InitializeLogging() noexcept;
 // 返回：无返回值；保留已写日志，允许重复关闭。
 void ShutdownLogging() noexcept;
 // 停止日志输出并清理已识别的本程序日志，供退出清理流程调用。
+// 入参：error：可选错误输出，Busy 不应进入自动重试。
+// 返回：关闭和清理成功为 true；失败为 false，不删除其他文件或其他进程的活跃日志。
+bool ShutdownAndClearLogging(FileLeaseError* error = nullptr, std::size_t* retained = nullptr) noexcept;
+
+// 消费后台日志故障的去重通知，不触发日志写入或窗口。
 // 入参：无。
-// 返回：关闭和清理成功为 true；失败为 false，允许重试，不删除其他文件。
-bool ShutdownAndClearLogging() noexcept;
+// 返回：尚未消费的故障；无新故障为空。
+std::optional<FileLeaseError> ConsumeLoggingFailure() noexcept;
 } // namespace open_st
 
 // Release 中预处理器会完整移除 Debug 调用，传入表达式不会进入生成代码，也不会求值。

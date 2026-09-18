@@ -8,6 +8,7 @@ add_library(OpenST::Common ALIAS open_st_common)
 
 target_sources(open_st_common
     PRIVATE
+        source/file_lease.cpp
         source/json_file.cpp
         source/logger.cpp
         source/windows_util.cpp
@@ -17,6 +18,7 @@ target_sources(open_st_common
         FILE_SET HEADERS
         BASE_DIRS include
         FILES
+            include/file_lease.h
             include/json_file.h
             include/log.h
             include/log_detail.h

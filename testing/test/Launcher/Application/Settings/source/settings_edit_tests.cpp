@@ -3,6 +3,7 @@
 #include "json_file_test_access.h"
 #include "settings_edit.h"
 #include "settings_internal.h"
+#include <file_lease.h>
 #include <settings.h>
 
 #include <gtest/gtest.h>
@@ -381,4 +382,26 @@ TEST_F(SettingsEditTest, integer_to_float_external_change_blocks_entire_commit)
     EXPECT_EQ(this->ReadUser().at("settings").at("ui.language"), "en-US");
     EXPECT_EQ(this->ReadUser().at("settings").at("unknown"), 42);
 }
+// 验证文件忙不推进草稿基线，锁释放后必须显式提交同一草稿。
+// 入参：无。
+// 返回：GoogleTest 断言结果。
+TEST_F(SettingsEditTest, busy_commit_preserves_draft_and_baseline_for_explicit_retry)
+{
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}));
+    ASSERT_TRUE(session.ChangeString("ui.language", "ja-JP"));
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(this->root_ / "data/settings.json.lock", open_st::FileLeaseMode::Exclusive));
+    const auto before = this->ReadUser();
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Busy);
+    EXPECT_TRUE(session.IsDirty());
+    EXPECT_EQ(session.ReadString("ui.language"), "ja-JP");
+    EXPECT_EQ(this->ReadUser(), before);
+    lease.Reset();
+    EXPECT_EQ(this->ReadUser(), before);
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+    EXPECT_FALSE(session.IsDirty());
+    EXPECT_EQ(this->ReadUser()["settings"]["ui.language"], "ja-JP");
+}
+
 } // namespace

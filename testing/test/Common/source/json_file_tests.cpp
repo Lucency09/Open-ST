@@ -54,6 +54,7 @@ class ExclusiveFile final
     {
         return this->handle_ != INVALID_HANDLE_VALUE;
     }
+
   private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
 };
@@ -69,7 +70,7 @@ class JsonFileTest : public testing::Test
         open_st::Logger::Shutdown();
         const testing::TestInfo* info = testing::UnitTest::GetInstance()->current_test_info();
         this->root_ = std::filesystem::temp_directory_path() /
-            ("open_st_json_" + std::to_string(GetCurrentProcessId()) + "_" + info->name());
+                      ("open_st_json_" + std::to_string(GetCurrentProcessId()) + "_" + info->name());
         std::error_code error;
         std::filesystem::remove_all(this->root_, error);
         ASSERT_FALSE(error);
@@ -194,11 +195,12 @@ TEST_F(JsonFileTest, invalid_handles_and_arguments_fail_without_side_effects)
     // 无效入口必须在调用业务前失败。
     // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
     // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
-    EXPECT_FALSE(invalid.Write([&called](std::optional<nlohmann::json>&)
-    {
-        called = true;
-        return true;
-    }));
+    EXPECT_FALSE(invalid.Write(
+        [&called](std::optional<nlohmann::json>&)
+        {
+            called = true;
+            return true;
+        }));
     EXPECT_FALSE(called);
     const open_st::JsonFileHandle valid = this->Open(path);
     EXPECT_FALSE(valid.Write(open_st::JsonDocumentEditor{}));
@@ -224,12 +226,13 @@ TEST_F(JsonFileTest, invalid_external_update_preserves_output_and_rejects_writes
     // 损坏文档不交给编辑器，避免业务基于旧快照写回。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
-    EXPECT_FALSE(handle.Write([&called](std::optional<nlohmann::json>& document)
-    {
-        called = true;
-        document = nlohmann::json{{"known", 2}};
-        return true;
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&called](std::optional<nlohmann::json>& document)
+        {
+            called = true;
+            document = nlohmann::json{{"known", 2}};
+            return true;
+        }));
     EXPECT_FALSE(called);
     EXPECT_FALSE(handle.Write(nlohmann::json{{"known", 2}}));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), "{broken json");
@@ -293,11 +296,12 @@ TEST_F(JsonFileTest, inaccessible_changed_file_fails_without_running_editor)
         // 无法访问当前文件时不把旧内容提供给编辑器。
         // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
         // 返回：固定为 true；本用例期望此编辑器根本不会被调用。
-        EXPECT_FALSE(handle.Write([&called](std::optional<nlohmann::json>&)
-        {
-            called = true;
-            return true;
-        }));
+        EXPECT_FALSE(handle.Write(
+            [&called](std::optional<nlohmann::json>&)
+            {
+                called = true;
+                return true;
+            }));
         EXPECT_FALSE(called);
         EXPECT_FALSE(handle.Write(nlohmann::json{{"value", 0}}));
     }
@@ -315,15 +319,16 @@ TEST_F(JsonFileTest, create_creates_file_and_publishes_snapshot)
     // 仅缺失时填充默认内容，Common 不参与默认字段决策。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：文档已存在时为 false；缺失时填入默认文档并返回 true 允许提交。
-    ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
-    {
-        if (document.has_value())
+    ASSERT_TRUE(handle.Write(
+        [](std::optional<nlohmann::json>& document)
         {
-            return false;
-        }
-        document = nlohmann::json{{"created", true}};
-        return true;
-    }));
+            if (document.has_value())
+            {
+                return false;
+            }
+            document = nlohmann::json{{"created", true}};
+            return true;
+        }));
     nlohmann::json output;
     ASSERT_TRUE(handle.Read(output));
     EXPECT_TRUE(output.at("created").get<bool>());
@@ -371,15 +376,16 @@ TEST_F(JsonFileTest, create_never_overwrites_existing_file)
     // 文档已存在则由业务取消，不需要底层认识默认配置。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：文档已存在时为 false；缺失时填入默认文档并返回 true 允许提交。
-    EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>& document)
-    {
-        if (document.has_value())
+    EXPECT_FALSE(handle.Write(
+        [](std::optional<nlohmann::json>& document)
         {
-            return false;
-        }
-        document = nlohmann::json{{"owner", "application"}};
-        return true;
-    }));
+            if (document.has_value())
+            {
+                return false;
+            }
+            document = nlohmann::json{{"owner", "application"}};
+            return true;
+        }));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), original);
 }
 
@@ -394,11 +400,12 @@ TEST_F(JsonFileTest, update_preserves_unknown_values)
     // 编辑最新文档中的单个字段。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：true，允许 Common 继续执行候选文档的提交前检查。
-    ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
-    {
-        document.value()["settings"]["ui.language"] = "ja-JP";
-        return true;
-    }));
+    ASSERT_TRUE(handle.Write(
+        [](std::optional<nlohmann::json>& document)
+        {
+            document.value()["settings"]["ui.language"] = "ja-JP";
+            return true;
+        }));
     nlohmann::json output;
     ASSERT_TRUE(handle.Read(output));
     EXPECT_EQ(output.at("settings").at("ui.language").get<std::string>(), "ja-JP");
@@ -419,21 +426,23 @@ TEST_F(JsonFileTest, serializes_concurrent_updates)
         // 各线程复制轻量句柄，连续请求五次原子编辑。
         // 入参：无显式入参。
         // 返回：无返回值。
-        workers.emplace_back([handle]()
-        {
-            for (int updateIndex = 0; updateIndex < 5; ++updateIndex)
+        workers.emplace_back(
+            [handle]()
             {
-                // 读计数和改计数属于同一个被锁保护的编辑。
-                // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
-                // 返回：true，允许 Common 继续执行候选文档的提交前检查。
-                const bool updated = handle.Write([](std::optional<nlohmann::json>& document)
+                for (int updateIndex = 0; updateIndex < 5; ++updateIndex)
                 {
-                    document.value()["counter"] = document.value()["counter"].get<int>() + 1;
-                    return true;
-                });
-                EXPECT_TRUE(updated);
-            }
-        });
+                    // 读计数和改计数属于同一个被锁保护的编辑。
+                    // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
+                    // 返回：true，允许 Common 继续执行候选文档的提交前检查。
+                    const bool updated = handle.Write(
+                        [](std::optional<nlohmann::json>& document)
+                        {
+                            document.value()["counter"] = document.value()["counter"].get<int>() + 1;
+                            return true;
+                        });
+                    EXPECT_TRUE(updated);
+                }
+            });
     }
     for (std::thread& worker : workers)
     {
@@ -457,30 +466,33 @@ TEST_F(JsonFileTest, rejected_throwing_and_reset_editors_do_not_commit)
     // 修改候选值后主动拒绝提交。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：false，主动拒绝提交已修改的候选文档。
-    EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document)
-    {
-        ++calls;
-        document.value()["stable"] = 2;
-        return false;
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&calls](std::optional<nlohmann::json>& document)
+        {
+            ++calls;
+            document.value()["stable"] = 2;
+            return false;
+        }));
     // 修改候选值后抛异常，要求只执行一次且异常不穿过接口。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
-    EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document) -> bool
-    {
-        ++calls;
-        document.value()["stable"] = 3;
-        throw std::runtime_error("cancel edit");
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&calls](std::optional<nlohmann::json>& document) -> bool
+        {
+            ++calls;
+            document.value()["stable"] = 3;
+            throw std::runtime_error("cancel edit");
+        }));
     // 清空 optional 不是文件删除操作，只取消本次修改。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：true；但 optional 已被清空，Common 仍应取消提交。
-    EXPECT_FALSE(handle.Write([&calls](std::optional<nlohmann::json>& document)
-    {
-        ++calls;
-        document.reset();
-        return true;
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&calls](std::optional<nlohmann::json>& document)
+        {
+            ++calls;
+            document.reset();
+            return true;
+        }));
     EXPECT_EQ(calls, 3);
     EXPECT_EQ(JsonFileTest::ReadRaw(path), original);
     nlohmann::json output;
@@ -503,12 +515,13 @@ TEST_F(JsonFileTest, json_null_remains_a_present_document)
     // 对已有 null 进行普通业务结构替换。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：true，允许 Common 继续执行候选文档的提交前检查。
-    ASSERT_TRUE(handle.Write([&presentNull](std::optional<nlohmann::json>& document)
-    {
-        presentNull = document.has_value() && document->is_null();
-        document = nlohmann::json{{"converted", true}};
-        return true;
-    }));
+    ASSERT_TRUE(handle.Write(
+        [&presentNull](std::optional<nlohmann::json>& document)
+        {
+            presentNull = document.has_value() && document->is_null();
+            document = nlohmann::json{{"converted", true}};
+            return true;
+        }));
     EXPECT_TRUE(presentNull);
     ASSERT_TRUE(handle.Read(output));
     EXPECT_TRUE(output.at("converted").get<bool>());
@@ -528,19 +541,18 @@ TEST_F(JsonFileTest, unchanged_write_preserves_bytes_time_and_cleans_probe)
     // 不变更文档的编辑仍需检查写入前提。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：候选文档存在时为 true，否则为 false；不修改文档内容。
-    ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document)
-    {
-        return document.has_value();
-    }));
+    ASSERT_TRUE(handle.Write([](std::optional<nlohmann::json>& document) { return document.has_value(); }));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), original);
     EXPECT_EQ(std::filesystem::last_write_time(path), writeTime);
     std::size_t count = 0U;
     for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(this->root_))
     {
         ++count;
-        EXPECT_EQ(entry.path(), path);
+        // 稳定协调文件是正式状态，只有临时提交文件必须全部清除。
+        const std::filesystem::path lockPath = this->root_ / "unchanged.json.lock";
+        EXPECT_TRUE(entry.path() == path || entry.path() == lockPath);
     }
-    EXPECT_EQ(count, 1U);
+    EXPECT_EQ(count, 2U);
 }
 
 // 验证只读文件即使内容相同也写入失败，正常读取不受影响。
@@ -557,10 +569,7 @@ TEST_F(JsonFileTest, readonly_unchanged_write_fails_without_modifying_file)
     // 不变更的编辑不能绕过只读检查。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：候选文档存在时为 true，否则为 false；不修改文档内容。
-    EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>& document)
-    {
-        return document.has_value();
-    }));
+    EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>& document) { return document.has_value(); }));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), original);
     nlohmann::json output;
     ASSERT_TRUE(handle.Read(output));
@@ -578,13 +587,14 @@ TEST_F(JsonFileTest, external_creation_during_editor_is_not_overwritten)
     // 仅测试故意绕过 Common 模拟外部创建；产品编辑器不允许此类副作用。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：true，允许 Common 继续执行候选文档的提交前检查。
-    EXPECT_FALSE(handle.Write([&path, &external](std::optional<nlohmann::json>& document)
-    {
-        EXPECT_FALSE(document.has_value());
-        JsonFileTest::WriteRaw(path, external);
-        document = nlohmann::json{{"owner", "application"}};
-        return true;
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&path, &external](std::optional<nlohmann::json>& document)
+        {
+            EXPECT_FALSE(document.has_value());
+            JsonFileTest::WriteRaw(path, external);
+            document = nlohmann::json{{"owner", "application"}};
+            return true;
+        }));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), external);
     nlohmann::json output;
     ASSERT_TRUE(handle.Read(output));
@@ -603,12 +613,13 @@ TEST_F(JsonFileTest, external_change_during_editor_is_not_overwritten)
     // 只在测试中模拟其他进程写入，不经同一锁重入。
     // 入参：document 为锁内可编辑的候选 JSON 文档；空 optional 表示文件缺失，修改不会直接写盘。
     // 返回：true，允许 Common 继续执行候选文档的提交前检查。
-    EXPECT_FALSE(handle.Write([&path, &external](std::optional<nlohmann::json>& document)
-    {
-        JsonFileTest::WriteRaw(path, external);
-        document.value()["owner"] = "application";
-        return true;
-    }));
+    EXPECT_FALSE(handle.Write(
+        [&path, &external](std::optional<nlohmann::json>& document)
+        {
+            JsonFileTest::WriteRaw(path, external);
+            document.value()["owner"] = "application";
+            return true;
+        }));
     EXPECT_EQ(JsonFileTest::ReadRaw(path), external);
     nlohmann::json output;
     ASSERT_TRUE(handle.Read(output));
@@ -680,9 +691,7 @@ TEST_F(JsonFileTest, failures_log_diagnostics_without_document_or_exception_cont
     // 入参：未命名 optional<json> 引用为 Common 交付的可编辑文档；本回调只检测调用或注入异常。
     // 返回：不正常返回；主动抛出测试异常，交由被测边界处理。
     EXPECT_FALSE(handle.Write([](std::optional<nlohmann::json>&) -> bool
-    {
-        throw std::runtime_error("SECRET_EXCEPTION_CONTENT_762");
-    }));
+                              { throw std::runtime_error("SECRET_EXCEPTION_CONTENT_762"); }));
     open_st::Logger::Shutdown();
     std::string logs;
     for (const std::filesystem::directory_entry& entry :

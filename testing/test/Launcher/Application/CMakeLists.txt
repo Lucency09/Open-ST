@@ -9,6 +9,7 @@ add_subdirectory(Graphics)
 add_subdirectory(Hotkeys)
 add_subdirectory(Settings)
 add_subdirectory(SystemIntegration)
+add_subdirectory(Update)
 
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp
     source/diagnostic_text_tests.cpp)
@@ -79,3 +80,17 @@ target_include_directories(open_st_annotation_text_integration_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Common/WindowRenderer/private")
 gtest_discover_tests(open_st_annotation_text_integration_tests TEST_PREFIX "application."
     PROPERTIES LABELS "application;integration" TIMEOUT 45)
+
+# 真实关于窗口和确认交互；独立工厂替身确保没有网络、浏览器或安装器执行。
+add_executable(open_st_about_update_integration_tests source/about_update_integration_tests.cpp)
+target_link_libraries(open_st_about_update_integration_tests PRIVATE OpenST::Application OpenST::Update
+    OpenST::Localization OpenST::WindowRenderer OpenST::Common GTest::gtest_main)
+target_include_directories(open_st_about_update_integration_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Update/private"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Localization/private"
+    "${PROJECT_SOURCE_DIR}/src/Common/private")
+target_link_options(open_st_about_update_integration_tests PRIVATE
+    "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
+gtest_discover_tests(open_st_about_update_integration_tests TEST_PREFIX "application."
+    PROPERTIES LABELS "application;integration" TIMEOUT 20 RUN_SERIAL TRUE)

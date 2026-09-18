@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <json_file.h>
+#include <settings.h>
 
 namespace open_st
 {
@@ -19,7 +20,8 @@ namespace open_st
 // 允许测试注入隔离应用目录；产品代码使用无参数 InitializeSettings()，不公开测试路径接口。
 // 入参：applicationDirectory 为应用根目录，其 resources 和 data 子目录分别保存资源与用户设置。
 // 返回：默认设置可用且业务状态初始化成功时为 true；失败为 false。用户文件不可持久化通过独立状态查询报告。
-[[nodiscard]] bool InitializeSettings(const std::filesystem::path& applicationDirectory) noexcept;
+[[nodiscard]] bool InitializeSettings(const std::filesystem::path& applicationDirectory,
+                                      SettingsWriteError* error = nullptr) noexcept;
 // 复制初始化时的用户和默认句柄供私有编辑会话使用，失败不改变输出。
 // 入参：userFile 输出用户设置文件句柄；defaultFile 输出默认资源句柄；二者共享 Common 管理的文件状态。
 // 返回：业务已初始化并复制两个句柄时为 true；未初始化时为 false 且输出保持原值。

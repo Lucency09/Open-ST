@@ -482,6 +482,16 @@ D3D11 能满足 60 FPS、HDR 图面和低延迟呈现目标，因此首版不使
 
 它们可快速完成基本截图与绘制，但对高 DPI、GPU 合成、透明效果、HDR、复杂标注和持续 60 FPS 的扩展能力不如 D3D11 + Direct2D。GDI 可作为极端兼容或诊断路径，但不作为主渲染架构。
 
+### 安装、共享数据与更新
+
+安装版与便携版共用程序二进制及发行清单，打包时在各自 `resources/default_settings.json` 写入 `distribution.mode`；Application 通过既有 `GetDefaultStringSetting()` 查询，不从用户配置或注册表猜测更新方式。
+
+Common 的 FileLease 为 JSON 完整读改写事务与 Logger 提供跨进程立即尝试，Busy 由上层公共 MessageDialog 提示；同一日志文件由一个活动进程独占，清理保留其他活动文件。SystemIntegration 复用该租约形成运行共享／维护独占，App 在语言、设置和日志读取之前取得，并在退出资源回收后释放。
+
+Application/Update 是独立子模块，拥有版本／Release 校验、WinHTTP 可取消任务、SHA-256 核验和受保护下载文件。关于窗口仅使用 WindowRenderer 适配查询、确认和进度；安装版确认后下载并由 SystemIntegration 打开 Setup，便携版确认后由宿主打开固定发行页。网络线程不创建窗口，不执行安装器，不读取 Settings 私有数据。
+
+构建脚本 `-Package`／`-Installer` 消费同一个已核验 Release 清单，派生两种资源模式并分别计算哈希。安装器负责登记、权限、资源备份及数据保留；生成本地候选包不表示已对外发布。详细交互、范围和已验证边界见[安装发布方案](design/install-release-v0.3.md)及[实现进度](implementation_progress.md)。
+
 ## 4. 关键数据流
 
 ### 4.1 一次截图会话

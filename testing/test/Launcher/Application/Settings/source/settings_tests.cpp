@@ -1,5 +1,6 @@
 // 验证动态设置的类型访问、默认值合并、持久化与外部文件故障处理。
 
+#include <file_lease.h>
 #include <settings.h>
 
 #include "json_file_test_access.h"
@@ -431,4 +432,48 @@ TEST_F(SettingsTest, default_integer_and_invalid_user_source_are_distinct)
     EXPECT_FALSE(open_st::GetDefaultIntegerSetting("quality"));
     EXPECT_FALSE(open_st::ConsumeSettingsReadWarning());
 }
+// 验证发行模式只来自默认资源，新用户配置不保存该资源字段。
+// 入参：无。
+// 返回：GoogleTest 断言结果。
+TEST_F(SettingsTest, distribution_mode_is_resource_only_for_new_and_existing_user_files)
+{
+    this->WriteRaw(this->root_ / "resources/default_settings.json",
+                   R"({"schemaVersion":1,"settings":{"ui.language":"en-US","distribution.mode":"installed"}})");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const auto userPath = this->root_ / "data/settings.json";
+    EXPECT_FALSE(nlohmann::json::parse(this->ReadRaw(userPath))["settings"].contains("distribution.mode"));
+    EXPECT_EQ(open_st::GetDefaultStringSetting("distribution.mode"), "installed");
+    this->WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"distribution.mode":"portable"}})");
+    const auto before = this->ReadRaw(userPath);
+    EXPECT_EQ(open_st::GetDefaultStringSetting("distribution.mode"), "installed");
+    EXPECT_EQ(this->ReadRaw(userPath), before);
+    EXPECT_FALSE(std::filesystem::exists(this->root_ / "resources/default_settings.json.lock"));
+}
+
+// 验证初始化和直接写接口准确返回 Busy，手动新操作成功后清除该次错误输出。
+// 入参：无。
+// 返回：GoogleTest 断言结果。
+TEST_F(SettingsTest, initialization_and_direct_writes_report_busy_without_changing_settings)
+{
+    this->WriteDefault();
+    this->WriteRaw(this->root_ / "data/settings.json", R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(this->root_ / "data/settings.json.lock", open_st::FileLeaseMode::Exclusive));
+    open_st::SettingsWriteError error;
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_, &error));
+    EXPECT_EQ(error, open_st::SettingsWriteError::Busy);
+    EXPECT_FALSE(open_st::IsSettingsPersistenceAvailable());
+    EXPECT_FALSE(open_st::SetStringSetting("ui.language", "ja-JP", &error));
+    EXPECT_EQ(error, open_st::SettingsWriteError::Busy);
+    EXPECT_FALSE(open_st::SetBoolSetting("startup.enabled", false, &error));
+    EXPECT_EQ(error, open_st::SettingsWriteError::Busy);
+    EXPECT_FALSE(open_st::SetIntegerSetting("export.jpeg_quality", 75, &error));
+    EXPECT_EQ(error, open_st::SettingsWriteError::Busy);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    lease.Reset();
+    EXPECT_TRUE(open_st::SetStringSetting("ui.language", "ja-JP", &error));
+    EXPECT_EQ(error, open_st::SettingsWriteError::None);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+}
+
 } // namespace

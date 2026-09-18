@@ -43,7 +43,7 @@ class Logger final
     // 停止日志服务并删除已识别的本程序日志文件。
     // 入参：无。
     // 返回：关闭及清理成功时为 true；清理失败时为 false，可再次重试，非本程序文件不删除。
-    static bool ShutdownAndClear() noexcept;
+    static bool ShutdownAndClear(FileLeaseError* error = nullptr, std::size_t* retained = nullptr) noexcept;
     // 把已格式化日志正文及可选源码位置交给进程日志服务。
     // 入参：level：日志级别；message：调用期间借用的已格式化正文；sourceFile：可为空的源码路径；sourceLine：源码行号，无位置时为
     // 0。

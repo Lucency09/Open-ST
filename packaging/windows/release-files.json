@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "launcherFiles": ["Open-ST.exe", "resources/ui_text.json", "resources/default_settings.json", "resources/setting_windows.json"],
+  "repositoryFiles": ["LICENSE.txt", "THIRD_PARTY_NOTICES.txt", "packaging/windows/RELEASE-NOTES.txt"],
+  "repositoryDirectories": ["licenses"]
+}

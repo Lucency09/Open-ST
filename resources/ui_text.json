@@ -940,6 +940,146 @@
       "zh-CN": "方块边长（物理像素）：4 细 / 8 中 / 16 粗 / 32 很粗",
       "en-US": "Block size (physical pixels): 4 fine / 8 medium / 16 coarse / 32 extra coarse",
       "ja-JP": "ブロック幅（物理ピクセル）：4細かい / 8中 / 16粗い / 32最も粗い"
+    },
+    "update.check": {
+      "zh-CN": "检查更新",
+      "en-US": "Check for updates",
+      "ja-JP": "更新を確認"
+    },
+    "update.title": {
+      "zh-CN": "软件更新",
+      "en-US": "Software update",
+      "ja-JP": "ソフトウェア更新"
+    },
+    "update.cancel_download": {
+      "zh-CN": "取消更新",
+      "en-US": "Cancel update",
+      "ja-JP": "更新をキャンセル"
+    },
+    "update.checking": {
+      "zh-CN": "正在检查最新正式版本…",
+      "en-US": "Checking the latest release…",
+      "ja-JP": "最新の正式版を確認しています…"
+    },
+    "update.downloading": {
+      "zh-CN": "正在下载安装包：{percent}%",
+      "en-US": "Downloading installer: {percent}%",
+      "ja-JP": "インストーラーをダウンロード中：{percent}%"
+    },
+    "update.cancelled": {
+      "zh-CN": "更新操作已取消。",
+      "en-US": "Update cancelled.",
+      "ja-JP": "更新をキャンセルしました。"
+    },
+    "update.current": {
+      "zh-CN": "当前已是最新版本。",
+      "en-US": "You are running the latest release.",
+      "ja-JP": "最新バージョンです。"
+    },
+    "update.local_ahead": {
+      "zh-CN": "当前版本高于线上正式版本，无需降级。",
+      "en-US": "Your version is newer than the published release. No downgrade is needed.",
+      "ja-JP": "使用中のバージョンは公開正式版より新しいため、ダウングレードは不要です。"
+    },
+    "update.confirm_install": {
+      "zh-CN": "当前版本：{current}\n最新版本：{latest}\n\n是否下载并打开新版安装程序？安装前请保存工作，并从托盘退出 Open-ST。",
+      "en-US": "Current version: {current}\nLatest version: {latest}\n\nDownload and open the installer? Save your work and exit Open-ST from the tray before installing.",
+      "ja-JP": "現在：{current}\n最新：{latest}\n\nインストーラーをダウンロードして開きますか？インストール前に作業を保存し、トレイから Open-ST を終了してください。"
+    },
+    "update.confirm_portable": {
+      "zh-CN": "当前版本：{current}\n最新版本：{latest}\n\n是否打开新版发布页？请下载 ZIP，退出旧程序后解压覆盖程序文件，并保留 data 目录。",
+      "en-US": "Current version: {current}\nLatest version: {latest}\n\nOpen the release page? Download the ZIP, exit the old app and replace program files while keeping the data folder.",
+      "ja-JP": "現在：{current}\n最新：{latest}\n\nリリースページを開きますか？ZIP をダウンロードし、旧アプリを終了後、data を保持してプログラムを置き換えてください。"
+    },
+    "update.portable_instructions": {
+      "zh-CN": "已请求打开发布页，请自行下载 ZIP，退出程序后覆盖并保留 data。",
+      "en-US": "Release page opened. Download the ZIP, exit the app, and replace program files while keeping data.",
+      "ja-JP": "リリースページを開きました。ZIP を取得し、終了後に data を保持して更新してください。"
+    },
+    "update.installer_opened": {
+      "zh-CN": "安装程序已打开；开始安装前请从托盘退出 Open-ST。",
+      "en-US": "Installer opened. Exit Open-ST from the tray before installing.",
+      "ja-JP": "インストーラーを開きました。インストール前にトレイから Open-ST を終了してください。"
+    },
+    "update.configuration_error": {
+      "zh-CN": "发行模式或版本配置无效，无法检查更新。",
+      "en-US": "Distribution mode or version configuration is invalid.",
+      "ja-JP": "配布形式またはバージョンの設定が無効です。"
+    },
+    "update.timeout": {
+      "zh-CN": "更新请求超时，请稍后手动重试。",
+      "en-US": "The update request timed out. Please retry later.",
+      "ja-JP": "更新要求がタイムアウトしました。後で再試行してください。"
+    },
+    "update.not_found": {
+      "zh-CN": "未找到可用的正式发行版。",
+      "en-US": "No usable official release was found.",
+      "ja-JP": "利用可能な正式リリースが見つかりません。"
+    },
+    "update.rate_limited": {
+      "zh-CN": "服务器拒绝或限制了请求，请稍后手动重试。",
+      "en-US": "The server denied or rate-limited the request. Please retry later.",
+      "ja-JP": "サーバーが要求を拒否したか回数を制限しました。後で再試行してください。"
+    },
+    "update.invalid_release": {
+      "zh-CN": "发行信息无效，更新操作已停止。",
+      "en-US": "Release information is invalid. Update stopped.",
+      "ja-JP": "リリース情報が無効なため更新を停止しました。"
+    },
+    "update.missing_package": {
+      "zh-CN": "发现新版，但对应发行包或校验信息尚未就绪。",
+      "en-US": "A new release exists, but its package or integrity information is not ready.",
+      "ja-JP": "新しいリリースがありますが、パッケージまたは検証情報が未準備です。"
+    },
+    "update.integrity_error": {
+      "zh-CN": "安装包长度或 SHA-256 校验失败，未启动安装程序。",
+      "en-US": "Installer size or SHA-256 validation failed. Nothing was launched.",
+      "ja-JP": "サイズまたは SHA-256 検証に失敗しました。実行していません。"
+    },
+    "update.storage_error": {
+      "zh-CN": "无法安全创建或写入更新缓存，未启动安装程序。",
+      "en-US": "Cannot safely create or write the update cache. Nothing was launched.",
+      "ja-JP": "更新キャッシュを安全に作成または書き込めないため実行していません。"
+    },
+    "update.file_busy": {
+      "zh-CN": "更新文件正被其他进程使用，本次操作已停止，请稍后重试。",
+      "en-US": "Update files are in use. This operation stopped; please retry later.",
+      "ja-JP": "更新ファイルが使用中です。処理を停止しました。後で再試行してください。"
+    },
+    "update.network_error": {
+      "zh-CN": "检查或下载更新失败，请检查网络后手动重试。",
+      "en-US": "Update check or download failed. Check your connection and retry.",
+      "ja-JP": "更新の確認またはダウンロードに失敗しました。接続を確認して再試行してください。"
+    },
+    "update.operation_failed": {
+      "zh-CN": "无法开始更新操作。",
+      "en-US": "Cannot start the update operation.",
+      "ja-JP": "更新処理を開始できません。"
+    },
+    "update.open_failed": {
+      "zh-CN": "系统未能打开发布页或安装程序，未完成更新。",
+      "en-US": "The system could not open the release page or installer. Update was not completed.",
+      "ja-JP": "リリースページまたはインストーラーを開けません。更新は完了していません。"
+    },
+    "settings.file_busy": {
+      "zh-CN": "设置文件正被其他进程使用，本次操作未完成。编辑内容已保留，请稍后重试。",
+      "en-US": "The settings file is being used by another process. This operation was not completed. Your edits have been kept; please try again later.",
+      "ja-JP": "設定ファイルは別のプロセスで使用されています。処理は完了していません。編集内容は保持されています。しばらくしてから再試行してください。"
+    },
+    "logging.file_busy": {
+      "zh-CN": "日志目录正被其他进程使用，本次操作未完成，请稍后重试。",
+      "en-US": "The log directory is in use by another process. This operation was not completed. Please retry later.",
+      "ja-JP": "ログディレクトリは別のプロセスが使用中です。処理は完了していません。後で再試行してください。"
+    },
+    "logging.write_failed": {
+      "zh-CN": "日志操作失败，其他功能可继续使用。",
+      "en-US": "A logging operation failed. Other features remain available.",
+      "ja-JP": "ログ操作に失敗しました。他の機能は引き続き利用できます。"
+    },
+    "logging.retained": {
+      "zh-CN": "已保留其他进程正在使用的 {count} 个日志文件。",
+      "en-US": "Kept {count} log files that are in use by other processes.",
+      "ja-JP": "他のプロセスが使用中のログ {count} 件を保持しました。"
     }
   }
 }

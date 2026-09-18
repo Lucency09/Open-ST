@@ -9,6 +9,12 @@
 
 namespace open_st
 {
+enum class SettingsWriteError
+{
+    None,
+    Busy,
+    Failed
+};
 // 在完整设置初始化前只读启动语言，不创建用户配置。
 // 入参：无显式入参。
 // 返回：有效的启动语言代码；用户值无效时回退默认资源，两者均不可用时为 std::nullopt。
@@ -16,7 +22,7 @@ namespace open_st
 // 读取默认设置并检查用户设置；仅在用户文件缺失时安全创建默认文档。
 // 入参：无显式入参。
 // 返回：默认设置可用且业务状态初始化成功时为 true；失败为 false。用户文件不可持久化通过独立状态查询报告。
-[[nodiscard]] bool InitializeSettings() noexcept;
+[[nodiscard]] bool InitializeSettings(SettingsWriteError* error = nullptr) noexcept;
 // 释放设置业务持有的句柄，不干预 Common 内部缓存生命周期。
 // 入参：无显式入参。
 // 返回：无返回值。
@@ -62,13 +68,15 @@ void ShutdownSettings() noexcept;
 // 只更新指定动态 key，并保留文档中的其他设置和未知字段。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的字符串值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-[[nodiscard]] bool SetStringSetting(std::string_view key, std::string_view value) noexcept;
+[[nodiscard]] bool SetStringSetting(std::string_view key, std::string_view value,
+                                    SettingsWriteError* error = nullptr) noexcept;
 // 修改指定布尔设置并保留未知字段；失败不提交修改。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的布尔值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-[[nodiscard]] bool SetBoolSetting(std::string_view key, bool value) noexcept;
+[[nodiscard]] bool SetBoolSetting(std::string_view key, bool value, SettingsWriteError* error = nullptr) noexcept;
 // 修改指定整数设置并保留未知字段；失败不提交修改。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的有符号整数值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-[[nodiscard]] bool SetIntegerSetting(std::string_view key, std::int64_t value) noexcept;
+[[nodiscard]] bool SetIntegerSetting(std::string_view key, std::int64_t value,
+                                     SettingsWriteError* error = nullptr) noexcept;
 } // namespace open_st

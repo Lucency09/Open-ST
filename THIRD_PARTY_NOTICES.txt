@@ -5,3 +5,18 @@ Copyright (c) 2013-2025 Niels Lohmann
 License: MIT
 Full license text: licenses/nlohmann-json.txt
 
+Inno Setup 6.7.3 (Windows Setup runtime; the compiler is a build-only tool)
+Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+Source: https://github.com/jrsoftware/issrc/releases/tag/is-6_7_3
+Website: https://jrsoftware.org/
+Full original license text: licenses/inno-setup.txt
+The portable ZIP does not contain the Inno Setup compiler or installer runtime.
+
+Microsoft Visual C++ 2015-2022 Redistributable (x64), 14.44.35211.0
+The Windows Setup embeds the unmodified Microsoft-signed redistributable installer.
+Its Microsoft license terms remain available in the original installer.
+The runtime is installed only when required and after explicit user consent.
+The portable ZIP does not bundle or install this redistributable.
+Official information: https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
+Official installer: https://aka.ms/vs/17/release/vc_redist.x64.exe

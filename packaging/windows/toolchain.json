@@ -1,0 +1,11 @@
+{
+  "innoSetupVersion": "6.7.3",
+  "innoSetupSource": "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe",
+  "innoSetupInstallerSha256": "9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732",
+  "redistributable": {
+    "version": "14.44.35211.0",
+    "sha256": "CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B",
+    "source": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+    "publisher": "Microsoft Corporation"
+  }
+}

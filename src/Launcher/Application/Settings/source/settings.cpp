@@ -56,9 +56,11 @@ class SettingsState final
     // 取得两个具名 JSON 句柄，并且只在用户文件确实不存在时从默认文档创建它。
     // 入参：applicationDirectory 为应用根目录，其 resources 和 data 子目录分别保存资源与用户设置。
     // 返回：默认设置可用且业务状态初始化成功时为 true；失败为 false。用户文件不可持久化通过独立状态查询报告。
-    bool Initialize(const std::filesystem::path& applicationDirectory) noexcept
+    bool Initialize(const std::filesystem::path& applicationDirectory, open_st::SettingsWriteError* error) noexcept
     {
         this->Shutdown();
+        if (error != nullptr)
+            *error = open_st::SettingsWriteError::Failed;
         try
         {
             open_st::JsonFileHandle defaultFile = open_st::JsonFileManager::Instance().GetFile(
@@ -77,6 +79,7 @@ class SettingsState final
                 return false;
             }
 
+            open_st::JsonFileError writeError;
             const bool persistenceAvailable = userFile.Write(
                 // 仅缺失时填入默认设置；已有文档不改写，但仍由 Common 检查安全写入前提。
                 // 入参：document 为 Common 锁内候选用户文档，缺失时填入捕获的默认文档。
@@ -86,6 +89,8 @@ class SettingsState final
                     if (!document.has_value())
                     {
                         document = defaultDocument;
+                        // 发行标识属于只读资源，不复制为可编辑用户偏好。
+                        (*document)["settings"].erase("distribution.mode");
                     }
                     if (!IsSettingsDocument(*document))
                     {
@@ -93,7 +98,12 @@ class SettingsState final
                         return false;
                     }
                     return true;
-                });
+                },
+                &writeError);
+            if (error != nullptr)
+                *error = persistenceAvailable                                  ? open_st::SettingsWriteError::None
+                         : writeError.code == open_st::JsonFileErrorCode::Busy ? open_st::SettingsWriteError::Busy
+                                                                               : open_st::SettingsWriteError::Failed;
 
             const std::scoped_lock<std::mutex> lock(this->mutex_);
             this->defaultFile_ = std::move(defaultFile);
@@ -284,14 +294,16 @@ class SettingsState final
     // 更新动态字符串 key；编辑写入会先检查外部变化并保留未知字段。
     // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的字符串值。
     // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-    bool SetString(std::string_view key, std::string_view value) noexcept
+    bool SetString(std::string_view key, std::string_view value, open_st::SettingsWriteError* error) noexcept
     {
         try
         {
-            return this->SetValue(key, std::string(value));
+            return this->SetValue(key, std::string(value), error);
         }
         catch (...)
         {
+            if (error != nullptr)
+                *error = open_st::SettingsWriteError::Failed;
             OPEN_ST_LOG_ERROR("The string setting could not be prepared for writing.");
             return false;
         }
@@ -300,17 +312,17 @@ class SettingsState final
     // 更新动态布尔 key。
     // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的布尔值。
     // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-    bool SetBoolean(std::string_view key, bool value) noexcept
+    bool SetBoolean(std::string_view key, bool value, open_st::SettingsWriteError* error) noexcept
     {
-        return this->SetValue(key, value);
+        return this->SetValue(key, value, error);
     }
 
     // 更新动态整数 key。
     // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的有符号整数值。
     // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-    bool SetInteger(std::string_view key, std::int64_t value) noexcept
+    bool SetInteger(std::string_view key, std::int64_t value, open_st::SettingsWriteError* error) noexcept
     {
-        return this->SetValue(key, value);
+        return this->SetValue(key, value, error);
     }
 
   private:
@@ -403,8 +415,11 @@ class SettingsState final
     // 在 Common 编辑锁保护下修改单个动态设置并更新持久化状态。
     // 入参：key 为 settings 对象中的动态设置属性名。value 为新设置值；模板 Value 为该值的类型。
     // 返回：最新有效文档中的字段写入成功为 true；参数、状态、读取、结构或写入失败为 false。
-    template <typename Value> bool SetValue(std::string_view key, Value value) noexcept
+    template <typename Value>
+    bool SetValue(std::string_view key, Value value, open_st::SettingsWriteError* error) noexcept
     {
+        if (error != nullptr)
+            *error = open_st::SettingsWriteError::Failed;
         try
         {
             if (key.empty())
@@ -417,6 +432,7 @@ class SettingsState final
                 return false;
             }
             const std::string ownedKey(key);
+            open_st::JsonFileError writeError;
             const bool updated = this->userFile_.Write(
                 // 只修改已有且业务结构合法的文档，不在字段修改时重建缺失配置。
                 // 入参：document 为 Common 提供的锁内候选文档；字段名和新值由回调捕获持有。
@@ -429,7 +445,12 @@ class SettingsState final
                     }
                     (*document)["settings"][ownedKey] = value;
                     return true;
-                });
+                },
+                &writeError);
+            if (error != nullptr)
+                *error = updated                                               ? open_st::SettingsWriteError::None
+                         : writeError.code == open_st::JsonFileErrorCode::Busy ? open_st::SettingsWriteError::Busy
+                                                                               : open_st::SettingsWriteError::Failed;
             if (updated)
             {
                 this->persistenceAvailable_ = true;
@@ -493,12 +514,14 @@ bool ReadSettingsLayout(nlohmann::json& document) noexcept
 // 以可执行文件目录为基准初始化正式运行时设置。
 // 入参：无显式入参。
 // 返回：默认设置可用且业务状态初始化成功时为 true；失败为 false。用户文件不可持久化通过独立状态查询报告。
-bool InitializeSettings() noexcept
+bool InitializeSettings(SettingsWriteError* error) noexcept
 {
+    if (error != nullptr)
+        *error = SettingsWriteError::Failed;
     try
     {
         const std::filesystem::path applicationDirectory = GetExecutableDirectory();
-        return !applicationDirectory.empty() && InitializeSettings(applicationDirectory);
+        return !applicationDirectory.empty() && InitializeSettings(applicationDirectory, error);
     }
     catch (...)
     {
@@ -509,9 +532,9 @@ bool InitializeSettings() noexcept
 // 以调用者提供的目录初始化设置，供隔离测试使用。
 // 入参：applicationDirectory 为应用根目录，其 resources 和 data 子目录分别保存资源与用户设置。
 // 返回：默认设置可用且业务状态初始化成功时为 true；失败为 false。用户文件不可持久化通过独立状态查询报告。
-bool InitializeSettings(const std::filesystem::path& applicationDirectory) noexcept
+bool InitializeSettings(const std::filesystem::path& applicationDirectory, SettingsWriteError* error) noexcept
 {
-    return GetSettingsState().Initialize(applicationDirectory);
+    return GetSettingsState().Initialize(applicationDirectory, error);
 }
 
 // 关闭设置状态并释放 JSON 句柄。
@@ -589,25 +612,25 @@ std::optional<std::int64_t> GetDefaultIntegerSetting(std::string_view key) noexc
 // 通过动态 key 写入字符串设置。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的字符串值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-bool SetStringSetting(std::string_view key, std::string_view value) noexcept
+bool SetStringSetting(std::string_view key, std::string_view value, SettingsWriteError* error) noexcept
 {
-    return GetSettingsState().SetString(key, value);
+    return GetSettingsState().SetString(key, value, error);
 }
 
 // 通过动态 key 写入布尔设置。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的布尔值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-bool SetBoolSetting(std::string_view key, bool value) noexcept
+bool SetBoolSetting(std::string_view key, bool value, SettingsWriteError* error) noexcept
 {
-    return GetSettingsState().SetBoolean(key, value);
+    return GetSettingsState().SetBoolean(key, value, error);
 }
 
 // 通过动态 key 写入整数设置。
 // 入参：key 为 settings 对象中的动态设置属性名。value 为要持久化的有符号整数值。
 // 返回：字段成功写入或安全核验无变化时为 true；参数、读取、文档结构或写入失败为 false。
-bool SetIntegerSetting(std::string_view key, std::int64_t value) noexcept
+bool SetIntegerSetting(std::string_view key, std::int64_t value, SettingsWriteError* error) noexcept
 {
-    return GetSettingsState().SetInteger(key, value);
+    return GetSettingsState().SetInteger(key, value, error);
 }
 // 启动前只读用户语言，用户值无效时回退资源默认值。
 // 入参：applicationDirectory 为应用根目录，其 resources 和 data 子目录分别保存资源与用户设置。

@@ -1,3 +1,4 @@
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     配置并构建 Open-ST。
@@ -38,11 +39,18 @@ param(
     [switch]$EnableTranslation,
 
     # 把干净的 Release 运行目录再复制到版本化 artifacts 目录。
-    [switch]$Package
+    [switch]$Package,
+
+    # 从相同 Release 结果生成标准 Windows 安装器。
+    [switch]$Installer,
+    [string]$InnoSetupCompiler,
+    [string]$VcRedistributable,
+    [string]$VisualStudioPath
 )
 
 # 任意 PowerShell 错误都立即终止脚本，防止失败后继续打包不完整产物。
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release_helpers.ps1')
 
 # PSScriptRoot 是 scripts/ 所在位置，因此它的父目录就是项目根目录。
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -53,53 +61,9 @@ $releaseStagingDir = Join-Path $buildRoot '.release-staging'
 $buildDir = if ($Configuration -eq 'Release') { $releaseWorkDir } else { Join-Path $buildRoot $Configuration }
 $vcpkgCacheRoot = Join-Path $projectRoot '.cache\vcpkg_installed\x64-windows'
 
-# 校验文件操作目标位于指定根目录之下，限制递归清理范围。
-# 入参：Root 为允许的根目录；Candidate 为待验证的目标路径。
-# 返回：规范化的绝对目标路径；目标不属于根目录子路径时抛出异常。
-function Get-VerifiedChildPath {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Root,
-
-        [Parameter(Mandatory)]
-        [string]$Candidate
-    )
-
-    $resolvedRoot = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar) +
-        [IO.Path]::DirectorySeparatorChar
-    $resolvedCandidate = [IO.Path]::GetFullPath($Candidate)
-    if (-not $resolvedCandidate.StartsWith($resolvedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "路径超出预期范围，拒绝操作：$resolvedCandidate"
-    }
-    return $resolvedCandidate
+if (($Package -or $Installer) -and $Configuration -ne 'Release') {
+    throw '-Package 与 -Installer 只能与 -Configuration Release 一起使用。'
 }
-
-# 将源目录内的文件及子目录复制到目标目录，整理运行或发布文件。
-# 入参：Source 为源目录；Destination 为目标目录，已有同名文件允许覆盖。
-# 返回：无管道返回值；复制源目录的直接子项并递归处理其内容，错误按脚本错误策略处理。
-function Copy-DirectoryContents {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Source,
-
-        [Parameter(Mandatory)]
-        [string]$Destination
-    )
-
-    foreach ($item in Get-ChildItem -LiteralPath $Source -Force) {
-        Copy-Item -LiteralPath $item.FullName -Destination $Destination -Recurse -Force
-    }
-}
-
-if ($Package -and $Configuration -ne 'Release') {
-    throw '-Package 只能与 -Configuration Release 一起使用。'
-}
-
-# 当前开发机使用 Visual Studio 自带的 CMake、Ninja 和 MSVC 环境脚本。
-# 后续若需要支持不同安装位置，应改为通过 vswhere.exe 自动发现，而不是再增加硬编码路径。
-$vsRoot = 'D:\Program Files (x86)\Visual Studio\2022\Community'
-$cmake = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
-$vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
 
 # -Clean 是独立的终止型操作，只负责清理当前 Configuration 对应的构建目录。
 # 删除前先转换为绝对路径并验证前缀，避免路径拼接错误导致误删其他目录。
@@ -124,6 +88,13 @@ if ($Clean) {
     # 明确返回，保证 -Clean 不会继续配置、编译或打包。
     return
 }
+$vsRoot = Find-ReleaseVisualStudio -Explicit $VisualStudioPath
+$cmake = Join-Path $vsRoot 'Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/cmake.exe'
+$vcvars = Join-Path $vsRoot 'VC/Auxiliary/Build/vcvars64.bat'
+$installerTools = if ($Installer) {
+    Resolve-InstallerInputs -Repository $projectRoot -Compiler $InnoSetupCompiler -Redist $VcRedistributable -VisualStudio $vsRoot
+} else { $null }
+
 # 把命令行功能开关映射为 vcpkg.json 中同名的可选 feature。
 # nlohmann/json 是本地化与设置文件的基础依赖，不受可选 feature 控制。
 $manifestFeatures = [Collections.Generic.List[string]]::new()
@@ -200,23 +171,9 @@ if ($Configuration -eq 'Release') {
     New-Item -ItemType Directory -Path $verifiedStagingDir | Out-Null
 
     try {
-        $launcherBuildDir = Join-Path $verifiedWorkDir 'src\Launcher'
-        $executable = Join-Path $launcherBuildDir 'Open-ST.exe'
-        $builtResources = Join-Path $launcherBuildDir 'resources'
-        foreach ($requiredPath in @($executable, $builtResources)) {
-            if (-not (Test-Path -LiteralPath $requiredPath)) {
-                throw "Release 运行文件不完整：$requiredPath"
-            }
-        }
-
-        Copy-Item -LiteralPath $executable -Destination $verifiedStagingDir
-        foreach ($runtimeLibrary in Get-ChildItem -LiteralPath $launcherBuildDir -File -Filter '*.dll') {
-            Copy-Item -LiteralPath $runtimeLibrary.FullName -Destination $verifiedStagingDir
-        }
-        Copy-Item -LiteralPath $builtResources -Destination $verifiedStagingDir -Recurse
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE.txt') -Destination $verifiedStagingDir
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.txt') -Destination $verifiedStagingDir
-        Copy-Item -LiteralPath (Join-Path $projectRoot 'licenses') -Destination $verifiedStagingDir -Recurse
+        $toolset = Get-Content -LiteralPath (Join-Path $vsRoot 'VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt') -Raw
+        $dumpbin = Join-Path $vsRoot ('VC/Tools/MSVC/' + $toolset.Trim() + '/bin/Hostx64/x64/dumpbin.exe')
+        $releaseMetadata = New-ReleaseStaging -Repository $projectRoot -Build $verifiedWorkDir -Destination $verifiedStagingDir -Dumpbin $dumpbin
 
         if (Test-Path -LiteralPath $verifiedReleaseDir) {
             Remove-Item -LiteralPath $verifiedReleaseDir -Recurse -Force
@@ -236,15 +193,7 @@ if ($Configuration -eq 'Release') {
     }
 }
 
-# -Package 基于已经修剪过的 Release 目录生成版本化交付目录，不复制任何编译工作树。
-if ($Package) {
-    $artifactDir = Join-Path $projectRoot 'artifacts\Open-ST-0.3.0-win-x64'
-    $artifactRoot = Join-Path $projectRoot 'artifacts'
-    $verifiedArtifactDir = Get-VerifiedChildPath -Root $artifactRoot -Candidate $artifactDir
-    if (Test-Path -LiteralPath $verifiedArtifactDir) {
-        Remove-Item -LiteralPath $verifiedArtifactDir -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $verifiedArtifactDir | Out-Null
-    Copy-DirectoryContents -Source $releaseDir -Destination $verifiedArtifactDir
-    Write-Host "版本化发布目录已整理到：$verifiedArtifactDir"
+# 两种包共用本次编译和同源基础清单，各自写入发行模式。
+if ($Package -or $Installer) {
+    Publish-ReleaseArtifacts -Repository $projectRoot -Staging $releaseDir -Metadata $releaseMetadata -Portable ([bool]$Package) -Installer ([bool]$Installer) -Tools $installerTools
 }

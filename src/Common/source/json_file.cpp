@@ -1,5 +1,6 @@
 // 实现 JSON 文件懒加载、变更检测、串行编辑及原子替换写入。
 
+#include <file_lease.h>
 #include <json_file.h>
 
 #include <log.h>
@@ -22,6 +23,42 @@ struct FileFailure final
     const char* stage;
     DWORD code;
 };
+
+// 向调用方返回分类错误，保留已有日志去重和缓存失败语义。
+// 入参：error：可选输出；code：系统错误，零表示成功。
+// 返回：无返回值。
+void SetJsonError(open_st::JsonFileError* error, DWORD code) noexcept
+{
+    if (error == nullptr)
+        return;
+    using Code = open_st::JsonFileErrorCode;
+    error->systemCode = code;
+    switch (code)
+    {
+    case ERROR_SUCCESS:
+        error->code = Code::None;
+        break;
+    case ERROR_LOCK_VIOLATION:
+    case ERROR_SHARING_VIOLATION:
+        error->code = Code::Busy;
+        break;
+    case ERROR_ACCESS_DENIED:
+        error->code = Code::AccessDenied;
+        break;
+    case ERROR_FILE_INVALID:
+        error->code = Code::InvalidDocument;
+        break;
+    case ERROR_CANCELLED:
+        error->code = Code::Cancelled;
+        break;
+    case ERROR_RETRY:
+        error->code = Code::Conflict;
+        break;
+    default:
+        error->code = Code::Io;
+        break;
+    }
+}
 
 // 持有 Win32 文件句柄，在异常和普通返回路径中均确保关闭。
 class FileHandle final
@@ -359,8 +396,9 @@ class JsonFileState final
     // 读取当前磁盘 JSON 文档并向调用方提供独立副本。
     // 入参：document：输出参数，成功时接收完整 JSON 文档。
     // 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
-    bool Read(nlohmann::json& document) noexcept
+    bool Read(nlohmann::json& document, JsonFileError* error) noexcept
     {
+        SetJsonError(error, ERROR_GEN_FAILURE);
         try
         {
             const std::scoped_lock<std::mutex> lock(this->mutex_);
@@ -373,15 +411,18 @@ class JsonFileState final
                 nlohmann::json result = *this->snapshot_;
                 document.swap(result);
                 this->readFailure_ = {};
+                SetJsonError(error, ERROR_SUCCESS);
                 return true;
             }
             catch (const FileFailure& failure)
             {
+                SetJsonError(error, failure.code);
                 this->ReportFailureLocked(false, failure.stage, failure.code);
             }
-            catch (const nlohmann::json::exception& error)
+            catch (const nlohmann::json::exception& exception)
             {
-                this->ReportFailureLocked(false, "json_exception", static_cast<DWORD>(error.id));
+                SetJsonError(error, ERROR_FILE_INVALID);
+                this->ReportFailureLocked(false, "json_exception", static_cast<DWORD>(exception.id));
             }
             catch (...)
             {
@@ -397,8 +438,9 @@ class JsonFileState final
     // 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
     // 入参：document：调用期间借用的完整替换文档。
     // 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
-    bool Write(const nlohmann::json& document) noexcept
+    bool Write(const nlohmann::json& document, JsonFileError* error) noexcept
     {
+        SetJsonError(error, ERROR_GEN_FAILURE);
         try
         {
             // 把整份替换文档写入通用编辑候选，复用文件锁和提交规则。
@@ -409,7 +451,7 @@ class JsonFileState final
                 current = document;
                 return true;
             };
-            return this->Write(editor);
+            return this->Write(editor, error);
         }
         catch (...)
         {
@@ -422,8 +464,9 @@ class JsonFileState final
     // 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
     // 返回：编辑接受且可提交时为
     // true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
-    bool Write(const JsonDocumentEditor& editor) noexcept
+    bool Write(const JsonDocumentEditor& editor, JsonFileError* error) noexcept
     {
+        SetJsonError(error, ERROR_GEN_FAILURE);
         try
         {
             const std::scoped_lock<std::mutex> lock(this->mutex_);
@@ -433,6 +476,12 @@ class JsonFileState final
                 {
                     throw FileFailure{"empty_editor", ERROR_INVALID_PARAMETER};
                 }
+                std::filesystem::path lockPath = this->path_;
+                lockPath += L".lock";
+                FileLease lease;
+                FileLeaseError leaseError;
+                if (!lease.TryAcquire(lockPath, FileLeaseMode::Exclusive, &leaseError, true))
+                    throw FileFailure{"acquire_transaction", leaseError.systemCode};
                 const bool existed = this->RefreshLocked() == FileQueryStatus::Present;
                 const FileSignature baseline = this->validSignature_;
                 std::optional<nlohmann::json> candidate;
@@ -442,21 +491,25 @@ class JsonFileState final
                 }
                 if (!editor(candidate) || !candidate.has_value())
                 {
+                    SetJsonError(error, ERROR_CANCELLED);
                     this->ReportFailureLocked(true, "cancelled_by_editor", ERROR_CANCELLED);
                     return false;
                 }
                 const bool succeeded = this->CommitLocked(*candidate, existed, baseline);
                 this->writeFailure_ = {};
+                SetJsonError(error, ERROR_SUCCESS);
                 return succeeded;
             }
             catch (const FileFailure& failure)
             {
+                SetJsonError(error, failure.code);
                 this->ReportFailureLocked(true, failure.stage, failure.code);
             }
-            catch (const nlohmann::json::exception& error)
+            catch (const nlohmann::json::exception& exception)
             {
                 // 不记录 what()，其中可能包含业务 JSON 片段。
-                this->ReportFailureLocked(true, "json_exception", static_cast<DWORD>(error.id));
+                SetJsonError(error, ERROR_FILE_INVALID);
+                this->ReportFailureLocked(true, "json_exception", static_cast<DWORD>(exception.id));
             }
             catch (...)
             {
@@ -578,12 +631,6 @@ class JsonFileState final
         // 与磁盘 JSON 表示一致，避免非有限浮点序列化为 null 后缓存仍持有非有限数。
         const std::shared_ptr<const nlohmann::json> published =
             std::make_shared<const nlohmann::json>(nlohmann::json::parse(serialized));
-        std::error_code directoryError;
-        std::filesystem::create_directories(this->path_.parent_path(), directoryError);
-        if (directoryError)
-        {
-            throw FileFailure{"create_parent_directory", static_cast<DWORD>(directoryError.value())};
-        }
         this->VerifyBaselineLocked(existed, baseline);
         FileSignature written{};
         WriteBytesAtomically(this->path_, serialized, existed, baseline, written);
@@ -629,40 +676,43 @@ bool JsonFileHandle::IsValid() const noexcept
 // 读取当前磁盘 JSON 文档并向调用方提供独立副本。
 // 入参：document：输出参数，成功时接收完整 JSON 文档。
 // 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
-bool JsonFileHandle::Read(nlohmann::json& document) const noexcept
+bool JsonFileHandle::Read(nlohmann::json& document, JsonFileError* error) const noexcept
 {
     if (this->state_ == nullptr)
     {
+        SetJsonError(error, ERROR_INVALID_HANDLE);
         OPEN_ST_LOG_WARNING("JSON read rejected: invalid handle.");
         return false;
     }
-    return this->state_->Read(document);
+    return this->state_->Read(document, error);
 }
 
 // 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
 // 入参：document：调用期间借用的完整替换文档。
 // 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
-bool JsonFileHandle::Write(const nlohmann::json& document) const noexcept
+bool JsonFileHandle::Write(const nlohmann::json& document, JsonFileError* error) const noexcept
 {
     if (this->state_ == nullptr)
     {
+        SetJsonError(error, ERROR_INVALID_HANDLE);
         OPEN_ST_LOG_WARNING("JSON write rejected: invalid handle.");
         return false;
     }
-    return this->state_->Write(document);
+    return this->state_->Write(document, error);
 }
 
 // 在同一文件锁内编辑当前 JSON 文档并原子提交。
 // 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
 // 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
-bool JsonFileHandle::Write(const JsonDocumentEditor& editor) const noexcept
+bool JsonFileHandle::Write(const JsonDocumentEditor& editor, JsonFileError* error) const noexcept
 {
     if (this->state_ == nullptr)
     {
+        SetJsonError(error, ERROR_INVALID_HANDLE);
         OPEN_ST_LOG_WARNING("JSON edit rejected: invalid handle.");
         return false;
     }
-    return this->state_->Write(editor);
+    return this->state_->Write(editor, error);
 }
 
 // 创建进程 JSON 文件管理器的内部绑定表。

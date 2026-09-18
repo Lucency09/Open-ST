@@ -8,10 +8,12 @@ add_library(OpenST::Settings ALIAS open_st_settings_window)
 target_sources(open_st_settings_window
     PRIVATE
         source/settings.cpp
+        source/settings_messages.cpp
         source/settings_window.cpp
         source/welcome_window.cpp
         source/settings_edit.cpp
         private/settings_internal.h
+        private/settings_messages.h
         private/settings_edit.h
         private/settings_window_test_access.h
     PUBLIC

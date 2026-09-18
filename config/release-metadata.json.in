@@ -1,0 +1,7 @@
+{
+  "version": "@PROJECT_VERSION@",
+  "architecture": "x64",
+  "compiler": "@CMAKE_CXX_COMPILER_ID@ @CMAKE_CXX_COMPILER_VERSION@",
+  "ocr": "@OPEN_ST_ENABLE_OCR@",
+  "translation": "@OPEN_ST_ENABLE_TRANSLATION@"
+}

@@ -1,6 +1,7 @@
 // 创建首次启动欢迎表单，处理确认保存、启动项应用及失败重试。
 
 #include "settings_edit.h"
+#include "settings_messages.h"
 #include <log.h>
 #include <stdexcept>
 #include <utility>
@@ -163,16 +164,34 @@ class WelcomeWindow::Impl final
                 if (saved == SettingsCommitResult::Saved || saved == SettingsCommitResult::Unchanged)
                     this->pending_ = true;
             }
-            if (saved != SettingsCommitResult::Saved && saved != SettingsCommitResult::Unchanged)
+            if (saved == SettingsCommitResult::Busy)
+            {
+                this->statusKey_ = "settings.file_busy";
+                if (!ShowSettingsBusyMessage(this->renderer_->NativeHandle(), this->callbacks_.smallIcon,
+                                             this->callbacks_.text))
+                    OPEN_ST_LOG_ERROR("Welcome file-busy message failed.");
+            }
+            else if (saved != SettingsCommitResult::Saved && saved != SettingsCommitResult::Unchanged)
                 this->statusKey_ =
                     saved == SettingsCommitResult::Conflict ? "settings.conflict" : "settings.save_failed";
-            else if (this->edit_.VerifySavedBool("startup.enabled", target) != SettingsCommitResult::Unchanged ||
-                     this->edit_.VerifySavedBool("onboarding.completed", true) != SettingsCommitResult::Unchanged)
-                this->statusKey_ = "settings.conflict";
-            else if (!this->callbacks_.startupApplied(target))
-                this->statusKey_ = "settings.startup.apply_failed";
             else
-                this->completed_ = true;
+            {
+                const SettingsCommitResult startup = this->edit_.VerifySavedBool("startup.enabled", target);
+                const SettingsCommitResult onboarding = this->edit_.VerifySavedBool("onboarding.completed", true);
+                if (startup == SettingsCommitResult::Busy || onboarding == SettingsCommitResult::Busy)
+                {
+                    this->statusKey_ = "settings.file_busy";
+                    if (!ShowSettingsBusyMessage(this->renderer_->NativeHandle(), this->callbacks_.smallIcon,
+                                                 this->callbacks_.text))
+                        OPEN_ST_LOG_ERROR("Welcome file-busy message failed.");
+                }
+                else if (startup != SettingsCommitResult::Unchanged || onboarding != SettingsCommitResult::Unchanged)
+                    this->statusKey_ = "settings.conflict";
+                else if (!this->callbacks_.startupApplied(target))
+                    this->statusKey_ = "settings.startup.apply_failed";
+                else
+                    this->completed_ = true;
+            }
         }
         catch (...)
         {

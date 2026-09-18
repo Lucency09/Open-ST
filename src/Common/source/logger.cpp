@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace
@@ -98,8 +99,8 @@ bool AnchorLogDirectory(const std::filesystem::path& directory, std::vector<Main
     {
         if (stop.stop_requested())
             return false;
-        MaintenanceHandle handle(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                             nullptr, OPEN_EXISTING,
+        MaintenanceHandle handle(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                              FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
         BY_HANDLE_FILE_INFORMATION information{};
         if (handle.get() == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(handle.get(), &information) ||
@@ -340,6 +341,8 @@ class LoggerState final
         {
             const std::scoped_lock<std::mutex> lock(this->mutex_);
             this->ResetLocked();
+            this->lastFailure_.reset();
+            this->pendingFailure_.reset();
             if (applicationDirectory.empty() || options.maxLines == 0 || options.maxFileBytes < MIN_FILE_BYTES ||
                 options.retainedFiles == 0)
             {
@@ -348,14 +351,12 @@ class LoggerState final
 
             this->options_ = options;
             this->logDirectory_ = std::filesystem::absolute(applicationDirectory / "data" / "logs").lexically_normal();
-            std::error_code error;
-            std::filesystem::create_directories(this->logDirectory_, error);
-            if (error)
+            open_st::FileLease coordination;
+            if (!this->AcquireDirectoryLocked(coordination, nullptr, true, true))
             {
                 this->ResetLocked();
                 return false;
             }
-
             const std::string date = CurrentDate();
             if (!this->OpenLatestLocked(date))
             {
@@ -385,6 +386,22 @@ class LoggerState final
         }
         catch (...)
         {
+        }
+    }
+
+    // 消费尚未发送给 UI 的故障，读取不产生新的日志。
+    // 入参：无。
+    // 返回：一次性故障结果或空值。
+    std::optional<open_st::FileLeaseError> ConsumeFailure() noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            return std::exchange(this->pendingFailure_, std::nullopt);
+        }
+        catch (...)
+        {
+            return std::nullopt;
         }
     }
 
@@ -426,6 +443,15 @@ class LoggerState final
                 }
                 if (!this->initialized_)
                     return result;
+                open_st::FileLease coordination;
+                if (!this->AcquireDirectoryLocked(coordination, &result.coordinationError, false))
+                {
+                    result.status = result.coordinationError.code == open_st::FileLeaseErrorCode::Busy
+                                        ? open_st::LogCleanupStatus::Busy
+                                        : open_st::LogCleanupStatus::Unavailable;
+                    ++result.failed;
+                    return result;
+                }
                 directory = this->logDirectory_;
                 initialPath = this->currentPath_;
                 generation = this->generation_;
@@ -480,6 +506,15 @@ class LoggerState final
                                                         : open_st::LogCleanupStatus::Unavailable;
                     return result;
                 }
+                open_st::FileLease coordination;
+                if (!this->AcquireDirectoryLocked(coordination, &result.coordinationError, false))
+                {
+                    result.status = result.coordinationError.code == open_st::FileLeaseErrorCode::Busy
+                                        ? open_st::LogCleanupStatus::Busy
+                                        : open_st::LogCleanupStatus::PartialFailure;
+                    ++result.failed;
+                    return result;
+                }
                 if (candidate == initialPath || candidate == this->currentPath_)
                 {
                     ++result.retained;
@@ -504,14 +539,38 @@ class LoggerState final
     // 停止日志输出并删除可识别的程序日志，供退出清理重试。
     // 入参：无；使用初始化时记录的日志目录。
     // 返回：目录不存在或全部清理成功 true；路径含重解析点、访问失败或删除失败 false，保留目录供重试。
-    bool ShutdownAndClear() noexcept
+    bool ShutdownAndClear(open_st::FileLeaseError* outputError, std::size_t* retained) noexcept
     {
+        if (outputError != nullptr)
+            *outputError = {open_st::FileLeaseErrorCode::Io, ERROR_GEN_FAILURE};
+        if (retained != nullptr)
+            *retained = 0;
         try
         {
             const std::scoped_lock<std::mutex> lock(this->mutex_);
             this->ResetLocked(false);
             if (this->logDirectory_.empty())
+            {
+                if (outputError != nullptr)
+                    *outputError = {};
                 return true;
+            }
+            std::error_code existenceError;
+            if (!std::filesystem::exists(this->logDirectory_, existenceError) && !existenceError)
+            {
+                this->logDirectory_.clear();
+                if (outputError != nullptr)
+                    *outputError = {};
+                return true;
+            }
+            open_st::FileLease coordination;
+            open_st::FileLeaseError coordinationError;
+            if (!this->AcquireDirectoryLocked(coordination, &coordinationError, false))
+            {
+                if (outputError != nullptr)
+                    *outputError = coordinationError;
+                return false;
+            }
             struct CloseHandleDeleter
             {
                 // 释放退出清理过程中打开的 Win32 句柄。
@@ -529,7 +588,7 @@ class LoggerState final
             for (const std::filesystem::path& component : this->logDirectory_.relative_path())
             {
                 current /= component;
-                OwnedHandle handle(CreateFileW(current.c_str(), FILE_READ_ATTRIBUTES,
+                OwnedHandle handle(CreateFileW(current.c_str(), FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY,
                                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
                 if (handle.get() == INVALID_HANDLE_VALUE)
@@ -558,6 +617,18 @@ class LoggerState final
                 LogFileInfo info;
                 if (ParseLogFile(iterator->path(), info))
                 {
+                    open_st::FileLease active;
+                    open_st::FileLeaseError leaseError;
+                    if (!active.TryAcquire(this->ActiveLeasePath(info.path), open_st::FileLeaseMode::Exclusive,
+                                           &leaseError, true))
+                    {
+                        if (leaseError.code != open_st::FileLeaseErrorCode::Busy)
+                            success = false;
+                        else if (retained != nullptr)
+                            ++*retained;
+                        iterator.increment(error);
+                        continue;
+                    }
                     OwnedHandle file(CreateFileW(info.path.c_str(), DELETE | FILE_READ_ATTRIBUTES,
                                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                                  FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
@@ -578,7 +649,11 @@ class LoggerState final
             if (error)
                 success = false;
             if (success)
+            {
                 this->logDirectory_.clear();
+                if (outputError != nullptr)
+                    *outputError = {};
+            }
             return success;
         }
         catch (...)
@@ -608,6 +683,12 @@ class LoggerState final
 
             const std::string date = CurrentDate();
             const bool dateChanged = date != this->currentDate_;
+            open_st::FileLease coordination;
+            if (dateChanged && !this->AcquireDirectoryLocked(coordination))
+            {
+                this->ResetLocked();
+                return;
+            }
             if (dateChanged && !this->OpenNewLocked())
             {
                 this->ResetLocked();
@@ -626,6 +707,11 @@ class LoggerState final
                                      this->fileBytes_ > this->options_.maxFileBytes - recordBytes - separatorBytes;
             if (this->lineCount_ >= this->options_.maxLines || exceedsSize)
             {
+                if (!coordination.IsHeld() && !this->AcquireDirectoryLocked(coordination))
+                {
+                    this->ResetLocked();
+                    return;
+                }
                 if (!this->OpenNewLocked())
                 {
                     this->ResetLocked();
@@ -643,6 +729,7 @@ class LoggerState final
             this->file_.write(record.data(), static_cast<std::streamsize>(record.size()));
             if (!this->file_)
             {
+                this->ReportFailureLocked({open_st::FileLeaseErrorCode::Io, ERROR_WRITE_FAULT});
                 this->ResetLocked();
                 return;
             }
@@ -654,6 +741,7 @@ class LoggerState final
                 this->file_.flush();
                 if (!this->file_)
                 {
+                    this->ReportFailureLocked({open_st::FileLeaseErrorCode::Io, ERROR_WRITE_FAULT});
                     this->ResetLocked();
                 }
             }
@@ -664,12 +752,59 @@ class LoggerState final
     }
 
   private:
+    // 保存去重后的日志基础设施错误，禁止递归调用日志宏。
+    // 入参：error：当前故障，调用方持有线程互斥。
+    // 返回：无返回值。
+    void ReportFailureLocked(open_st::FileLeaseError error) noexcept
+    {
+        if (!this->lastFailure_.has_value() || this->lastFailure_->code != error.code ||
+            this->lastFailure_->systemCode != error.systemCode)
+        {
+            this->lastFailure_ = error;
+            this->pendingFailure_ = error;
+        }
+    }
+    // 尝试一次目录协调锁，普通日志行不调用此接口。
+    // 入参：lease：输出租约；output：可选错误；notify：是否发布后台通知。
+    // 返回：成功 true，失败立即 false。
+    bool AcquireDirectoryLocked(open_st::FileLease& lease, open_st::FileLeaseError* output = nullptr,
+                                bool notify = true, bool createParents = false)
+    {
+        open_st::FileLeaseError error;
+        const bool acquired = lease.TryAcquire(this->logDirectory_ / ".coordination.lock",
+                                               open_st::FileLeaseMode::Exclusive, &error, createParents);
+        if (output != nullptr)
+            *output = error;
+        if (!acquired && notify)
+            this->ReportFailureLocked(error);
+        return acquired;
+    }
+    // 生成日志的稳定活跃租约名，租约文件始终保留。
+    // 入参：path：日志路径。
+    // 返回：本日志对应的协调路径。
+    std::filesystem::path ActiveLeasePath(const std::filesystem::path& path) const
+    {
+        std::filesystem::path lease = this->logDirectory_ / ".leases" / path.filename();
+        lease += L".lock";
+        return lease;
+    }
+
     // 在短写锁临界区验证候选身份并按句柄删除，拒绝链接、别名和无法确认的目标。
     // 入参：candidate：命名已识别路径；initialIdentity：操作开始时的当前文件身份；result：累计结果。
     // 返回：无返回值；每个候选计入删除、失败、保留或已消失之一，调用方须持有 mutex_。
     void DeleteHistoricalLocked(const std::filesystem::path& candidate,
                                 const BY_HANDLE_FILE_INFORMATION& initialIdentity, open_st::LogCleanupResult& result)
     {
+        open_st::FileLease active;
+        open_st::FileLeaseError leaseError;
+        if (!active.TryAcquire(this->ActiveLeasePath(candidate), open_st::FileLeaseMode::Exclusive, &leaseError, true))
+        {
+            if (leaseError.code == open_st::FileLeaseErrorCode::Busy)
+                ++result.retained;
+            else
+                ++result.failed;
+            return;
+        }
         MaintenanceHandle file(CreateFileW(candidate.c_str(), DELETE | FILE_READ_ATTRIBUTES,
                                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
@@ -726,6 +861,8 @@ class LoggerState final
             this->file_.close();
         }
         this->file_.clear();
+        this->activeFile_.reset();
+        this->activeLease_.Reset();
         if (clearDirectory)
             this->logDirectory_.clear();
         this->currentPath_.clear();
@@ -792,8 +929,12 @@ class LoggerState final
         {
             return this->OpenNewLocked();
         }
-        if (!this->OpenPathLocked(latest->path, latest->date))
+        open_st::FileLeaseError error;
+        if (!this->OpenPathLocked(latest->path, latest->date, false, &error))
         {
+            if (error.code == open_st::FileLeaseErrorCode::Busy)
+                return this->OpenNewLocked();
+            this->ReportFailureLocked(error);
             return false;
         }
         if (this->lineCount_ >= this->options_.maxLines || this->fileBytes_ >= this->options_.maxFileBytes)
@@ -824,11 +965,12 @@ class LoggerState final
             const bool exists = std::filesystem::exists(path, error);
             if (error)
             {
+                this->ReportFailureLocked({open_st::FileLeaseErrorCode::Io, static_cast<DWORD>(error.value())});
                 return false;
             }
             if (!exists)
             {
-                return this->OpenPathLocked(path, timestamp.date);
+                return this->OpenPathLocked(path, timestamp.date, true);
             }
         }
         return false;
@@ -837,38 +979,77 @@ class LoggerState final
     // 切换到指定日志文件并恢复追加写入所需的计数。
     // 入参：path：目标日志路径；date：该文件对应日期；调用方须持有 mutex_。
     // 返回：文件成功以追加方式打开时 true；读取长度、行数或打开失败时 false，旧输出流已关闭。
-    bool OpenPathLocked(const std::filesystem::path& path, const std::string& date)
+    bool OpenPathLocked(const std::filesystem::path& path, const std::string& date, bool createNew,
+                        open_st::FileLeaseError* outputError = nullptr)
     {
+        if (outputError != nullptr)
+            *outputError = {open_st::FileLeaseErrorCode::Io, ERROR_OPEN_FAILED};
+        open_st::FileLease active;
+        open_st::FileLeaseError error;
+        if (!active.TryAcquire(this->ActiveLeasePath(path), open_st::FileLeaseMode::Exclusive, &error, true))
+        {
+            if (outputError != nullptr)
+                *outputError = error;
+            else
+                this->ReportFailureLocked(error);
+            return false;
+        }
+        MaintenanceHandle reserved(
+            CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                        createNew ? CREATE_NEW : OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        // 统一报告打开阶段故障，业务显式调用取结果，后台轮转发布一次通知。
+        // 入参：code：确定的 Win32 故障码。
+        // 返回：恒为 false。
+        const auto fail = [this, outputError](DWORD code)
+        {
+            const open_st::FileLeaseError failure{code == ERROR_ACCESS_DENIED
+                                                      ? open_st::FileLeaseErrorCode::AccessDenied
+                                                      : open_st::FileLeaseErrorCode::Io,
+                                                  code};
+            if (outputError != nullptr)
+                *outputError = failure;
+            else
+                this->ReportFailureLocked(failure);
+            return false;
+        };
+        BY_HANDLE_FILE_INFORMATION identity{};
+        if (reserved.get() == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(reserved.get(), &identity))
+            return fail(GetLastError());
+        if ((identity.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0 ||
+            identity.nNumberOfLinks != 1)
+            return fail(ERROR_ACCESS_DENIED);
         if (this->file_.is_open())
         {
             this->file_.flush();
             this->file_.close();
         }
         this->file_.clear();
+        this->activeFile_.reset();
+        this->activeLease_.Reset();
 
         std::uintmax_t fileBytes = 0;
         std::size_t lineCount = 0;
         bool endsWithNewline = true;
-        std::error_code error;
-        if (std::filesystem::exists(path, error) && !error)
+        std::error_code fileError;
+        if (std::filesystem::exists(path, fileError) && !fileError)
         {
-            fileBytes = std::filesystem::file_size(path, error);
-            if (error || !this->CountLinesLocked(path, lineCount, endsWithNewline))
-            {
-                return false;
-            }
+            fileBytes = std::filesystem::file_size(path, fileError);
+            if (fileError || !this->CountLinesLocked(path, lineCount, endsWithNewline))
+                return fail(fileError ? static_cast<DWORD>(fileError.value()) : ERROR_READ_FAULT);
         }
 
         this->file_.open(path, std::ios::binary | std::ios::app);
         if (!this->file_.is_open())
-        {
-            return false;
-        }
+            return fail(ERROR_OPEN_FAILED);
+        this->activeLease_ = std::move(active);
+        this->activeFile_ = std::move(reserved);
         this->currentPath_ = path;
         this->currentDate_ = date;
         this->lineCount_ = lineCount;
         this->fileBytes_ = fileBytes;
         this->needsSeparator_ = fileBytes > 0 && !endsWithNewline;
+        if (outputError != nullptr)
+            *outputError = {};
         return true;
     }
 
@@ -987,24 +1168,25 @@ class LoggerState final
         try
         {
             std::vector<LogFileInfo> files = this->ListFilesLocked();
-            while (files.size() > this->options_.retainedFiles)
+            std::size_t remaining = files.size();
+            BY_HANDLE_FILE_INFORMATION current{};
+            const MaintenanceHandle currentHandle = ReadLogIdentity(this->currentPath_, current);
+            if (!currentHandle)
+                return;
+            for (const LogFileInfo& candidate : files)
             {
-                std::vector<LogFileInfo>::iterator candidate = files.begin();
-                while (candidate != files.end() && candidate->path == this->currentPath_)
+                if (remaining <= this->options_.retainedFiles)
+                    break;
+                if (candidate.path == this->currentPath_)
+                    continue;
+                open_st::LogCleanupResult result;
+                this->DeleteHistoricalLocked(candidate.path, current, result);
+                remaining -= result.deleted + result.alreadyMissing;
+                if (result.failed != 0)
                 {
-                    ++candidate;
-                }
-                if (candidate == files.end())
-                {
+                    this->ReportFailureLocked({open_st::FileLeaseErrorCode::Io, ERROR_WRITE_FAULT});
                     return;
                 }
-                std::error_code error;
-                std::filesystem::remove(candidate->path, error);
-                if (error)
-                {
-                    return;
-                }
-                files.erase(candidate);
             }
         }
         catch (...)
@@ -1014,6 +1196,10 @@ class LoggerState final
 
     std::mutex mutex_;
     std::ofstream file_;
+    open_st::FileLease activeLease_;
+    MaintenanceHandle activeFile_;
+    std::optional<open_st::FileLeaseError> pendingFailure_;
+    std::optional<open_st::FileLeaseError> lastFailure_;
     std::filesystem::path logDirectory_;
     std::filesystem::path currentPath_;
     std::string currentDate_;
@@ -1037,6 +1223,14 @@ LoggerState& GetLoggerState()
 
 namespace open_st
 {
+// 读取后台日志故障的一次性通知。
+// 入参：无。
+// 返回：尚未消费的故障，没有则为空。
+std::optional<FileLeaseError> ConsumeLoggingFailure() noexcept
+{
+    return GetLoggerState().ConsumeFailure();
+}
+
 // 查询已初始化日志服务的目录，不启动或重置日志。
 // 入参：无。
 // 返回：当前目录副本；不可用时为空。
@@ -1088,9 +1282,9 @@ void Logger::Shutdown() noexcept
 // 停止日志输出并删除可识别的程序日志，供退出清理重试。
 // 入参：无；使用初始化时记录的日志目录。
 // 返回：目录不存在或全部清理成功 true；路径含重解析点、访问失败或删除失败 false，保留目录供重试。
-bool Logger::ShutdownAndClear() noexcept
+bool Logger::ShutdownAndClear(FileLeaseError* error, std::size_t* retained) noexcept
 {
-    return GetLoggerState().ShutdownAndClear();
+    return GetLoggerState().ShutdownAndClear(error, retained);
 }
 
 // 向进程日志服务提交文本并按日期、行数或容量轮转。
@@ -1121,9 +1315,9 @@ void ShutdownLogging() noexcept
 // 转发既有退出日志清理行为，使调用方无需访问私有 Logger。
 // 入参：无。
 // 返回：日志关闭及清理成功为 true；失败为 false，允许用户重试。
-bool ShutdownAndClearLogging() noexcept
+bool ShutdownAndClearLogging(FileLeaseError* error, std::size_t* retained) noexcept
 {
-    return Logger::ShutdownAndClear();
+    return Logger::ShutdownAndClear(error, retained);
 }
 
 namespace log_detail

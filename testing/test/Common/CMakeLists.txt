@@ -7,6 +7,7 @@ add_executable(open_st_common_tests)
 target_sources(open_st_common_tests
     PRIVATE
         source/json_file_tests.cpp
+        source/coordination_tests.cpp
         source/logger_tests.cpp
         source/windows_util_tests.cpp
 )
@@ -19,6 +20,11 @@ target_link_libraries(open_st_common_tests
 )
 
 target_include_directories(open_st_common_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Common/private")
+
+add_executable(open_st_common_process_probe source/coordination_process_probe.cpp)
+target_link_libraries(open_st_common_process_probe PRIVATE OpenST::Common open_st_project_options)
+target_include_directories(open_st_common_process_probe PRIVATE "${PROJECT_SOURCE_DIR}/src/Common/private")
+add_dependencies(open_st_common_tests open_st_common_process_probe)
 
 # logger_tests 验证日志内记录的源码路径；目录迁移期间保持既有断言所观察到的逻辑路径不变。
 if(MSVC)

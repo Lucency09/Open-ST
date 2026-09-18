@@ -5,6 +5,7 @@
 #include "settings_window_test_access.h"
 #include <array>
 #include <commctrl.h>
+#include <file_lease.h>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
@@ -54,6 +55,50 @@ HWND FindWelcomeWindow()
     EnumThreadWindows(GetCurrentThreadId(), FindControl, reinterpret_cast<LPARAM>(&search));
     return search.found;
 }
+
+struct BusyMessageProbe
+{
+    HWND owner{};
+    bool observed{};
+    HHOOK hook{};
+    static thread_local BusyMessageProbe* current;
+    // 监听本测试线程的实际弹窗创建，立即投递关闭避免人工交互。
+    // 入参：parent 为被测设置窗口。
+    // 返回：构造后 hook 非空表示安装成功。
+    explicit BusyMessageProbe(HWND parent) : owner(parent)
+    {
+        current = this;
+        this->hook = SetWindowsHookExW(WH_CBT, Observe, nullptr, GetCurrentThreadId());
+    }
+    // 撤销局部线程钩子。
+    // 入参：无。
+    // 返回：无返回值。
+    ~BusyMessageProbe()
+    {
+        if (this->hook != nullptr)
+            UnhookWindowsHookEx(this->hook);
+        current = nullptr;
+    }
+    // 按真实窗口类和 owner 识别公共 Renderer 弹窗。
+    // 入参：code、window、parameter 为 CBT 创建消息。
+    // 返回：继续原钩子链。
+    static LRESULT CALLBACK Observe(int code, WPARAM window, LPARAM parameter)
+    {
+        if (code == HCBT_CREATEWND && current != nullptr)
+        {
+            const auto* created = reinterpret_cast<const CBT_CREATEWNDW*>(parameter);
+            wchar_t className[64]{};
+            GetClassNameW(reinterpret_cast<HWND>(window), className, 64);
+            if (created->lpcs->hwndParent == current->owner && std::wstring_view(className) == L"OpenST.WindowRenderer")
+            {
+                current->observed = true;
+                PostMessageW(reinterpret_cast<HWND>(window), WM_CLOSE, 0, 0);
+            }
+        }
+        return CallNextHookEx(nullptr, code, window, parameter);
+    }
+};
+thread_local BusyMessageProbe* BusyMessageProbe::current{};
 
 class SettingsWindowTest : public testing::Test
 {
@@ -1613,5 +1658,29 @@ TEST_F(SettingsWindowTest, maintenance_restore_retries_effects_after_defaults_sa
     EXPECT_EQ(this->appliedCount_, 2);
     EXPECT_EQ(this->hotkeyActivateCount_, 1);
     EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+}
+// 验证保存 Busy 显示真正的公共提示窗，草稿和原文件保留，用户重试才提交。
+// 入参：无。
+// 返回：GoogleTest 断言结果。
+TEST_F(SettingsWindowTest, busy_save_displays_renderer_message_and_keeps_draft)
+{
+    const HWND window = this->Open();
+    ASSERT_NE(window, nullptr);
+    this->Select(L"ja-JP");
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(this->root_ / "data/settings.json.lock", open_st::FileLeaseMode::Exclusive));
+    BusyMessageProbe message(window);
+    ASSERT_NE(message.hook, nullptr);
+    this->Click("settings.apply");
+    EXPECT_TRUE(message.observed);
+    EXPECT_NE(this->Control(L"Static", L"settings.file_busy"), nullptr);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    EXPECT_EQ(this->appliedCount_, 0);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    lease.Reset();
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+    EXPECT_EQ(this->appliedCount_, 1);
 }
 } // namespace

@@ -20,7 +20,8 @@ enum class SettingsCommitResult
     Conflict,
     ReadFailed,
     WriteFailed,
-    InvalidField
+    InvalidField,
+    Busy
 };
 
 // UI 线程拥有的私有草稿；动态字段只由调用方显式提供，不维护业务键注册表。

@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "settings": {
+    "distribution.mode": "portable",
     "capture.selection_border_color": "#000000",
     "ui.language": "en-US",
     "onboarding.completed": false,

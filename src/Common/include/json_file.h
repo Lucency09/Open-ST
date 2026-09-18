@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -12,6 +13,22 @@
 
 namespace open_st
 {
+enum class JsonFileErrorCode
+{
+    None,
+    Busy,
+    AccessDenied,
+    Io,
+    InvalidDocument,
+    Cancelled,
+    Conflict
+};
+struct JsonFileError
+{
+    JsonFileErrorCode code{JsonFileErrorCode::None};
+    std::uint32_t systemCode{};
+};
+
 // 编辑当前文档；空 optional 仅表示文件不存在，JSON null 仍是有值文档。
 // 返回 false 或抛出异常均取消；不得重入同一文件、保留文档引用或执行外部副作用。
 using JsonDocumentEditor = std::function<bool(std::optional<nlohmann::json>& document)>;
@@ -33,19 +50,20 @@ class JsonFileHandle final
     // 返回：已关联文件状态时为 true；空句柄为 false，不检查磁盘文件是否存在或可访问。
     [[nodiscard]] bool IsValid() const noexcept;
     // 读取当前磁盘 JSON 文档并向调用方提供独立副本。
-    // 入参：document：输出参数，成功时接收完整 JSON 文档。
+    // 入参：document：输出参数，成功时接收完整 JSON 文档；error：可选分类错误。
     // 返回：读取并解析成功时为 true；失败时为 false 且不改变 document，不用旧缓存冒充成功。
-    [[nodiscard]] bool Read(nlohmann::json& document) const noexcept;
+    [[nodiscard]] bool Read(nlohmann::json& document, JsonFileError* error = nullptr) const noexcept;
 
     // 以完整 JSON 文档替换目标内容，文件缺失时安全创建。
-    // 入参：document：调用期间借用的完整替换文档。
+    // 入参：document：调用期间借用的完整替换文档；error：可选分类错误。
     // 返回：提交成功时为 true；句柄无效或读写失败时为 false，不覆盖已有的损坏或不可访问文件。
-    [[nodiscard]] bool Write(const nlohmann::json& document) const noexcept;
+    [[nodiscard]] bool Write(const nlohmann::json& document, JsonFileError* error = nullptr) const noexcept;
 
     // 在同一文件锁内编辑当前 JSON 文档并原子提交。
-    // 入参：editor：同步编辑回调，接收 optional 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。
-    // 返回：编辑接受且可提交时为 true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
-    [[nodiscard]] bool Write(const JsonDocumentEditor& editor) const noexcept;
+    // 入参：editor：同步编辑回调，接收 optional
+    // 文档；无值表示文件不存在；不得重入同文件、保存文档引用或执行外部副作用。 返回：编辑接受且可提交时为
+    // true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
+    [[nodiscard]] bool Write(const JsonDocumentEditor& editor, JsonFileError* error = nullptr) const noexcept;
 
   private:
     friend class JsonFileManager;

@@ -2,6 +2,7 @@
 
 #include "settings_edit.h"
 #include "settings_internal.h"
+#include "settings_messages.h"
 #include "settings_window_test_access.h"
 #include <algorithm>
 #include <log.h>
@@ -872,6 +873,14 @@ class SettingsWindow::Impl final
     // 返回：无返回值。
     void ReportCommitFailure(SettingsCommitResult result)
     {
+        if (result == SettingsCommitResult::Busy)
+        {
+            this->SetStatus("settings.file_busy");
+            if (!ShowSettingsBusyMessage(this->renderer_->NativeHandle(), this->callbacks_.smallIcon,
+                                         this->callbacks_.text))
+                OPEN_ST_LOG_ERROR("Settings file-busy message failed.");
+            return;
+        }
         this->SetStatus(result == SettingsCommitResult::Conflict ? "settings.conflict" : "settings.save_failed");
     }
 

@@ -6,7 +6,7 @@ add_subdirectory(Application)
 enable_language(RC)
 add_executable(open_st WIN32)
 
-target_sources(open_st PRIVATE source/main.cpp resources/open_st.rc)
+target_sources(open_st PRIVATE source/main.cpp resources/open_st.rc "${PROJECT_BINARY_DIR}/generated/open_st/version.rc")
 # RC 从版本化资源目录读取图标，图标随 EXE 嵌入，无运行期外部路径依赖。
 target_include_directories(open_st PRIVATE "${PROJECT_SOURCE_DIR}/resources/icons")
 
@@ -16,20 +16,23 @@ target_link_libraries(open_st
         open_st_project_options
 )
 
-# 界面文本与默认设置是版本化运行时资源，始终复制到可执行文件旁的 resources/。
-add_custom_command(TARGET open_st POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:open_st>/resources"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_SOURCE_DIR}/resources/ui_text.json"
-        "$<TARGET_FILE_DIR:open_st>/resources/ui_text.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_SOURCE_DIR}/resources/default_settings.json"
-        "$<TARGET_FILE_DIR:open_st>/resources/default_settings.json"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${PROJECT_SOURCE_DIR}/resources/setting_windows.json"
-        "$<TARGET_FILE_DIR:open_st>/resources/setting_windows.json"
-    VERBATIM
-)
+# 运行资源与发行包共用唯一清单，避免 CMake、PowerShell 和 Inno 各维护一份。
+file(READ "${PROJECT_SOURCE_DIR}/packaging/windows/release-files.json" OPEN_ST_RELEASE_FILES)
+string(JSON OPEN_ST_LAUNCHER_FILE_COUNT LENGTH "${OPEN_ST_RELEASE_FILES}" launcherFiles)
+math(EXPR OPEN_ST_LAUNCHER_FILE_LAST "${OPEN_ST_LAUNCHER_FILE_COUNT} - 1")
+foreach(OPEN_ST_FILE_INDEX RANGE ${OPEN_ST_LAUNCHER_FILE_LAST})
+    string(JSON OPEN_ST_RELEASE_FILE GET "${OPEN_ST_RELEASE_FILES}" launcherFiles ${OPEN_ST_FILE_INDEX})
+    if(OPEN_ST_RELEASE_FILE MATCHES "^resources/")
+        get_filename_component(OPEN_ST_RESOURCE_DIRECTORY "${OPEN_ST_RELEASE_FILE}" DIRECTORY)
+        add_custom_command(TARGET open_st POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:open_st>/${OPEN_ST_RESOURCE_DIRECTORY}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${PROJECT_SOURCE_DIR}/${OPEN_ST_RELEASE_FILE}"
+                "$<TARGET_FILE_DIR:open_st>/${OPEN_ST_RELEASE_FILE}"
+            VERBATIM
+        )
+    endif()
+endforeach()
 
 set_target_properties(open_st PROPERTIES OUTPUT_NAME "Open-ST")
 

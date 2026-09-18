@@ -40,6 +40,13 @@ open_st_resolve_dependencies()
 
 # 根据模板生成版本头文件。@ONLY 表示只替换 @变量@，不会误处理源文件里的 ${变量}。
 configure_file(config/version.h.in generated/open_st/version.h @ONLY)
+file(READ "${PROJECT_SOURCE_DIR}/vcpkg.json" OPEN_ST_VCPKG_MANIFEST)
+string(JSON OPEN_ST_VCPKG_VERSION GET "${OPEN_ST_VCPKG_MANIFEST}" version-semver)
+if(NOT OPEN_ST_VCPKG_VERSION STREQUAL PROJECT_VERSION)
+    message(FATAL_ERROR "vcpkg 项目版本必须与 PROJECT_VERSION 一致")
+endif()
+configure_file(config/release-metadata.json.in generated/release-metadata.json @ONLY)
+configure_file(config/version.rc.in generated/open_st/version.rc @ONLY)
 
 # 进入源码模块索引。具体 .cpp/.h 必须由各模块自己的 CMakeLists.txt 管理。
 add_subdirectory(src)

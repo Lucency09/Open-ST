@@ -8,6 +8,7 @@ target_link_options(open_st_window_renderer_tests PRIVATE
 )
 target_sources(open_st_window_renderer_tests PRIVATE
     source/renderer_model_tests.cpp
+    source/message_dialog_tests.cpp
     source/renderer_edit_tests.cpp
     source/renderer_color_tests.cpp
     source/inline_text_editor_tests.cpp

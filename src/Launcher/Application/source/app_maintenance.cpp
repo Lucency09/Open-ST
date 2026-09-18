@@ -85,6 +85,9 @@ SettingsMaintenanceStatus App::QueryLogMaintenanceStatus() const
     case LogCleanupStatus::Cancelled:
         key = "settings.maintenance.cancelled";
         break;
+    case LogCleanupStatus::Busy:
+        key = "logging.file_busy";
+        break;
     case LogCleanupStatus::Unavailable:
         break;
     }
@@ -107,8 +110,14 @@ void App::DrainLogMaintenance() noexcept
         LogMaintenanceSnapshot completed;
         if (!this->logMaintenance_->TakeCompletion(snapshot.operation, completed) || !completed.result)
             return;
-        OPEN_ST_LOG_INFO("Historical log cleanup finished. status=", static_cast<int>(completed.result->status),
-                         " deleted=", completed.result->deleted, " failed=", completed.result->failed);
+        if (completed.result->status == LogCleanupStatus::Busy)
+        {
+            this->ShowSimpleMessage([]() { return GetUiText("logging.file_busy"); },
+                                    []() { return GetUiText("app.title"); }, MB_OK | MB_ICONERROR);
+        }
+        else
+            OPEN_ST_LOG_INFO("Historical log cleanup finished. status=", static_cast<int>(completed.result->status),
+                             " deleted=", completed.result->deleted, " failed=", completed.result->failed);
         if (this->settingsWindow_ && this->settingsWindow_->IsOpen())
             this->settingsWindow_->RefreshTexts();
     }

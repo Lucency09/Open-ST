@@ -40,6 +40,7 @@ struct PinWindowCallbacks;
 enum class PinCommand : std::uint32_t;
 enum class CaptureToolbarCommand : std::uint32_t;
 class SingleInstance;
+class InstallationLease;
 class StartupRegistration;
 class WelcomeWindow;
 class WindowRenderer;
@@ -407,6 +408,7 @@ class App final
     // 返回：资源清理成功为 true。
     bool FinishHotkey(bool commit) noexcept;
 
+    std::unique_ptr<InstallationLease> installationLease_; // 最后回收，覆盖全部资源与日志寿命。
     std::unique_ptr<HotkeyManager> hotkeys_;
     bool hotkeyRecording_{};
     bool hotkeyCleanupPending_{};

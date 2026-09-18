@@ -71,7 +71,7 @@ src/
         ├── include/
         ├── private/
         ├── source/
-        ├── SystemIntegration/  # OpenST::SystemIntegration：当前用户启动项与单实例通信
+        ├── SystemIntegration/  # OpenST::SystemIntegration：启动项、单实例及安装维护保护
         │   ├── CMakeLists.txt
         │   ├── include/
         │   └── source/
@@ -140,7 +140,7 @@ src/
   动态设置接口属于 `Settings`，不设置独立的 `foundation`、`logging` 或业务专用 JSON 目标。
 - Common 的 `windows_util.h` 只提供通用 EXE 目录查询和 HRESULT 文本格式化，资源路径拼接仍归业务模块。
   日志宏及初始化、关闭、退出清理通过 `log.h` 使用；`log_detail.h` 仅承载宏必需的声明与模板，
-  `Logger`、`LogOptions` 和测试目录注入保持私有。退出清理入口 `ShutdownAndClearLogging()` 保留既有清理与重试语义。
+  `Logger`、`LogOptions` 和测试目录注入保持私有。退出清理入口 `ShutdownAndClearLogging()` 返回占用错误及保留的活跃文件数；Busy 不自动重试，其他失败保留显式用户重试入口。
 
 当前依赖方向为：
 
@@ -149,6 +149,8 @@ launcher -> application
 application -> localization
 application -> hotkeys
 application -> system_integration
+application -> update
+system_integration -> common
 application -> capture_toolbar
 application -> pin_window
 pin_window -> common
@@ -239,6 +241,15 @@ Export 接收自有 `ImageEncodingOptions`，不读取设置。正常复制不�
 立即恢复全部默认只覆盖当前六项可设置字段，以固定默认候选一次条件提交；不重置欢迎状态、保存目录或未知字段。
 文件已保存后的语言/自启/旧快捷键释放失败必须显示部分完成状态，不能伪称文件未保存。
 
+### 安装、共享数据与更新职责
+
+按已批准的 [安装与发布方案](design/install-release-v0.3.md)，Common FileLease 封装跨进程共享／独占的立即尝试，JSON Write 锁住刷新、编辑、提交；Read 资源不创建锁文件。Logger 独占活跃文件，并与轮转／清理复用同一协调与保留规则。Common 只返回错误，不创建产品窗口。
+Settings 复用 Common 报告 Busy 并保留草稿；公共 MessageDialog 是普通提示／确认的唯一 Renderer 适配，Settings、欢迎页、App 提示及更新确认共用。
+SystemIntegration 的 InstallationLease 在所有语言／设置／日志读取之前取得，运行共享、维护独占，锁占用立即失败；App 只负责生命周期。全部设置与日志回收完成后才解除租约。
+Update 只依赖 Windows SDK、标准库、JSON 和必要通用能力，拥有 Release 校验、下载、缓存保护和取消状态，不依赖 Settings／Localization 等兄弟模块。
+Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode，向 Update 传值并复用 Renderer。任务完成经独立消息通知，确认前不得请求安装包，关闭后不得迟到启动。
+构建基于唯一发行清单派生 installed／portable 两种资源视图，版本由 CMake 提供；构建脚本不自动安装工具或公开发布。默认资源中的发行元数据不得复制为用户可覆盖设置。
+
 ## 3. CMake 辅助文件
 
 `cmake/` 保存供根 `CMakeLists.txt` 调用的可复用 CMake 函数，不是生成目录，也不只负责第三方依赖：
@@ -270,6 +281,7 @@ Export 接收自有 `ImageEncodingOptions`，不读取设置。正常复制不�
 ```powershell
 .\scripts\build.ps1
 .\scripts\build.ps1 -Configuration Release
+.\scripts\build.ps1 -Configuration Release -Package -Installer -InnoSetupCompiler <ISCC.exe路径>
 .\scripts\build.ps1 -Clean
 ```
 
@@ -278,7 +290,7 @@ Export 接收自有 `ImageEncodingOptions`，不读取设置。正常复制不�
 - `-Clean` 是终止型操作：Debug 只清理自身构建树；Release 同时清理运行目录与可能残留的临时工作/整理目录，随后立即返回，不重新配置或构建。
 - `-EnableOcr`、`-EnableTranslation` 按需启用对应 vcpkg feature。
 - `-Package` 只允许用于 Release，并把已经修剪过的 `build/Release/` 复制到版本化 `artifacts/` 目录；复制前会清理同名旧包，避免残留过期 DLL 或资源。
-- 当前脚本和 preset 暂时使用 Visual Studio 随附的 Ninja，工具路径仍与开发机安装位置绑定，其他机器需先调整路径。这是现阶段保留的实现状态，不是已经确认、不可更改的永久架构约束；若以后切换生成器，应统一修改脚本、preset 和文档。
+- 产品脚本通过 vswhere 或 -VisualStudioPath 定位 Visual Studio 并使用其 CMake／Ninja／MSVC；测试脚本仍有开发机路径约束。安装包编译器须预先准备并通过 -InnoSetupCompiler 指定或由脚本发现；脚本不自动安装工具。
 
 ### 5.2 测试构建
 

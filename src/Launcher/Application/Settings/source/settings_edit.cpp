@@ -255,6 +255,7 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
             }
         }
         SettingsCommitResult failure = SettingsCommitResult::WriteFailed;
+        JsonFileError writeError;
         const bool saved = this->userFile_.Write(
             // 在文件编辑锁内先核对所有待写字段的基线，再一次性更新候选文档。
             // 入参：document 为 Common 锁内的候选文档，空 optional 表示文件缺失。
@@ -288,10 +289,11 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
                     }
                 }
                 return true;
-            });
+            },
+            &writeError);
         if (!saved)
         {
-            return failure;
+            return writeError.code == JsonFileErrorCode::Busy ? SettingsCommitResult::Busy : failure;
         }
         this->fields_.swap(committed);
         return SettingsCommitResult::Saved;
@@ -314,9 +316,11 @@ SettingsCommitResult SettingsEditSession::VerifySavedString(std::string_view key
             return SettingsCommitResult::InvalidField;
         }
         nlohmann::json document;
-        if (!this->userFile_.Read(document) || !IsSettingsDocument(document))
+        JsonFileError error;
+        if (!this->userFile_.Read(document, &error) || !IsSettingsDocument(document))
         {
-            return SettingsCommitResult::ReadFailed;
+            return error.code == JsonFileErrorCode::Busy ? SettingsCommitResult::Busy
+                                                         : SettingsCommitResult::ReadFailed;
         }
         const std::optional<nlohmann::json> persisted = RawField(document, key);
         return persisted.has_value() && persisted->is_string() && persisted->get_ref<const std::string&>() == value
@@ -361,8 +365,10 @@ SettingsCommitResult SettingsEditSession::VerifySavedBool(std::string_view key, 
         if (!this->ready_ || !this->fields_.contains(key))
             return SettingsCommitResult::InvalidField;
         nlohmann::json document;
-        if (!this->userFile_.Read(document) || !IsSettingsDocument(document))
-            return SettingsCommitResult::ReadFailed;
+        JsonFileError error;
+        if (!this->userFile_.Read(document, &error) || !IsSettingsDocument(document))
+            return error.code == JsonFileErrorCode::Busy ? SettingsCommitResult::Busy
+                                                         : SettingsCommitResult::ReadFailed;
         const std::optional<nlohmann::json> persisted = RawField(document, key);
         return persisted.has_value() && persisted->is_boolean() && persisted->get<bool>() == value
                    ? SettingsCommitResult::Unchanged
@@ -393,16 +399,19 @@ SettingsCommitResult SettingsEditSession::VerifyCurrentString(std::string_view k
         if (!this->ready_ || field == this->fields_.end())
             return SettingsCommitResult::InvalidField;
         nlohmann::json user;
-        if (!this->userFile_.Read(user) || !IsSettingsDocument(user))
-            return SettingsCommitResult::ReadFailed;
+        JsonFileError error;
+        if (!this->userFile_.Read(user, &error) || !IsSettingsDocument(user))
+            return error.code == JsonFileErrorCode::Busy ? SettingsCommitResult::Busy
+                                                         : SettingsCommitResult::ReadFailed;
         std::optional<nlohmann::json> effective = RawField(user, key);
         if (!SameRaw(effective, field->second.raw))
             return SettingsCommitResult::Conflict;
         if (!effective || !effective->is_string())
         {
             nlohmann::json defaults;
-            if (!this->defaultFile_.Read(defaults) || !IsSettingsDocument(defaults))
-                return SettingsCommitResult::ReadFailed;
+            if (!this->defaultFile_.Read(defaults, &error) || !IsSettingsDocument(defaults))
+                return error.code == JsonFileErrorCode::Busy ? SettingsCommitResult::Busy
+                                                             : SettingsCommitResult::ReadFailed;
             effective = RawField(defaults, key);
         }
         return effective && effective->is_string() && effective->get<std::string>() == value

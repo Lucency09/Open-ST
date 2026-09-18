@@ -1,5 +1,6 @@
 // 实现应用启动退出、托盘与消息分派，并协调截图、工具栏、设置及图像输出。
 
+#include "about_window.h"
 #include "annotation_interaction_controller.h"
 #include "capture_annotation_state.h"
 #include "capture_command_gate.h"
@@ -25,7 +26,10 @@
 #include <hotkeys.h>
 #include <image_file_writer.h>
 #include <inline_text_editor.h>
+#include <installation_lease.h>
+#include <installer_launcher.h>
 #include <log.h>
+#include <message_dialog.h>
 #include <overlay_renderer.h>
 #include <pin_window_manager.h>
 #include <selection_model.h>
@@ -38,6 +42,7 @@
 #include <vector>
 #include <welcome_window.h>
 #include <window_renderer.h>
+#include <windows_util.h>
 
 #include "capture_overlay_session.h"
 #include "open_st/version.h"
@@ -337,6 +342,22 @@ int App::Run(int)
     {
         return 0;
     }
+    // 语言读取也属于受保护资源；第二实例短期持有租约，主实例持有至退出清理结束。
+    // 入参：当前可执行目录。返回：维护占用立即报错，不读取正在被替换的资源。
+    this->installationLease_ = std::make_unique<InstallationLease>();
+    const InstallationLeaseStatus lease = this->installationLease_->Acquire(GetExecutableDirectory());
+    if (lease.state != InstallationLeaseState::Acquired)
+    {
+        (void)MessageBoxW(
+            nullptr,
+            lease.state == InstallationLeaseState::Busy
+                ? L"Installation files are in use. Please retry "
+                  L"later.\n安装目录正在被使用，请稍后重试。\nインストール先が使用中です。後で再試行してください。"
+                : L"Installation directory is not "
+                  L"accessible.\n无法访问安装目录。\nインストール先にアクセスできません。",
+            L"Open-ST", MB_OK | MB_ICONERROR);
+        return 1;
+    }
     if (!InitializeUiText() || !IsUiTextAvailable())
     {
         OPEN_ST_LOG_FATAL("Failed to initialize UI text resources.");
@@ -374,7 +395,8 @@ int App::Run(int)
     OPEN_ST_LOG_INFO("Application starting.");
 
     // 只有确认当前实例唯一后才读取或创建用户设置，避免第二实例参与配置写入。
-    const bool settingsInitialized = InitializeSettings();
+    SettingsWriteError settingsWriteError{};
+    const bool settingsInitialized = InitializeSettings(&settingsWriteError);
     if (settingsInitialized)
     {
         const std::optional<std::string> configuredLanguage = GetStringSetting("ui.language");
@@ -399,7 +421,8 @@ int App::Run(int)
     }
     else if (!IsSettingsPersistenceAvailable())
     {
-        const std::wstring message = GetUiText("settings.persistence_unavailable");
+        const std::wstring message = GetUiText(
+            settingsWriteError == SettingsWriteError::Busy ? "settings.file_busy" : "settings.persistence_unavailable");
         const std::wstring title = GetUiText("app.title");
         (void)MessageBoxW(this->DialogOwner(), message.c_str(), title.c_str(), MB_OK | MB_ICONWARNING);
     }
@@ -520,10 +543,11 @@ void App::ReportDataReadWarnings()
     {
         return;
     }
+    const std::optional<FileLeaseError> loggingFailure = ConsumeLoggingFailure();
     const bool settingsFailed = ConsumeSettingsReadWarning();
     const bool textsFailed = ConsumeUiTextReadWarning();
     const bool storageFailed = std::exchange(this->storageWarningPending_, false);
-    if (!settingsFailed && !textsFailed && !storageFailed)
+    if (!settingsFailed && !textsFailed && !storageFailed && !loggingFailure)
     {
         return;
     }
@@ -533,6 +557,13 @@ void App::ReportDataReadWarnings()
         if (!message.empty())
             message += L"\n";
         message += GetUiText("settings.storage.read_failed");
+    }
+    if (loggingFailure)
+    {
+        if (!message.empty())
+            message += L"\n";
+        message +=
+            GetUiText(loggingFailure->code == FileLeaseErrorCode::Busy ? "logging.file_busy" : "logging.write_failed");
     }
     const std::wstring title = GetUiText("app.title");
     // 读取告警文本本身若遇到新故障，本次合并提示已经覆盖，不留到下一条消息重复报告。
@@ -2195,10 +2226,22 @@ void App::ShowCleanup()
                                     {
                                         if (!stopped)
                                         {
-                                            if (!SetBoolSetting("startup.enabled", false))
+                                            SettingsWriteError settingsError{};
+                                            if (!SetBoolSetting("startup.enabled", false, &settingsError))
                                             {
-                                                statusKey = "cleanup.save_failed";
+                                                statusKey = settingsError == SettingsWriteError::Busy
+                                                                ? "settings.file_busy"
+                                                                : "cleanup.save_failed";
                                                 (void)renderer.SetStatus(GetUiText(statusKey));
+                                                if (settingsError == SettingsWriteError::Busy)
+                                                {
+                                                    MessageDialogOptions message;
+                                                    message.owner = renderer.NativeHandle();
+                                                    message.title = []() { return GetUiText("cleanup.title"); };
+                                                    message.message = []() { return GetUiText("settings.file_busy"); };
+                                                    message.acceptText = []() { return GetUiText("dialog.ok"); };
+                                                    (void)ShowMessageDialog(message);
+                                                }
                                                 return;
                                             }
                                             if (!this->ApplyStartup(false))
@@ -2229,11 +2272,34 @@ void App::ShowCleanup()
                                             (void)renderer.SetStatus(GetUiText(statusKey));
                                             return;
                                         }
-                                        if (deleteLogs && !ShutdownAndClearLogging())
+                                        FileLeaseError cleanupError;
+                                        std::size_t retained = 0;
+                                        if (deleteLogs && !ShutdownAndClearLogging(&cleanupError, &retained))
                                         {
-                                            statusKey = "cleanup.logs_failed";
+                                            statusKey = cleanupError.code == FileLeaseErrorCode::Busy
+                                                            ? "logging.file_busy"
+                                                            : "cleanup.logs_failed";
                                             (void)renderer.SetStatus(GetUiText(statusKey));
+                                            MessageDialogOptions message;
+                                            message.owner = renderer.NativeHandle();
+                                            message.title = []() { return GetUiText("cleanup.title"); };
+                                            message.message = [statusKey]() { return GetUiText(statusKey); };
+                                            message.acceptText = []() { return GetUiText("dialog.ok"); };
+                                            (void)ShowMessageDialog(message);
                                             return;
+                                        }
+                                        if (deleteLogs && retained != 0)
+                                        {
+                                            MessageDialogOptions message;
+                                            message.owner = renderer.NativeHandle();
+                                            message.title = []() { return GetUiText("cleanup.title"); };
+                                            message.message = [retained]()
+                                            {
+                                                const std::wstring count = std::to_wstring(retained);
+                                                return GetUiText("logging.retained", {{L"count", count}});
+                                            };
+                                            message.acceptText = []() { return GetUiText("dialog.ok"); };
+                                            (void)ShowMessageDialog(message);
                                         }
                                         exitRequested = true;
                                         (void)renderer.RequestClose();
@@ -2261,14 +2327,40 @@ void App::ShowCleanup()
 // 返回：无返回值；复用简单模态消息入口。
 void App::ShowAbout()
 {
-    // 生成包含构建版本号的关于窗口正文。
-    // 入参：无。
-    // 返回：当前语言的关于说明宽字符串，其中包含 OPEN_ST_VERSION。
-    this->ShowSimpleMessage([]() { return GetUiText("about.body", {{L"version", OPEN_ST_WIDEN(OPEN_ST_VERSION)}}); },
-                            // 提供关于窗口的本地化标题。
-                            // 入参：无。
-                            // 返回：about.title 对应的当前语言宽字符串。
-                            []() { return GetUiText("about.title"); }, MB_OK | MB_ICONINFORMATION);
+    if (this->dialogActive_ || this->CompletionBusy() || this->shuttingDown_ || this->welcoming_)
+        return;
+    CompletionBusyGuard guard(this->dialogActive_, [this]() { this->UpdateCaptureGate(); });
+    AboutWindowOptions options;
+    options.owner = this->DialogOwner();
+    options.icon = this->largeIcon_;
+    options.version = OPEN_ST_VERSION;
+    options.distribution = GetDefaultStringSetting("distribution.mode").value_or("");
+    options.cacheRoot = GetExecutableDirectory() / L"data" / L"updates";
+    options.activeRenderer = &this->messageRenderer_;
+    // 关闭应用后不允许关于窗口继续下载或启动。
+    // 入参：无。返回：退出意图。
+    options.stopping = [this]() { return this->shuttingDown_; };
+    // 沿用设置键盘与线程消息适配，不自建消息循环。
+    // 入参：message 为模态线程消息。返回：已消费为 true。
+    options.processThreadMessage = [this](MSG& message)
+    { return this->settingsWindow_ && this->settingsWindow_->ProcessDialogMessage(message); };
+    // 只启动 Update 在保护句柄存活期间交付的本地包。
+    // 入参：path 为已校验路径；owner 为关于窗口。返回：系统启动已接受时 true。
+    options.launchInstaller = [](const std::filesystem::path& path, HWND owner)
+    { return LaunchInstaller(path, owner).started; };
+    // URL 校验由 Update 负责，宿主只交给默认浏览器。
+    // 入参：page 为具体正式版本页面。返回：Shell 接受时 true。
+    options.openPage = [this](const std::wstring& page)
+    {
+        return reinterpret_cast<INT_PTR>(
+                   ShellExecuteW(this->DialogOwner(), L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+    };
+    const bool shown = ShowAboutWindow(options);
+    this->messageRenderer_ = nullptr;
+    guard.Release();
+    if (!shown && !this->shuttingDown_)
+        this->ShowSimpleMessage([]() { return GetUiText("update.operation_failed"); },
+                                []() { return GetUiText("about.title"); }, MB_OK | MB_ICONERROR);
 }
 
 // 显示截图失败的本地化原因。

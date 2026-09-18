@@ -9,6 +9,7 @@ add_subdirectory(Localization)
 add_subdirectory(PinWindow)
 add_subdirectory(Settings)
 add_subdirectory(SystemIntegration)
+add_subdirectory(Update)
 
 add_library(open_st_application STATIC)
 add_library(OpenST::Application ALIAS open_st_application)
@@ -16,6 +17,8 @@ add_library(OpenST::Application ALIAS open_st_application)
 target_sources(open_st_application
     PRIVATE
         source/app.cpp
+        source/about_window.cpp
+        private/about_window.h
         source/app_overlay_render.cpp
         source/app_annotation.cpp
         source/app_annotation_properties.cpp
@@ -84,6 +87,7 @@ target_link_libraries(open_st_application
         OpenST::Common
         OpenST::WindowRenderer
         OpenST::SystemIntegration
+        OpenST::Update
 
         # 以下均为 Windows SDK 系统库，不属于 vcpkg 第三方依赖。
         ole32
