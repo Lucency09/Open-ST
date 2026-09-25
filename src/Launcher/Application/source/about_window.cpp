@@ -171,9 +171,17 @@ struct AboutDialog
                            this->options.launchInstaller &&
                            this->options.launchInstaller(path, this->renderer.NativeHandle());
                 });
-            (void)this->renderer.SetStatus(GetUiText(launched ? "update.installer_opened" : "update.open_failed"));
-            if (!launched && !this->closing)
+            if (launched)
+            {
+                // 交接已完成且下载文件已保留，再关闭关于窗口以解除宿主的模态托盘门禁。
+                // 只结束本窗口，不退出应用或丢弃贴图；用户可按安装器提示正常从托盘退出。
+                this->Close();
+            }
+            else if (!this->closing)
+            {
+                (void)this->renderer.SetStatus(GetUiText("update.open_failed"));
                 (void)this->Message(GetUiText("update.open_failed"));
+            }
         }
         else if (value.phase == UpdatePhase::Current || value.phase == UpdatePhase::LocalAhead ||
                  value.phase == UpdatePhase::Failed)

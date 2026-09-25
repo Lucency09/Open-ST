@@ -4,17 +4,17 @@
 
 Open-ST is a Windows screenshot and annotation tool with an installer and a portable ZIP. Offline Chinese, English and Japanese OCR is included, with editable results and fast/best models. Translation remains planned.
 
-The current version is **0.4.0**, targeting Windows 10 22H2 and Windows 11 x64. See the [release notes](docs/releases/v0.4.0.md) for tested paths and known limitations.
+The current version is **0.4.1**, targeting Windows 10 22H2 and Windows 11 x64. See the [release notes](docs/releases/v0.4.1.md) for tested paths and known limitations.
 
 ## Download and use
 
-Download from [v0.4.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.0):
+Download from [v0.4.1 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.1):
 
 - **Setup.exe**: current-user or all-users installation and a custom local directory. A verified Microsoft VC++ x64 runtime installer is included and runs only after confirmation when required.
 - **ZIP**: extract the complete archive into a writable folder and run Open-ST.exe. The [Microsoft VC++ x64 runtime](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) is required separately.
 - **SHA256SUMS.txt**: checksums for both packages. Open-ST and Setup are unsigned; checksums are not publisher signatures.
 
-Version 0.4.0 adds window preselection, full annotations, inline text, local erasing, mosaic, undo/redo, configurable shortcuts, installer packaging and updates from the About window. It also fixes the reported cross-monitor selection-drag frame pacing issue.
+Version 0.4.1 closes the About window after handing off a verified installer, restoring tray access so users can exit normally. Offline OCR from v0.4.0 remains included. When upgrading from an older build, close its About window and exit the old app before retrying installation.
 
 Default keys: Ctrl+Alt+Q captures, Ctrl+C or Enter copies, Ctrl+S saves, and Esc cancels by layer. Right-click edits an annotation's properties; it no longer cancels capture. Text editing uses Enter for a new line and Ctrl+Enter to finish.
 

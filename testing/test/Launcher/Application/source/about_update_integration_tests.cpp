@@ -19,6 +19,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <vector>
 #include <windows.h>
 
 namespace
@@ -142,6 +143,7 @@ HWND FindChild(HWND window, std::wstring text)
 enum class AboutScenario
 {
     InstallConfirm,
+    InstallLaunchFailure,
     InstallCancel,
     PortableConfirm,
     Current,
@@ -156,9 +158,11 @@ class AboutUpdateIntegrationTest : public testing::Test
     open_st::WindowRenderer* about_{};
     AboutScenario scenario_{};
     unsigned step_{}, prompts_{}, launches_{}, pages_{};
+    unsigned failedLaunchPrompts_{};
     bool stopped_{}, timedOut_{};
     UINT_PTR timer_{};
     std::wstring openedPage_;
+    std::vector<std::filesystem::path> launchedFiles_;
     std::chrono::steady_clock::time_point deadline_;
 
     // 建立隔离本地化、缓存目录和替身，不触碰实际运行资源。
@@ -187,6 +191,7 @@ class AboutUpdateIntegrationTest : public testing::Test
                                    {"update.downloading", {{"en-US", "Downloading {percent}"}}},
                                    {"update.cancelled", {{"en-US", "Cancelled"}}},
                                    {"update.installer_opened", {{"en-US", "Opened setup"}}},
+                                   {"update.open_failed", {{"en-US", "Cannot open setup"}}},
                                    {"update.portable_instructions", {{"en-US", "Extract portable"}}}};
         const nlohmann::json document{{"schemaVersion", 1}, {"languages", {"en-US"}}, {"texts", texts}};
         {
@@ -264,8 +269,10 @@ class AboutUpdateIntegrationTest : public testing::Test
         if (this->step_ == 1 && prompt != nullptr)
         {
             ++this->prompts_;
-            EXPECT_EQ(this->network_->assets.load(), 0U);
-            EXPECT_EQ(this->launches_, 0U);
+            const unsigned previousFailures =
+                this->scenario_ == AboutScenario::InstallLaunchFailure ? this->failedLaunchPrompts_ : 0U;
+            EXPECT_EQ(this->network_->assets.load(), previousFailures);
+            EXPECT_EQ(this->launches_, previousFailures);
             EXPECT_EQ(this->pages_, 0U);
             if (this->scenario_ == AboutScenario::Current)
             {
@@ -290,6 +297,40 @@ class AboutUpdateIntegrationTest : public testing::Test
                 (void)this->Click(prompt, L"Confirm");
             }
             return;
+        }
+        if (this->scenario_ == AboutScenario::InstallConfirm && this->launches_ != 0)
+        {
+            // 成功交接必须由产品主动关闭模态；测试不再替产品发送 WM_CLOSE。
+            return;
+        }
+        if (this->scenario_ == AboutScenario::InstallLaunchFailure)
+        {
+            if (this->step_ == 2 && this->launches_ > this->failedLaunchPrompts_ && prompt != nullptr)
+            {
+                EXPECT_NE(FindChild(prompt, L"Cannot open setup"), nullptr);
+                EXPECT_NE(this->about_, nullptr);
+                ++this->failedLaunchPrompts_;
+                this->step_ = 4;
+                (void)this->Click(prompt, L"Confirm");
+                return;
+            }
+            if (this->step_ == 4 && prompt == nullptr)
+            {
+                EXPECT_TRUE(IsWindow(about));
+                EXPECT_TRUE(IsWindowEnabled(about));
+                const HWND check = FindChild(about, L"Check updates");
+                EXPECT_NE(check, nullptr);
+                EXPECT_TRUE(IsWindowEnabled(check));
+                if (this->failedLaunchPrompts_ == 1)
+                {
+                    this->step_ = 1;
+                    (void)this->Click(about, L"Check updates");
+                    return;
+                }
+                this->step_ = 3;
+            }
+            if (this->step_ != 3)
+                return;
         }
         if (this->step_ == 2 && (this->launches_ != 0 || this->pages_ != 0))
             this->step_ = 3;
@@ -339,10 +380,11 @@ class AboutUpdateIntegrationTest : public testing::Test
         };
         // 验证系统交接时文件已经校验、存在且仍被保护，不执行其中的测试字节。
         // 入参：file 为下载路径；owner 为真实关于窗口。
-        // 返回：模拟交接成功。
+        // 返回：正常场景交接成功；失败场景始终拒绝以验证可重试和关闭。
         options.launchInstaller = [this](const std::filesystem::path& file, HWND owner)
         {
             ++this->launches_;
+            this->launchedFiles_.push_back(file);
             EXPECT_TRUE(IsWindow(owner));
             EXPECT_EQ(file.extension(), L".exe");
             std::ifstream input(file, std::ios::binary);
@@ -353,7 +395,7 @@ class AboutUpdateIntegrationTest : public testing::Test
             EXPECT_EQ(write, INVALID_HANDLE_VALUE);
             if (write != INVALID_HANDLE_VALUE)
                 CloseHandle(write);
-            return true;
+            return this->scenario_ != AboutScenario::InstallLaunchFailure;
         };
         EXPECT_TRUE(open_st::ShowAboutWindow(options));
         EXPECT_FALSE(this->timedOut_);
@@ -377,7 +419,7 @@ std::unique_ptr<UpdateTransport> MakeWinHttpUpdateTransport()
 
 // 安装版只有确认新版后才请求资产，并在校验成功后把受保护文件交给宿主。
 // 入参：无。
-// 返回：自动窗口契约断言，不代表人工视觉验收。
+// 返回：断言产品自动退出模态且交接文件在客户端析构后仍完整存在，不代表人工视觉验收。
 TEST_F(AboutUpdateIntegrationTest, installed_downloads_and_hands_off_only_after_confirmation)
 {
     this->Run(AboutScenario::InstallConfirm);
@@ -386,6 +428,28 @@ TEST_F(AboutUpdateIntegrationTest, installed_downloads_and_hands_off_only_after_
     EXPECT_EQ(this->network_->assets.load(), 1U);
     EXPECT_EQ(this->launches_, 1U);
     EXPECT_EQ(this->pages_, 0U);
+    ASSERT_EQ(this->launchedFiles_.size(), 1U);
+    ASSERT_TRUE(std::filesystem::exists(this->launchedFiles_.front()));
+    std::ifstream input(this->launchedFiles_.front(), std::ios::binary);
+    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(bytes, "abc");
+}
+
+// 启动失败显示错误并恢复关于窗口交互，用户能再次检查并在第二次失败后正常关闭。
+// 入参：无。
+// 返回：两次下载和启动请求均可到达，失败的未交接文件均被清理。
+TEST_F(AboutUpdateIntegrationTest, failed_installer_launch_preserves_about_for_retry_and_user_close)
+{
+    this->Run(AboutScenario::InstallLaunchFailure);
+    EXPECT_EQ(this->prompts_, 2U);
+    EXPECT_EQ(this->failedLaunchPrompts_, 2U);
+    EXPECT_EQ(this->network_->queries.load(), 2U);
+    EXPECT_EQ(this->network_->assets.load(), 2U);
+    EXPECT_EQ(this->launches_, 2U);
+    EXPECT_EQ(this->pages_, 0U);
+    ASSERT_EQ(this->launchedFiles_.size(), 2U);
+    for (const auto& file : this->launchedFiles_)
+        EXPECT_FALSE(std::filesystem::exists(file));
 }
 
 // 取消确认窗口后不得请求安装包或产生任何外部启动意图。

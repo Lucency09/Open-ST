@@ -1230,6 +1230,11 @@
       "zh-CN": "正在结束文字识别，完成后继续退出清理…",
       "en-US": "Stopping recognition before exit and cleanup…",
       "ja-JP": "終了処理の前に文字認識を停止しています…"
+    },
+    "dialog.cancel": {
+      "zh-CN": "取消",
+      "en-US": "Cancel",
+      "ja-JP": "キャンセル"
     }
   }
 }
