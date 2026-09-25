@@ -1,14 +1,19 @@
 # Open-ST 实现进度
 
 更新时间：2026-09-25
-当前开发版本：`0.4.0`；已发布版本：[v0.3.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.3.0)。
+当前开发版本：`0.4.0`；已发布版本：[v0.4.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.0)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
-## 2026-09-25 v0.4.0 发布准备
+## 2026-09-25 v0.4.0 发布
 
 - [x] 用户明确要求整理提交并发布新版本；本轮版本定为 v0.4.0，默认启用本地 OCR。
 - [x] 子 Agent 发布前复核未发现新增代码阻塞；六模型、许可证和测试证据已核对，未验收项目及未签名/D-066等限制写入[发行说明](releases/v0.4.0.md)。
-- [ ] 从版本化提交的干净检出重建 Setup、ZIP、SHA256SUMS，并核对远端资产后正式公开。
+- [x] 从 `2b5808c13f99bbd8632df120ec06de84c0b5da3e` 的干净检出重建，记录 dirty=false、OCR=ON；Setup、ZIP、SHA256SUMS 已上传并核对远端哈希，v0.4.0 正式公开且为 Latest。
+- [x] 发布前纠正热键测试的后台前提，原断言保留且三次通过；最终815项802通过、12跳过、1既有D-066失败，日志 testing/testoutput/release040-tests-final.log。
+- [x] 生产 WinHTTP 查询 Latest 返回 HTTP200，成功解析版本0.4.0；不下载或执行安装器。
+- 本次发布不改变实机待验收项目；源码与标签已推送，原有 .gitignore 改动未纳入。
+- Open-ST-0.4.0-win-x64.zip：50,736,783字节；SHA-256 `d1caac12825b9477766f4127bb96c2841714dc36a09c47761d0d989653eea07e`。
+- Open-ST-0.4.0-win-x64-Setup.exe：72,642,282字节；SHA-256 `2cf6d22e1e003b2fdf82510bfd5c464cb49c0e910e41004b65b9ef7002d01067`。
 
 ## 2026-09-25 OCR 施工与验证
 

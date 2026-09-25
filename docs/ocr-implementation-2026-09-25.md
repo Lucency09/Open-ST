@@ -2,7 +2,7 @@
 
 ## 结论与交付范围
 
-用户批准 [OCR 方案](design/ocr-v0.4.md) 后完成本地识别、结果编辑/复制、设置和构建发布接入。当前仅为开发树与本地候选，未提交 Git、未公开发布；公开 v0.3.0 不含本次 OCR。源码版本暂仍为 0.3.0，下一次发行前需另行确定新版本，不能将本地同名候选与公开资产混用。
+用户批准 [OCR 方案](design/ocr-v0.4.md) 后完成本地识别、结果编辑/复制、设置和构建发布接入。施工时为未发布候选，后于 2026-09-25 按用户授权提交并发布为 [v0.4.0](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.0)，发行源码为 `2b5808c`。以下保留施工阶段的验证与候选体积；正式包校验记录见进度表，发布未追认人工验收。
 
 可运行产物：`build/Release/Open-ST.exe`（OCR=ON）。用户反馈 Debug 未显示入口后，已重新启用并构建 Debug；当前 Debug 和 Release 均保留 OCR=ON，六模型哈希复核通过。用户随后要求直接用脚本变量配置：build.ps1/test.ps1 顶部 `$EnableOcr = $true`，正常构建无需额外参数；需要关闭时改为 false。本地 Setup/ZIP 位于 `artifacts/0.3.0/`，以本次 build-record.json、SHA256SUMS 区分；不得直接替换远端 v0.3.0 资产。
 
