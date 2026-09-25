@@ -123,12 +123,12 @@ class SettingsWindowTest : public testing::Test
             "resources/default_settings.json",
             R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
             R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q",)"
-            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95}})");
+            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95,"ocr.model":"fast","ocr.language":"chi_sim+eng+jpn"}})");
         this->Write(
             "data/settings.json",
             R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
             R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q",)"
-            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95}})");
+            R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95,"ocr.model":"fast","ocr.language":"chi_sim+eng+jpn"}})");
         ASSERT_TRUE(open_st::InitializeSettings(this->root_));
         open_st::SettingsWindowTestAccess::SetConfirmation(this->window_,
                                                            // 记录恢复默认确认次数，并返回用例指定的确认结果。
@@ -320,6 +320,28 @@ class SettingsWindowTest : public testing::Test
         // 入参：value 为质量值。
         // 返回：1 到 100 含端点为 true。
         callbacks.validJpegQuality = [](std::int64_t value) { return value >= 1 && value <= 100; };
+        callbacks.ocrAvailable = this->ocrAvailable_;
+        // 用测试选项模拟上级领域，不依赖真实识别库。
+        // 入参：无。
+        // 返回：模型档位与显示名称。
+        callbacks.ocrModels = []()
+        { return std::vector<open_st::SettingsOption>{{"fast", L"Fast model"}, {"best", L"Best model"}}; };
+        // 提供两个可区分的识别语言供草稿测试选择。
+        // 入参：无。
+        // 返回：识别语言选项。
+        callbacks.ocrLanguages = []()
+        {
+            return std::vector<open_st::SettingsOption>{{"chi_sim+eng+jpn", L"Mixed language"},
+                                                        {"eng", L"English OCR"}};
+        };
+        // 模拟领域复核，可在提交前使原先选项失效。
+        // 入参：model 和 language 为配置 token。
+        // 返回：模拟领域允许该组合时为 true。
+        callbacks.validOcrOptions = [this](std::string_view model, std::string_view language)
+        {
+            return this->ocrValid_ && (model == "fast" || model == "best") &&
+                   (language == "chi_sim+eng+jpn" || language == "eng");
+        };
         // 用隔离计数器模拟维护，不打开真实目录或删除真实日志。
         // 入参：无。
         // 返回：当前测试指定的目录打开结果。
@@ -412,6 +434,29 @@ class SettingsWindowTest : public testing::Test
         this->Pump();
     }
 
+    // 根据选项文字定位 OCR 下拉框并模拟用户选择。
+    // 入参：label 为测试领域提供的唯一选项名称。
+    // 返回：无；不依赖布局控件编号。
+    void SelectOcr(const wchar_t* label)
+    {
+        const HWND viewport =
+            FindWindowExW(this->window_.NativeHandle(), nullptr, L"OpenST.WindowRendererPage", nullptr);
+        for (HWND combo = FindWindowExW(viewport, nullptr, L"ComboBox", nullptr); combo != nullptr;
+             combo = FindWindowExW(viewport, combo, L"ComboBox", nullptr))
+        {
+            const LRESULT index =
+                SendMessageW(combo, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1), reinterpret_cast<LPARAM>(label));
+            if (index == CB_ERR)
+                continue;
+            SendMessageW(combo, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+            SendMessageW(viewport, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(combo), CBN_SELCHANGE),
+                         reinterpret_cast<LPARAM>(combo));
+            this->Pump();
+            return;
+        }
+        FAIL() << "OCR option missing";
+    }
+
     // 真实按钮点击后派发可能产生的延迟关闭。
     // 入参：key 为要点击按钮的测试文本键。
     // 返回：无返回值。
@@ -498,6 +543,8 @@ class SettingsWindowTest : public testing::Test
     bool openDirectorySucceeds_{true};
     bool clearHistorySucceeds_{true};
     bool maintenanceRunning_{};
+    bool ocrAvailable_{};
+    bool ocrValid_{true};
     std::wstring maintenanceText_{L"maintenance idle"};
     open_st::SettingsWindow window_;
 };
@@ -1682,5 +1729,77 @@ TEST_F(SettingsWindowTest, busy_save_displays_renderer_message_and_keeps_draft)
     this->Click("settings.apply");
     EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
     EXPECT_EQ(this->appliedCount_, 1);
+}
+// 验证关闭 OCR 时没有设置页，未知 OCR 保存值不被恢复全部覆盖。
+// 入参：无。
+// 返回：无；断言页数及关闭功能的持久化边界。
+TEST_F(SettingsWindowTest, disabled_ocr_has_no_page_and_restore_preserves_ocr_values)
+{
+    ASSERT_TRUE(open_st::SetStringSetting("ocr.model", "custom-disabled-value"));
+    ASSERT_NE(this->Open(), nullptr);
+    EXPECT_EQ(TabCtrl_GetItemCount(this->Control(WC_TABCONTROLW)), 4);
+    this->SelectPage(3);
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "custom-disabled-value");
+}
+
+// 验证 OCR 参数只在应用时保存，取消窗口丢弃后续编辑。
+// 入参：无。
+// 返回：无；断言真实绑定及独立配置键。
+TEST_F(SettingsWindowTest, ocr_options_save_together_and_cancel_discards_later_draft)
+{
+    this->ocrAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    EXPECT_EQ(TabCtrl_GetItemCount(this->Control(WC_TABCONTROLW)), 5);
+    this->SelectPage(3);
+    this->SelectOcr(L"Best model");
+    this->SelectOcr(L"English OCR");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "fast");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.language"), "chi_sim+eng+jpn");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "best");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.language"), "eng");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "en-US");
+    this->SelectOcr(L"Fast model");
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "best");
+}
+
+// 验证当前页恢复默认只改 OCR 草稿，点击应用才持久化。
+// 入参：无。
+// 返回：无；断言保存时机和其他页面不受影响。
+TEST_F(SettingsWindowTest, ocr_page_restore_changes_only_ocr_draft)
+{
+    this->ocrAvailable_ = true;
+    ASSERT_TRUE(open_st::SetStringSetting("ocr.model", "best"));
+    ASSERT_TRUE(open_st::SetStringSetting("ocr.language", "eng"));
+    ASSERT_TRUE(open_st::SetStringSetting("ui.language", "ja-JP"));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "best");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "fast");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.language"), "chi_sim+eng+jpn");
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+}
+
+// 验证选择后领域规则失效时，提交前复核阻止保存并保留草稿。
+// 入参：无。
+// 返回：无；再次恢复有效后能保存原草稿。
+TEST_F(SettingsWindowTest, ocr_invalidated_options_are_rechecked_before_commit)
+{
+    this->ocrAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->SelectOcr(L"Best model");
+    this->ocrValid_ = false;
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "fast");
+    EXPECT_NE(this->Control(L"Static", L"settings.ocr.invalid"), nullptr);
+    this->ocrValid_ = true;
+    this->SelectOcr(L"Best model");
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "best");
 }
 } // namespace

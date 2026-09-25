@@ -4,9 +4,18 @@
 # 3.28 及以上版本能够稳定支持本项目使用的现代 CMake 功能和 vcpkg manifest 模式。
 cmake_minimum_required(VERSION 3.28)
 
+# OCR 是默认产品能力；在 project 加载 vcpkg 工具链之前同步实际依赖选择。
+option(OPEN_ST_ENABLE_OCR "构建本地 OCR 模块" ON)
+if(OPEN_ST_ENABLE_OCR)
+    list(APPEND VCPKG_MANIFEST_FEATURES ocr)
+    list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+else()
+    list(REMOVE_ITEM VCPKG_MANIFEST_FEATURES ocr)
+endif()
+
 # 声明项目名称、当前版本和使用的编程语言。
 # VERSION 会提供 PROJECT_VERSION 等变量，并用于生成程序内显示的版本号。
-project(OpenST VERSION 0.3.0 LANGUAGES CXX)
+project(OpenST VERSION 0.4.0 LANGUAGES CXX)
 
 # 让 CMake 在构建目录生成 compile_commands.json，供 IDE（C/C++ 插件 / clangd）解析
 # include 路径与编译宏。对产品构建和测试构建同时生效，且不影响任何编译行为。
@@ -24,8 +33,7 @@ option(OPEN_ST_ALLOW_WARNINGS "允许项目代码带警告通过编译" OFF)
 # 是否构建自动化测试与 Mock。普通产品构建关闭，仅允许 test.ps1 开启。
 option(OPEN_ST_BUILD_TESTS "构建 Open-ST 自动化测试与 Mock" OFF)
 
-# 以下功能会引入可选第三方依赖。默认关闭可以让基础骨架仅依赖 Windows SDK。
-option(OPEN_ST_ENABLE_OCR "构建本地 OCR 模块" OFF)
+# 翻译尚未实现，继续保留显式功能边界。
 option(OPEN_ST_ENABLE_TRANSLATION "构建翻译服务模块" OFF)
 
 # 把仓库内的 cmake/ 加入模块搜索路径，随后可按文件名 include 公共构建脚本。
@@ -37,6 +45,9 @@ include(OpenSTDependencies)
 # 创建所有自有目标共享的编译选项目标，并根据功能开关查找所需第三方包。
 open_st_create_project_options()
 open_st_resolve_dependencies()
+if(OPEN_ST_ENABLE_OCR)
+    include(OpenSTOcrModels)
+endif()
 
 # 根据模板生成版本头文件。@ONLY 表示只替换 @变量@，不会误处理源文件里的 ${变量}。
 configure_file(config/version.h.in generated/open_st/version.h @ONLY)

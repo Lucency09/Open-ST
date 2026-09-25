@@ -25,6 +25,12 @@ struct SettingsMaintenanceStatus final
     bool running{};
     std::wstring text;
 };
+// 设置下拉框的自有选项值，领域模块通过 Application 适配。
+struct SettingsOption final
+{
+    std::string value;
+    std::wstring label;
+};
 // 由上级 Application 提供本地化查询及保存通知，Settings 不依赖同级本地化模块。
 struct SettingsWindowCallbacks final
 {
@@ -107,6 +113,20 @@ struct SettingsWindowCallbacks final
     // 入参：int64_t 为质量值，合法范围由宿主规则确定。
     // 返回：可用于 JPEG 编码时为 true。
     std::function<bool(std::int64_t)> validJpegQuality;
+    // 只在当前构建提供 OCR 时开放对应设置页及默认恢复范围。
+    bool ocrAvailable{};
+    // 查询领域提供的 OCR 模型档位，不在 Settings 重复维护合法值。
+    // 入参：无。
+    // 返回：稳定配置值和当前语言显示名称。
+    std::function<std::vector<SettingsOption>()> ocrModels;
+    // 查询领域提供的 OCR 识别语言组合。
+    // 入参：无。
+    // 返回：稳定配置值和当前语言显示名称。
+    std::function<std::vector<SettingsOption>()> ocrLanguages;
+    // 提交前复核 OCR 参数组合，不加载模型或发起识别。
+    // 入参：模型档位、识别语言配置值，仅本次调用借用。
+    // 返回：领域允许的组合为 true。
+    std::function<bool(std::string_view, std::string_view)> validOcrOptions;
     // 打开日志目录，不保存当前草稿；成功打开为 true，缺少回调时操作不可用。
     std::function<bool()> openLogDirectory;
     // 启动已确认的历史清理；true 表示任务已接收，不表示删除完成。

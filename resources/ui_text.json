@@ -1080,6 +1080,156 @@
       "zh-CN": "已保留其他进程正在使用的 {count} 个日志文件。",
       "en-US": "Kept {count} log files that are in use by other processes.",
       "ja-JP": "他のプロセスが使用中のログ {count} 件を保持しました。"
+    },
+    "ocr.title": {
+      "zh-CN": "识别文字",
+      "en-US": "Recognize text",
+      "ja-JP": "文字認識"
+    },
+    "ocr.snapshot_help": {
+      "zh-CN": "结果基于点击识别时的截图。调整选区后，请关闭此窗口再重新识别。",
+      "en-US": "This result uses the capture at recognition time. Close this window and recognize again after adjusting the selection.",
+      "ja-JP": "認識開始時の画像に基づく結果です。範囲を変更したら、このウィンドウを閉じて再認識してください。"
+    },
+    "ocr.result": {
+      "zh-CN": "识别结果（可编辑）",
+      "en-US": "Recognized text (editable)",
+      "ja-JP": "認識結果（編集可能）"
+    },
+    "ocr.copy_all": {
+      "zh-CN": "复制全部",
+      "en-US": "Copy all",
+      "ja-JP": "すべてコピー"
+    },
+    "ocr.close": {
+      "zh-CN": "关闭",
+      "en-US": "Close",
+      "ja-JP": "閉じる"
+    },
+    "ocr.preparing": {
+      "zh-CN": "正在准备图像…",
+      "en-US": "Preparing image…",
+      "ja-JP": "画像を準備中…"
+    },
+    "ocr.loading": {
+      "zh-CN": "正在加载本地模型…",
+      "en-US": "Loading local models…",
+      "ja-JP": "ローカルモデルを読み込み中…"
+    },
+    "ocr.recognizing": {
+      "zh-CN": "正在识别文字…",
+      "en-US": "Recognizing text…",
+      "ja-JP": "文字を認識中…"
+    },
+    "ocr.completed": {
+      "zh-CN": "识别完成，可修改文字后复制。",
+      "en-US": "Recognition complete. Edit the text or copy it.",
+      "ja-JP": "認識が完了しました。編集してコピーできます。"
+    },
+    "ocr.empty": {
+      "zh-CN": "未识别到文字。",
+      "en-US": "No text was recognized.",
+      "ja-JP": "文字が検出されませんでした。"
+    },
+    "ocr.failed": {
+      "zh-CN": "识别失败，请缩小选区或更换识别设置后重试。",
+      "en-US": "Recognition failed. Try a smaller selection or different recognition settings.",
+      "ja-JP": "認識に失敗しました。範囲や認識設定を変更して再試行してください。"
+    },
+    "ocr.model_error": {
+      "zh-CN": "本地模型缺失或校验失败，请修复安装或恢复完整便携包。",
+      "en-US": "Local models are missing or damaged. Repair the installation or restore the complete portable package.",
+      "ja-JP": "ローカルモデルが欠落または破損しています。インストールを修復するか、完全なポータブル版を復元してください。"
+    },
+    "ocr.cancelled": {
+      "zh-CN": "识别已取消。",
+      "en-US": "Recognition cancelled.",
+      "ja-JP": "認識をキャンセルしました。"
+    },
+    "ocr.busy": {
+      "zh-CN": "正在结束上次识别，请关闭此窗口后稍后重试。",
+      "en-US": "The previous recognition is stopping. Close this window and try again shortly.",
+      "ja-JP": "前回の認識を終了中です。このウィンドウを閉じて、少し待ってから再試行してください。"
+    },
+    "ocr.unavailable": {
+      "zh-CN": "无法准备文字识别，请稍后重试。",
+      "en-US": "Could not prepare text recognition. Please try again.",
+      "ja-JP": "文字認識を準備できませんでした。再試行してください。"
+    },
+    "ocr.too_large": {
+      "zh-CN": "图像或结果超过处理上限，请缩小选区。",
+      "en-US": "The image or result exceeds the processing limit. Select a smaller area.",
+      "ja-JP": "画像または結果が処理上限を超えています。範囲を小さくしてください。"
+    },
+    "ocr.copied": {
+      "zh-CN": "文字已复制。",
+      "en-US": "Text copied.",
+      "ja-JP": "文字をコピーしました。"
+    },
+    "ocr.copy_failed": {
+      "zh-CN": "复制失败，文字仍然保留，请重试。",
+      "en-US": "Could not copy. Your text is preserved; try again.",
+      "ja-JP": "コピーに失敗しました。文字は保持されています。再試行してください。"
+    },
+    "settings.ocr.title": {
+      "zh-CN": "文字识别",
+      "en-US": "Text recognition",
+      "ja-JP": "文字認識"
+    },
+    "settings.ocr.model": {
+      "zh-CN": "识别模型",
+      "en-US": "Recognition model",
+      "ja-JP": "認識モデル"
+    },
+    "settings.ocr.language": {
+      "zh-CN": "识别语言",
+      "en-US": "Recognition language",
+      "ja-JP": "認識言語"
+    },
+    "settings.ocr.help": {
+      "zh-CN": "识别完全在本机执行。设置只影响下一次识别，与界面语言独立。",
+      "en-US": "Recognition runs entirely on this device. Changes apply to the next recognition and are independent of the interface language.",
+      "ja-JP": "認識は端末内で実行されます。設定は次回の認識に適用され、表示言語とは独立しています。"
+    },
+    "settings.ocr.invalid": {
+      "zh-CN": "请选择有效的识别模型和语言。",
+      "en-US": "Select a valid recognition model and language.",
+      "ja-JP": "有効な認識モデルと言語を選択してください。"
+    },
+    "ocr.model.fast": {
+      "zh-CN": "快速（fast）",
+      "en-US": "Fast",
+      "ja-JP": "高速（fast）"
+    },
+    "ocr.model.best": {
+      "zh-CN": "精度优先（best）",
+      "en-US": "Accuracy first (best)",
+      "ja-JP": "精度優先（best）"
+    },
+    "ocr.language.chi_sim+eng+jpn": {
+      "zh-CN": "中英日混合",
+      "en-US": "Chinese, English and Japanese",
+      "ja-JP": "中国語・英語・日本語"
+    },
+    "ocr.language.chi_sim": {
+      "zh-CN": "简体中文",
+      "en-US": "Simplified Chinese",
+      "ja-JP": "簡体字中国語"
+    },
+    "ocr.language.eng": {
+      "zh-CN": "英文",
+      "en-US": "English",
+      "ja-JP": "英語"
+    },
+    "ocr.language.jpn": {
+      "zh-CN": "日文",
+      "en-US": "Japanese",
+      "ja-JP": "日本語"
+    },
+    "ocr.stopping": {
+      "zh-CN": "正在结束文字识别，完成后继续退出清理…",
+      "en-US": "Stopping recognition before exit and cleanup…",
+      "ja-JP": "終了処理の前に文字認識を停止しています…"
     }
   }
 }

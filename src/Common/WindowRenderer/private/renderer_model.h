@@ -28,6 +28,10 @@ struct Node
     std::int64_t minimum{};
     std::int64_t maximum{};
     bool slider{};
+    bool multiline{};
+    int visibleLines{6};
+    bool verticalScroll{true};
+    int maxLength{};
     std::vector<Node> children;
 };
 struct Page

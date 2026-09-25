@@ -4,6 +4,7 @@
 #include "image_encoder.h"
 
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace open_st
@@ -85,6 +86,24 @@ bool ClipboardFailure(const wchar_t* operation, std::wstring& error)
     const DWORD code = GetLastError();
     error = std::wstring(operation) + L" Win32=" + std::to_wstring(code);
     return false;
+}
+
+// 发布已经填充的全局内存，复用所有格式的解锁与剪贴板会话流程。
+// 入参：owner 为有效窗口；allocated 为仍由调用方管理的已锁内存；format 为格式；api 为接口；error 接收诊断。
+// 返回：成功转交系统为 true，失败为 false，调用方须释放未转交内存。
+bool PublishClipboardMemory(HWND owner, HGLOBAL allocated, UINT format, const ClipboardApi& api, std::wstring& error)
+{
+    SetLastError(ERROR_SUCCESS);
+    if (api.unlock(allocated) == FALSE && GetLastError() != ERROR_SUCCESS)
+        return ClipboardFailure(L"Unlock clipboard memory", error);
+    if (api.open(owner) == FALSE)
+        return ClipboardFailure(L"Open clipboard", error);
+    const ClipboardSession session(api);
+    if (api.empty() == FALSE)
+        return ClipboardFailure(L"Empty clipboard", error);
+    if (api.set(format, allocated) == nullptr)
+        return ClipboardFailure(L"Publish clipboard data", error);
+    return true;
 }
 
 // 将已校验的图像直接写入完整 DIB 缓冲区，不分配临时像素副本。
@@ -171,24 +190,8 @@ bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi&
         return ClipboardFailure(L"Lock clipboard memory", error);
     }
     FillClipboardDib(image, static_cast<std::uint8_t*>(destination));
-    SetLastError(ERROR_SUCCESS);
-    if (api.unlock(allocated) == FALSE && GetLastError() != ERROR_SUCCESS)
-    {
-        return ClipboardFailure(L"Unlock clipboard memory", error);
-    }
-    if (api.open(owner) == FALSE)
-    {
-        return ClipboardFailure(L"Open clipboard", error);
-    }
-    const ClipboardSession session(api);
-    if (api.empty() == FALSE)
-    {
-        return ClipboardFailure(L"Empty clipboard", error);
-    }
-    if (api.set(CF_DIB, allocated) == nullptr)
-    {
-        return ClipboardFailure(L"Publish clipboard image", error);
-    }
+    if (!PublishClipboardMemory(owner, allocated, CF_DIB, api, error))
+        return false;
     memory.Release();
     return true;
 }
@@ -200,5 +203,74 @@ bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi&
 bool CopyImageToClipboard(HWND owner, const SdrImageView& image, std::wstring& error)
 {
     return CopyImageWithApi(owner, image, ClipboardApi{}, error);
+}
+
+// 校验 Unicode 文本并通过共享发布流程交给系统剪贴板。
+// 入参：owner 为有效窗口；text 为完整 UTF-16 文本；api 为借用接口；error 接收不含正文的诊断。
+// 返回：成功为 true；准备失败不清空剪贴板，发布失败释放仍由本地拥有的内存。
+bool CopyTextWithApi(HWND owner, std::wstring_view text, const ClipboardApi& api, std::wstring& error)
+{
+    error.clear();
+    if (owner == nullptr || api.isWindow(owner) == FALSE)
+    {
+        error = L"Clipboard owner is not a valid window";
+        return false;
+    }
+    if (text.size() > static_cast<std::size_t>((std::numeric_limits<int>::max)()) ||
+        text.find(L'\0') != std::wstring_view::npos ||
+        (!text.empty() && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
+                                              nullptr, 0, nullptr, nullptr) == 0))
+    {
+        error = L"Clipboard text is not valid UTF-16";
+        return false;
+    }
+    try
+    {
+        std::wstring normalized;
+        normalized.reserve(text.size());
+        for (std::size_t index = 0; index < text.size(); ++index)
+        {
+            const wchar_t character = text[index];
+            if (character == L'\r' || character == L'\n')
+            {
+                normalized.append(L"\r\n");
+                if (character == L'\r' && index + 1 < text.size() && text[index + 1] == L'\n')
+                    ++index;
+            }
+            else
+                normalized.push_back(character);
+        }
+        if (normalized.size() > (std::numeric_limits<std::size_t>::max)() / sizeof(wchar_t) - 1U)
+        {
+            error = L"Clipboard text is too large";
+            return false;
+        }
+        const std::size_t bytes = (normalized.size() + 1U) * sizeof(wchar_t);
+        const HGLOBAL allocated = api.allocate(GMEM_MOVEABLE, bytes);
+        if (allocated == nullptr)
+            return ClipboardFailure(L"Allocate clipboard memory", error);
+        ClipboardMemory memory(allocated, api);
+        void* const destination = api.lock(allocated);
+        if (destination == nullptr)
+            return ClipboardFailure(L"Lock clipboard memory", error);
+        std::memcpy(destination, normalized.c_str(), bytes);
+        if (!PublishClipboardMemory(owner, allocated, CF_UNICODETEXT, api, error))
+            return false;
+        memory.Release();
+        return true;
+    }
+    catch (const std::bad_alloc&)
+    {
+        error = L"Insufficient memory to copy clipboard text";
+        return false;
+    }
+}
+
+// 将 Unicode 文本发布到系统剪贴板，不附带图像或业务格式。
+// 入参：owner 为有效窗口；text 为完整 UTF-16 文本；error 接收不含正文的诊断。
+// 返回：成功为 true，失败为 false；成功后内存归系统所有。
+bool CopyTextToClipboard(HWND owner, std::wstring_view text, std::wstring& error)
+{
+    return CopyTextWithApi(owner, text, ClipboardApi{}, error);
 }
 } // namespace open_st

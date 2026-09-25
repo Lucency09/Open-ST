@@ -73,6 +73,18 @@ bool CopyImageToClipboard(HWND owner, const SdrImageView& image, std::wstring&)
     return probe.copyResult;
 }
 
+// 隔离新增文本入口，防止静态链接因 OCR 引用而重新拉入真实剪贴板对象。
+// 入参：owner/text 在贴图导出场景不应使用；error 接收隔离边界诊断。
+// 返回：始终失败并记录意外调用，不访问系统剪贴板。
+bool CopyTextToClipboard(HWND owner, std::wstring_view text, std::wstring& error)
+{
+    (void)owner;
+    (void)text;
+    ADD_FAILURE() << "Pin export must not publish OCR text";
+    error = L"Unexpected text clipboard operation in pin export test";
+    return false;
+}
+
 // 隔离编码写入，记录正式输出像素而不创建图片文件。
 // 入参：image 为原图，path 为保存位置，format 为选择格式，error 未使用。
 // 返回：配置的模拟写入结果，不创建文件。

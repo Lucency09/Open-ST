@@ -1,4 +1,4 @@
-Open-ST v0.3.0 Windows x64
+Open-ST v0.4.0 Windows x64
 
 本包版本以 Open-ST.exe 文件版本和 release-metadata.json 为准。
 本版程序和 Setup 未签名，Windows 可能显示发布者或信誉提示；SHA-256 不等于发布者签名。
@@ -20,7 +20,9 @@ Open-ST v0.3.0 Windows x64
 文件协调锁被占用时立即报错，不等待或自动重试。不同 Windows 用户可共享同目录数据，但各自开机启动登记仍独立。
 卸载保留数据时，安装器同时保留本路径的归属记录以支持原路径重装；明确删除数据成功后再删除该记录。
 
-本包不包含 OCR 或翻译模型。完整发行说明：https://github.com/Lucency09/Open-ST/releases/tag/v0.3.0
+OCR 能力以 release-metadata.json 中 ocr 开关为准：ON 时包含本地 Tesseract、fast/best 中英日六模型和可编辑结果；OFF 时不包含识别引擎和模型。翻译仍未接入。
+本版新增本地 OCR，默认包含 fast/best 中英日模型和可编辑结果。发行说明：https://github.com/Lucency09/Open-ST/releases/tag/v0.4.0
+OCR 真实截图、IME、跨屏/HDR/DPI和安装目录离线识别仍待逐项人工验收；极端长文本显示较慢，部分引擎阶段不能即时取消。
 当前用户安装／修复／资源备份／保留数据卸载和重装已在开发机验证；Windows 10、所有用户提权、多账户真实会话及缺运行库分支仍需对应环境验收。
 
 已知限制：D-066 贴图冗余位置请求测试仍失败；复杂几何首次构建可能较慢，HDR 综合颜色、设备丢失恢复和独立显示性能仍有后置事项。显式数据删除及不同版本覆盖升级尚未逐项实机验收。

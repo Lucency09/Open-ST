@@ -9,6 +9,7 @@ target_sources(open_st_common_tests
         source/json_file_tests.cpp
         source/coordination_tests.cpp
         source/logger_tests.cpp
+        source/sha256_tests.cpp
         source/windows_util_tests.cpp
 )
 

@@ -1,0 +1,16 @@
+// 从唯一受版本控制模型清单生成；运行时不接受磁盘清单修改信任锚。
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string_view>
+namespace open_st::ocr_detail
+{
+struct ModelRecord
+{
+    std::string_view family, language, file, sha256;
+    std::uint64_t size;
+};
+inline constexpr std::array<ModelRecord, 6> MODEL_RECORDS{{
+@OPEN_ST_OCR_MODEL_RECORDS@
+}};
+}

@@ -20,3 +20,23 @@ The runtime is installed only when required and after explicit user consent.
 The portable ZIP does not bundle or install this redistributable.
 Official information: https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
 Official installer: https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+Local OCR feature (enabled by default; controlled by the build script setting)
+Tesseract 5.5.1: https://github.com/tesseract-ocr/tesseract (Apache-2.0)
+Leptonica 1.85.0: https://github.com/DanBloomberg/leptonica (BSD-2-Clause)
+Official tessdata_fast/tessdata_best chi_sim, eng, jpn models (Apache-2.0).
+Exact model revisions, download URLs and SHA-256: packaging/ocr/models.json in the source tree.
+Models are distributed offline; the application does not upload images or text for recognition.
+Full upstream license texts: licenses/ocr/tesseract.txt and licenses/ocr/leptonica.txt.
+The Apache-2.0 license text also applies to the official language models.
+
+OCR runtime transitive dependencies resolved by the pinned vcpkg baseline:
+libarchive 3.8.1, bzip2 1.0.8, curl 8.16.0, OpenSSL 3.5.2,
+liblzma 5.8.1, lz4 1.10.0, zstd 1.5.7, zlib 1.3.1,
+libjpeg-turbo 3.1.1, TIFF 4.7.0, OpenJPEG 2.5.3,
+libwebp 1.6.0, libpng 1.6.50, giflib 5.2.2.
+Only DLLs reachable from the application are included in an OCR package.
+Full, unmodified upstream copyright/license notices are provided in licenses/ocr/
+using the corresponding vcpkg package name (openssl.txt, tiff.txt, etc.).
+These notices are retained in base builds for source-distribution completeness;
+base builds do not include the OCR runtime DLLs or models.

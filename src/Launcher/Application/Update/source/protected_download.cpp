@@ -9,6 +9,7 @@
 #include <cstring>
 #include <limits>
 #include <sddl.h>
+#include <sha256.h>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,30 +44,6 @@ struct LocalCloser
     }
 };
 using LocalMemory = std::unique_ptr<void, LocalCloser>;
-
-struct AlgorithmCloser
-{
-    // 释放 SHA-256 算法提供者。
-    // 入参：value 为 BCrypt 算法句柄。
-    // 返回：无。
-    void operator()(void* value) const noexcept
-    {
-        if (value != nullptr)
-            BCryptCloseAlgorithmProvider(value, 0);
-    }
-};
-
-struct HashCloser
-{
-    // 释放增量散列及由 BCrypt 分配的内部缓冲。
-    // 入参：value 为散列句柄。
-    // 返回：无。
-    void operator()(void* value) const noexcept
-    {
-        if (value != nullptr)
-            BCryptDestroyHash(value);
-    }
-};
 
 // 将文件系统错误分类为用户可处理的更新错误，不创建窗口或记录私有路径。
 // 入参：error 为输出分类；code 为 Win32 错误码。
@@ -167,7 +144,7 @@ bool VerifyPrivateDirectory(HANDLE directory, PSECURITY_DESCRIPTOR expected, Upd
 // 将完整 SHA-256 文本解码为固定 32 字节，不接受前缀、空白或不足长度。
 // 入参：text 为预期散列；output 为解码输出。
 // 返回：格式有效时 true，否则 false。
-bool ParseDigest(std::string_view text, std::array<unsigned char, 32>& output)
+bool ParseDigest(std::string_view text, std::array<std::byte, 32>& output)
 {
     if (text.size() != output.size() * 2)
         return false;
@@ -181,9 +158,9 @@ bool ParseDigest(std::string_view text, std::array<unsigned char, 32>& output)
         if (value > 15)
             return false;
         if (index % 2 == 0)
-            output[index / 2] = static_cast<unsigned char>(value << 4);
+            output[index / 2] = static_cast<std::byte>(value << 4);
         else
-            output[index / 2] |= static_cast<unsigned char>(value);
+            output[index / 2] |= static_cast<std::byte>(value);
     }
     return true;
 }
@@ -198,9 +175,8 @@ struct ProtectedDownload::Impl
     Handle file;
     LocalMemory fullSecurity;
     LocalMemory readSecurity;
-    std::unique_ptr<void, AlgorithmCloser> algorithm;
-    std::unique_ptr<void, HashCloser> hash;
-    std::array<unsigned char, 32> expectedDigest{};
+    Sha256 hash;
+    std::array<std::byte, 32> expectedDigest{};
     std::uint64_t expectedSize = 0;
     std::uint64_t receivedSize = 0;
     bool ownsDirectory = false;
@@ -485,20 +461,11 @@ std::unique_ptr<ProtectedDownload> ProtectedDownload::Create(const std::filesyst
         impl->expectedSize = expectedSize;
         if (!impl->Anchor(cacheRoot, error) || !impl->CreatePrivateDirectory(error))
             return {};
-        BCRYPT_ALG_HANDLE algorithm = nullptr;
-        if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
+        if (!impl->hash.IsValid())
         {
             error = UpdateDownloadError::Io;
             return {};
         }
-        impl->algorithm.reset(algorithm);
-        BCRYPT_HASH_HANDLE hash = nullptr;
-        if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0)
-        {
-            error = UpdateDownloadError::Io;
-            return {};
-        }
-        impl->hash.reset(hash);
         return std::make_unique<ProtectedDownload>(ConstructionKey{}, std::move(impl));
     }
     catch (...)
@@ -537,8 +504,7 @@ bool ProtectedDownload::Append(std::span<const std::byte> bytes, UpdateDownloadE
         const DWORD count = static_cast<DWORD>(std::min<std::size_t>(bytes.size() - offset, 1024 * 1024));
         DWORD written = 0;
         if (!WriteFile(this->impl_->file.get(), bytes.data() + offset, count, &written, nullptr) || written != count ||
-            BCryptHashData(this->impl_->hash.get(),
-                           reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data() + offset)), count, 0) < 0)
+            !this->impl_->hash.Append(bytes.subspan(offset, count)))
         {
             this->impl_->failed = true;
             error = UpdateDownloadError::Io;
@@ -577,9 +543,8 @@ bool ProtectedDownload::Complete(UpdateDownloadError& error)
             error = UpdateDownloadError::SizeMismatch;
             return false;
         }
-        std::array<unsigned char, 32> actualDigest{};
-        if (BCryptFinishHash(this->impl_->hash.get(), actualDigest.data(), static_cast<ULONG>(actualDigest.size()), 0) <
-            0)
+        std::array<std::byte, 32> actualDigest{};
+        if (!this->impl_->hash.Finish(actualDigest))
         {
             error = UpdateDownloadError::Io;
             return false;

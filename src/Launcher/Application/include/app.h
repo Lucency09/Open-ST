@@ -15,6 +15,7 @@
 
 namespace open_st
 {
+class OcrSession;
 class FrozenDesktopFrame;
 class CaptureOverlaySession;
 struct CaptureOverlayOutput;
@@ -86,6 +87,10 @@ class App final
     int Run(int showCommand);
 
   private:
+    // 从现有正式合成输出启动本地识别，编辑器继续保留。
+    // 入参：无。返回：无，失败保留截图会话。
+    void RecognizeSelection();
+    std::unique_ptr<OcrSession> ocrSession_;
     friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
     friend struct AppPinTestAccess;
     friend struct AppHotkeyTestAccess;

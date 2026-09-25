@@ -8,6 +8,9 @@
 #include <settings_window.h>
 #include <ui_text.h>
 #include <vector>
+#ifdef OPEN_ST_HAS_OCR
+#include <ocr_client.h>
+#endif
 
 namespace open_st
 {
@@ -42,6 +45,31 @@ PinWindowCallbacks App::MakePinCallbacks()
 SettingsWindowCallbacks App::MakeSettingsCallbacks()
 {
     SettingsWindowCallbacks callbacks;
+#ifdef OPEN_ST_HAS_OCR
+    callbacks.ocrAvailable = true;
+    // 从领域模块取得唯一模型档位，界面只负责本地化。
+    // 入参：无。返回：模型选项。
+    callbacks.ocrModels = []()
+    {
+        std::vector<SettingsOption> result;
+        for (auto value : OcrModelChoices())
+            result.push_back({std::string(value), GetUiText("ocr.model." + std::string(value))});
+        return result;
+    };
+    // 从领域模块取得语言组合，避免窗口复制合法值列表。
+    // 入参：无。返回：语言选项。
+    callbacks.ocrLanguages = []()
+    {
+        std::vector<SettingsOption> result;
+        for (auto value : OcrLanguageChoices())
+            result.push_back({std::string(value), GetUiText("ocr.language." + std::string(value))});
+        return result;
+    };
+    // 复用领域校验，Settings不链接OCR。
+    // 入参：model/language为草稿。返回：组合合法为true。
+    callbacks.validOcrOptions = [](std::string_view model, std::string_view language)
+    { return AreOcrOptionsValid({std::string(model), std::string(language)}); };
+#endif
     // 打开实际日志目录，不应用设置草稿。
     // 入参：无。
     // 返回：系统接受目录打开请求时为 true。

@@ -10,6 +10,7 @@
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
 #include "log_maintenance_task.h"
+#include "ocr_session.h"
 #include "overlay_input_queue.h"
 #include "save_directory.h"
 #include "save_image_dialog.h"
@@ -272,6 +273,11 @@ App::App(HINSTANCE instance)
 App::~App()
 {
     this->shuttingDown_ = true;
+    if (this->ocrSession_)
+    {
+        this->ocrSession_->Shutdown();
+        this->ocrSession_.reset();
+    }
     this->StopLogMaintenance();
     this->pendingPinId_ = 0;
     if (this->singleInstance_ != nullptr)
@@ -507,6 +513,12 @@ int App::Run(int)
     BOOL messageResult = 0;
     while ((messageResult = GetMessageW(&message, nullptr, 0, 0)) > 0)
     {
+        if (this->ocrSession_)
+        {
+            this->ocrSession_->Poll();
+            if (this->ocrSession_->Process(message))
+                continue;
+        }
         if (this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(message))
         {
             this->DrainLogMaintenance();
@@ -685,12 +697,22 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
     if (message == WM_CLOSE)
     {
         this->shuttingDown_ = true;
+        if (this->ocrSession_)
+            this->ocrSession_->Shutdown();
         this->StopLogMaintenance();
         this->pendingPinId_ = 0;
         if (this->pinManager_)
             this->pinManager_->Shutdown();
         this->CloseOverlay();
         this->UpdateCaptureGate();
+        return 0;
+    }
+    if (message == OcrWakeMessage || (message == WM_TIMER && wParam == OcrPollTimer))
+    {
+        if (this->ocrSession_)
+            this->ocrSession_->Poll();
+        if (this->shuttingDown_)
+            this->UpdateCaptureGate();
         return 0;
     }
     if (message == TOOLBAR_COMMAND_MESSAGE)
@@ -1044,6 +1066,8 @@ void App::UpdateCaptureGate() noexcept
 {
     const bool paused = this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
                         this->settingsBusy_ || this->hotkeyRecording_;
+    if (this->ocrSession_)
+        this->ocrSession_->Pause(paused);
     this->hotkeyBoundary_ = GetTickCount();
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
@@ -1060,7 +1084,8 @@ void App::UpdateCaptureGate() noexcept
     this->InvalidateToolbarCommands();
     if (this->shuttingDown_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy() &&
         !this->dialogActive_ && !this->settingsBusy_ && !this->welcoming_ &&
-        (!this->pinManager_ || !this->pinManager_->IsBusy()))
+        (!this->pinManager_ || !this->pinManager_->IsBusy()) &&
+        (!this->ocrSession_ || this->ocrSession_->ShutdownComplete()))
         PostQuitMessage(0);
 }
 
@@ -1082,7 +1107,7 @@ bool App::CanSubmitToolbarCommand() const noexcept
 // 返回：预订及消息投递成功时 true；状态无效、已有请求或投递失败时 false，并撤销失败预订。
 bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
 {
-    if (command < CaptureToolbarCommand::Cancel || command > CaptureToolbarCommand::MosaicTool)
+    if (command < CaptureToolbarCommand::Cancel || command > CaptureToolbarCommand::Ocr)
     {
         return false;
     }
@@ -1130,6 +1155,9 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
         break;
     case CaptureToolbarCommand::Pin:
         this->PinSelection();
+        break;
+    case CaptureToolbarCommand::Ocr:
+        this->RecognizeSelection();
         break;
     default:
         this->HandleAnnotationCommand(command);
@@ -1279,6 +1307,9 @@ void App::CreateCaptureToolbar() noexcept
             {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "capture.toolbar.pin", 1},
             {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
             {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
+#ifdef OPEN_ST_HAS_OCR
+        buttons.push_back({CaptureToolbarCommand::Ocr, ToolbarIcon::Ocr, "ocr.title", 3});
+#endif
         const ToolbarResult result = this->captureToolbar_->Create(
             this->instance_, this->overlaySession_->ActivationWindow(), std::move(buttons),
             this->MakeToolbarTextResolver(), this->MakeToolbarCommandHandler());
@@ -1917,6 +1948,8 @@ void App::CancelSelectionOrClose() noexcept
 // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
+    if (this->ocrSession_)
+        this->ocrSession_->EndCapture();
     this->CancelAnnotationPropertyRequest();
     if (!this->annotationInteraction_->CanClose() || this->annotationPreparing_ || this->overlayRendering_)
     {
@@ -2159,6 +2192,8 @@ void App::ShowCleanup()
     bool deleteLogs = false;
     bool stopped = false;
     bool exitRequested = false;
+    bool waitingForOcr = false;
+    std::function<void()> performCleanup;
     std::string statusKey;
     // 按当前语言刷新清理窗口的操作状态文字。
     // 入参：无显式入参；借用 renderer 和 statusKey。
@@ -2212,102 +2247,121 @@ void App::ShowCleanup()
         // 返回：无返回值；请求延迟关闭，业务已经停止时同时记录退出意图。
         const auto cancel = [&]()
         {
+            waitingForOcr = false;
             exitRequested = stopped;
             (void)renderer.RequestClose();
         };
         require(renderer.BindAction("cleanupCancel", cancel));
         require(renderer.SetCloseHandler(cancel));
         require(renderer.SetDefaultAction("cleanupCancel"));
-        require(renderer.BindAction("cleanupConfirm",
-                                    // 执行用户确认的启动项清理、业务停止和可选日志删除。
-                                    // 入参：无显式入参；借用清理窗口状态与 renderer，捕获 App。
-                                    // 返回：无返回值；失败显示状态并允许重试，成功请求关闭窗口并退出。
-                                    [&]()
-                                    {
-                                        if (!stopped)
-                                        {
-                                            SettingsWriteError settingsError{};
-                                            if (!SetBoolSetting("startup.enabled", false, &settingsError))
-                                            {
-                                                statusKey = settingsError == SettingsWriteError::Busy
-                                                                ? "settings.file_busy"
-                                                                : "cleanup.save_failed";
-                                                (void)renderer.SetStatus(GetUiText(statusKey));
-                                                if (settingsError == SettingsWriteError::Busy)
-                                                {
-                                                    MessageDialogOptions message;
-                                                    message.owner = renderer.NativeHandle();
-                                                    message.title = []() { return GetUiText("cleanup.title"); };
-                                                    message.message = []() { return GetUiText("settings.file_busy"); };
-                                                    message.acceptText = []() { return GetUiText("dialog.ok"); };
-                                                    (void)ShowMessageDialog(message);
-                                                }
-                                                return;
-                                            }
-                                            if (!this->ApplyStartup(false))
-                                            {
-                                                statusKey = "cleanup.startup_failed";
-                                                (void)renderer.SetStatus(GetUiText(statusKey));
-                                                return;
-                                            }
-                                            this->shuttingDown_ = true;
-                                            this->StopLogMaintenance();
-                                            if (this->settingsWindow_ != nullptr)
-                                            {
-                                                this->settingsWindow_->Close();
-                                            }
-                                            this->CloseOverlay();
-                                            if (!deleteLogs)
-                                            {
-                                                ShutdownLogging();
-                                            }
-                                            stopped = true;
-                                            (void)renderer.SetEnabled("deleteLogs", false);
-                                            (void)renderer.RefreshTexts();
-                                        }
-                                        if (this->hotkeys_ && !this->hotkeys_->Shutdown())
-                                        {
-                                            this->hotkeyCleanupPending_ = true;
-                                            statusKey = "cleanup.hotkey_failed";
-                                            (void)renderer.SetStatus(GetUiText(statusKey));
-                                            return;
-                                        }
-                                        FileLeaseError cleanupError;
-                                        std::size_t retained = 0;
-                                        if (deleteLogs && !ShutdownAndClearLogging(&cleanupError, &retained))
-                                        {
-                                            statusKey = cleanupError.code == FileLeaseErrorCode::Busy
-                                                            ? "logging.file_busy"
-                                                            : "cleanup.logs_failed";
-                                            (void)renderer.SetStatus(GetUiText(statusKey));
-                                            MessageDialogOptions message;
-                                            message.owner = renderer.NativeHandle();
-                                            message.title = []() { return GetUiText("cleanup.title"); };
-                                            message.message = [statusKey]() { return GetUiText(statusKey); };
-                                            message.acceptText = []() { return GetUiText("dialog.ok"); };
-                                            (void)ShowMessageDialog(message);
-                                            return;
-                                        }
-                                        if (deleteLogs && retained != 0)
-                                        {
-                                            MessageDialogOptions message;
-                                            message.owner = renderer.NativeHandle();
-                                            message.title = []() { return GetUiText("cleanup.title"); };
-                                            message.message = [retained]()
-                                            {
-                                                const std::wstring count = std::to_wstring(retained);
-                                                return GetUiText("logging.retained", {{L"count", count}});
-                                            };
-                                            message.acceptText = []() { return GetUiText("dialog.ok"); };
-                                            (void)ShowMessageDialog(message);
-                                        }
-                                        exitRequested = true;
-                                        (void)renderer.RequestClose();
-                                    }));
+        performCleanup =
+            // 执行用户确认的启动项清理、业务停止和可选日志删除。
+            // 入参：无显式入参；借用清理窗口状态与 renderer，捕获 App。
+            // 返回：无返回值；失败显示状态并允许重试，成功请求关闭窗口并退出。
+            [&]()
+        {
+            if (!stopped)
+            {
+                SettingsWriteError settingsError{};
+                if (!SetBoolSetting("startup.enabled", false, &settingsError))
+                {
+                    statusKey =
+                        settingsError == SettingsWriteError::Busy ? "settings.file_busy" : "cleanup.save_failed";
+                    (void)renderer.SetStatus(GetUiText(statusKey));
+                    if (settingsError == SettingsWriteError::Busy)
+                    {
+                        MessageDialogOptions message;
+                        message.owner = renderer.NativeHandle();
+                        message.title = []() { return GetUiText("cleanup.title"); };
+                        message.message = []() { return GetUiText("settings.file_busy"); };
+                        message.acceptText = []() { return GetUiText("dialog.ok"); };
+                        (void)ShowMessageDialog(message);
+                    }
+                    return;
+                }
+                if (!this->ApplyStartup(false))
+                {
+                    statusKey = "cleanup.startup_failed";
+                    (void)renderer.SetStatus(GetUiText(statusKey));
+                    return;
+                }
+                this->shuttingDown_ = true;
+                this->StopLogMaintenance();
+                if (this->settingsWindow_ != nullptr)
+                {
+                    this->settingsWindow_->Close();
+                }
+                this->CloseOverlay();
+                stopped = true;
+                (void)renderer.SetEnabled("deleteLogs", false);
+                (void)renderer.RefreshTexts();
+            }
+            if (this->ocrSession_ && !this->ocrSession_->ShutdownComplete())
+            {
+                this->ocrSession_->Shutdown();
+                waitingForOcr = true;
+                statusKey = "ocr.stopping";
+                (void)renderer.SetStatus(GetUiText(statusKey));
+                (void)renderer.SetEnabled("cleanupConfirm", false);
+                return;
+            }
+            if (!deleteLogs)
+                ShutdownLogging();
+            if (this->hotkeys_ && !this->hotkeys_->Shutdown())
+            {
+                this->hotkeyCleanupPending_ = true;
+                statusKey = "cleanup.hotkey_failed";
+                (void)renderer.SetStatus(GetUiText(statusKey));
+                return;
+            }
+            FileLeaseError cleanupError;
+            std::size_t retained = 0;
+            if (deleteLogs && !ShutdownAndClearLogging(&cleanupError, &retained))
+            {
+                statusKey = cleanupError.code == FileLeaseErrorCode::Busy ? "logging.file_busy" : "cleanup.logs_failed";
+                (void)renderer.SetStatus(GetUiText(statusKey));
+                MessageDialogOptions message;
+                message.owner = renderer.NativeHandle();
+                message.title = []() { return GetUiText("cleanup.title"); };
+                message.message = [statusKey]() { return GetUiText(statusKey); };
+                message.acceptText = []() { return GetUiText("dialog.ok"); };
+                (void)ShowMessageDialog(message);
+                return;
+            }
+            if (deleteLogs && retained != 0)
+            {
+                MessageDialogOptions message;
+                message.owner = renderer.NativeHandle();
+                message.title = []() { return GetUiText("cleanup.title"); };
+                message.message = [retained]()
+                {
+                    const std::wstring count = std::to_wstring(retained);
+                    return GetUiText("logging.retained", {{L"count", count}});
+                };
+                message.acceptText = []() { return GetUiText("dialog.ok"); };
+                (void)ShowMessageDialog(message);
+            }
+            exitRequested = true;
+            (void)renderer.RequestClose();
+        };
+        require(renderer.BindAction("cleanupConfirm", performCleanup));
         RendererWindowOptions options;
         options.owner = this->DialogOwner();
         options.icon = this->largeIcon_;
-        require(renderer.ShowModal(options));
+        require(renderer.ShowModal(options,
+                                   // 退出清理继续分派消息，后台结束后才关闭日志。
+                                   // 入参：message为模态循环消息。返回：不吞消息，让稳定宿主继续分派。
+                                   [&](MSG& message)
+                                   {
+                                       (void)message;
+                                       if (waitingForOcr && !exitRequested && this->ocrSession_->ShutdownComplete())
+                                       {
+                                           waitingForOcr = false;
+                                           (void)renderer.SetEnabled("cleanupConfirm", true);
+                                           performCleanup();
+                                       }
+                                       return false;
+                                   }));
     }
     catch (...)
     {
@@ -2318,7 +2372,7 @@ void App::ShowCleanup()
     if (exitRequested)
     {
         this->RemoveTrayIcon();
-        PostQuitMessage(0);
+        SendMessageW(this->messageWindow_, WM_CLOSE, 0, 0);
     }
 }
 

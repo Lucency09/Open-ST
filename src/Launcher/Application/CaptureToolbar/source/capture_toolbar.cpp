@@ -161,6 +161,18 @@ struct CaptureToolbar::Impl
         };
         switch (this->specs[index].icon)
         {
+        case ToolbarIcon::Ocr:
+            line(1, 5, 1, 1);
+            line(1, 1, 5, 1);
+            line(11, 1, 15, 1);
+            line(15, 1, 15, 5);
+            line(1, 11, 1, 15);
+            line(1, 15, 5, 15);
+            line(11, 15, 15, 15);
+            line(15, 15, 15, 11);
+            line(5, 5, 11, 5);
+            line(8, 5, 8, 11);
+            break;
         case ToolbarIcon::TextTool:
             line(2, 2, 14, 2);
             line(8, 2, 8, 14);

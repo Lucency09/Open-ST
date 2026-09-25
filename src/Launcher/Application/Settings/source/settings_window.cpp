@@ -33,7 +33,8 @@ class SettingsWindow::Impl final
             !callbacks.languageApplied || !callbacks.startupApplied || !callbacks.hotkeyDecode ||
             !callbacks.hotkeyEncode || !callbacks.hotkeyFormat || !callbacks.hotkeyPrepare || !callbacks.hotkeyFinish ||
             !callbacks.hotkeyStatus || !callbacks.hotkeyRecording || !callbacks.normalizeBorderColor ||
-            !callbacks.validImageFormat || !callbacks.validJpegQuality)
+            !callbacks.validImageFormat || !callbacks.validJpegQuality ||
+            (callbacks.ocrAvailable && (!callbacks.ocrModels || !callbacks.ocrLanguages || !callbacks.validOcrOptions)))
         {
             return false;
         }
@@ -43,6 +44,17 @@ class SettingsWindow::Impl final
         if (!ReadSettingsLayout(layout))
         {
             return false;
+        }
+        if (!this->callbacks_.ocrAvailable && layout.contains("pages") && layout["pages"].is_array())
+        {
+            auto& pages = layout["pages"];
+            for (auto page = pages.begin(); page != pages.end();)
+            {
+                if (page->is_object() && page->value("id", std::string{}) == "ocr")
+                    page = pages.erase(page);
+                else
+                    ++page;
+            }
         }
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
@@ -55,6 +67,11 @@ class SettingsWindow::Impl final
             {
                 if (result.code == "value_unavailable" && !this->ready_)
                     return;
+                if (result.id == "ocrModel" || result.id == "ocrLanguage")
+                {
+                    this->Require(this->renderer_->SetFieldError(result.id, this->Text("settings.ocr.invalid")));
+                    return;
+                }
                 if (result.id == "defaultSaveFormat" || result.id == "selectionBorderColor" ||
                     result.id == "jpegQuality")
                 {
@@ -85,6 +102,7 @@ class SettingsWindow::Impl final
         // 返回：宿主当前语言的界面文本；启动项状态键由宿主状态回调提供。
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
         this->BindStorageControls();
+        this->BindOcrControls();
         this->BindMaintenanceControls();
         this->Require(this->renderer_->BindKeyChord(
             "captureHotkey",
@@ -403,9 +421,104 @@ class SettingsWindow::Impl final
     // 返回：基线和有效草稿加载成功时为 true。
     bool OpenEditSession()
     {
-        return this->editSession_.Open(
-            {"ui.language", "capture.hotkey", "capture.selection_border_color", "export.default_format"},
-            {"startup.enabled"}, {"export.jpeg_quality"});
+        std::vector<std::string> strings{"ui.language", "capture.hotkey", "capture.selection_border_color",
+                                         "export.default_format"};
+        if (this->callbacks_.ocrAvailable)
+        {
+            strings.emplace_back("ocr.model");
+            strings.emplace_back("ocr.language");
+        }
+        return this->editSession_.Open(strings, {"startup.enabled"}, {"export.jpeg_quality"});
+    }
+
+    // 绑定 OCR 下拉草稿，领域选项及校验完全由宿主提供。
+    // 入参：无。
+    // 返回：无；关闭功能时不创建绑定或草稿。
+    void BindOcrControls()
+    {
+        if (!this->callbacks_.ocrAvailable)
+            return;
+        for (const bool model : {true, false})
+        {
+            const std::string id = model ? "ocrModel" : "ocrLanguage";
+            const std::string key = model ? "ocr.model" : "ocr.language";
+            this->Require(this->renderer_->BindOptions(id,
+                                                       // 查询即时领域选项并转换为公共渲染器协议。
+                                                       // 入参：无。
+                                                       // 返回：拥有选项值的查询结果，异常由渲染器捕获。
+                                                       [this, model]()
+                                                       {
+                                                           RendererOptionsResult result;
+                                                           const auto values = model ? this->callbacks_.ocrModels()
+                                                                                     : this->callbacks_.ocrLanguages();
+                                                           for (const SettingsOption& value : values)
+                                                               result.options.push_back({value.value, value.label});
+                                                           return result;
+                                                       }));
+            this->Require(this->renderer_->BindString(
+                id,
+                // 读取 OCR 草稿，不把无效配置替换成列表首项。
+                // 入参：无。
+                // 返回：完整配置值与读取状态。
+                [this, key]()
+                {
+                    const auto value = this->editSession_.ReadString(key);
+                    return RendererStringResult{value.has_value(), value.value_or(""), {}};
+                },
+                // 选择只改变设置草稿，下次识别才读取保存的参数。
+                // 入参：value 为新配置值。
+                // 返回：草稿变更是否被接受，不执行识别或持久化。
+                [this, key](std::string_view value)
+                {
+                    if (!this->ready_ || this->busy_ || !this->editSession_.ChangeString(key, value))
+                        return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                    this->SetStatus({});
+                    this->RefreshOcrErrors();
+                    this->UpdateButtons();
+                    return RendererChangeResult{
+                        true, this->OcrValid(this->editSession_) ? L"" : this->Text("settings.ocr.invalid")};
+                }));
+        }
+    }
+
+    // 按领域规则复核当前或默认候选，不在 Settings 复制允许值列表。
+    // 入参：candidate 为待验证设置草稿。
+    // 返回：功能关闭或组合有效时为 true。
+    bool OcrValid(const SettingsEditSession& candidate) const
+    {
+        if (!this->callbacks_.ocrAvailable)
+            return true;
+        const auto model = candidate.ReadString("ocr.model");
+        const auto language = candidate.ReadString("ocr.language");
+        return model && language && this->callbacks_.validOcrOptions(*model, *language);
+    }
+
+    // 标识 OCR 配置原始类型待显式修复的情况。
+    // 入参：无。
+    // 返回：开放的 OCR 字段存在类型修复需求时为 true。
+    bool OcrNeedsRepair() const noexcept
+    {
+        return this->callbacks_.ocrAvailable &&
+               (this->editSession_.RequiresRepair("ocr.model") || this->editSession_.RequiresRepair("ocr.language"));
+    }
+
+    // 本地化 OCR 字段错误，不更改参数草稿。
+    // 入参：无。
+    // 返回：无；关闭功能时不访问不存在的控件。
+    void RefreshOcrErrors()
+    {
+        if (!this->callbacks_.ocrAvailable)
+            return;
+        const bool valid = this->OcrValid(this->editSession_);
+        for (const bool model : {true, false})
+        {
+            const char* key = model ? "ocr.model" : "ocr.language";
+            const std::wstring error = !valid ? this->Text("settings.ocr.invalid")
+                                       : this->editSession_.RequiresRepair(key)
+                                           ? this->Text("settings.storage.repair_pending")
+                                           : L"";
+            this->Require(this->renderer_->SetFieldError(model ? "ocrModel" : "ocrLanguage", error));
+        }
     }
 
     // 为维护页绑定独立动作，旧布局不含这些控件时保持兼容。
@@ -486,11 +599,18 @@ class SettingsWindow::Impl final
 
     // 明确恢复范围，不扫描未知配置或首次欢迎、保存目录等非可设置字段。
     // 入参：无。
-    // 返回：当前产品已经开放编辑的六项字段。
+    // 返回：当前构建已经开放编辑的字段。
     std::vector<std::string> AllSettingKeys() const
     {
-        return {"ui.language",           "startup.enabled",    "capture.hotkey", "capture.selection_border_color",
-                "export.default_format", "export.jpeg_quality"};
+        std::vector<std::string> keys{"ui.language",           "startup.enabled",
+                                      "capture.hotkey",        "capture.selection_border_color",
+                                      "export.default_format", "export.jpeg_quality"};
+        if (this->callbacks_.ocrAvailable)
+        {
+            keys.emplace_back("ocr.model");
+            keys.emplace_back("ocr.language");
+        }
+        return keys;
     }
 
     // 校验候选的实际类型与业务语义，完全独立于原始未完成输入缓冲。
@@ -507,7 +627,7 @@ class SettingsWindow::Impl final
         const RendererOptionsResult options = this->QueryLanguages();
         return language && startup && hotkey && this->callbacks_.hotkeyDecode(*hotkey) && color &&
                this->callbacks_.normalizeBorderColor(*color) && format && this->callbacks_.validImageFormat(*format) &&
-               quality && this->callbacks_.validJpegQuality(*quality) && options.success &&
+               quality && this->callbacks_.validJpegQuality(*quality) && options.success && this->OcrValid(candidate) &&
                std::any_of(options.options.begin(), options.options.end(),
                            // 在当前资源选项中精确匹配候选语言。
                            // 入参：option 为正在检查的语言选项。
@@ -550,6 +670,20 @@ class SettingsWindow::Impl final
             }
             if (!replaced)
                 result += pattern[position++];
+        }
+        if (this->callbacks_.ocrAvailable)
+        {
+            for (const bool model : {true, false})
+            {
+                const auto values = model ? this->callbacks_.ocrModels() : this->callbacks_.ocrLanguages();
+                const auto selected = candidate.ReadString(model ? "ocr.model" : "ocr.language");
+                for (const SettingsOption& value : values)
+                {
+                    if (selected == value.value)
+                        result += L"\n" + this->Text(model ? "settings.ocr.model" : "settings.ocr.language") + L": " +
+                                  value.label;
+                }
+            }
         }
         return result;
     }
@@ -729,6 +863,7 @@ class SettingsWindow::Impl final
         this->Require(
             this->renderer_->SetFieldError("defaultSaveFormat", this->StorageFieldError("export.default_format")));
         this->Require(this->renderer_->SetFieldError("jpegQuality", this->StorageFieldError("export.jpeg_quality")));
+        this->RefreshOcrErrors();
     }
     // 判断当前草稿是否仍需注册或清理，宿主未提供查询时仅消费本地清理状态。
     // 入参：无。
@@ -805,17 +940,23 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled("languageSelector", this->ready_));
         if (this->callbacks_.startupApplied)
             this->Require(this->renderer_->SetEnabled("startupEnabled", this->ready_));
-        this->Require(this->renderer_->SetEnabled("applyButton",
-                                                  this->ready_ && this->StorageValid() &&
-                                                      (this->editSession_.IsDirty() || this->StorageNeedsRepair() ||
-                                                       this->pendingLanguage_.has_value() ||
-                                                       this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
+        this->Require(this->renderer_->SetEnabled(
+            "applyButton",
+            this->ready_ && this->StorageValid() && this->OcrValid(this->editSession_) &&
+                (this->editSession_.IsDirty() || this->StorageNeedsRepair() || this->OcrNeedsRepair() ||
+                 this->pendingLanguage_.has_value() || this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
         this->Require(this->renderer_->SetEnabled("startupRepairButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("captureHotkey", this->ready_));
         this->Require(this->renderer_->SetEnabled("selectionBorderColor", this->ready_));
         this->Require(this->renderer_->SetEnabled("defaultSaveFormat", this->ready_));
         this->Require(this->renderer_->SetEnabled("jpegQuality", this->ready_));
-        this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_ && this->StorageValid()));
+        if (this->callbacks_.ocrAvailable)
+        {
+            this->Require(this->renderer_->SetEnabled("ocrModel", this->ready_));
+            this->Require(this->renderer_->SetEnabled("ocrLanguage", this->ready_));
+        }
+        this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_ && this->StorageValid() &&
+                                                                      this->OcrValid(this->editSession_)));
         this->UpdateMaintenanceButtons();
     }
 
@@ -893,13 +1034,13 @@ class SettingsWindow::Impl final
         {
             return;
         }
-        if (!this->StorageValid())
+        if (!this->StorageValid() || !this->OcrValid(this->editSession_))
         {
             this->RefreshStorageErrors();
             return;
         }
-        if (!this->editSession_.IsDirty() && !this->StorageNeedsRepair() && !this->pendingLanguage_.has_value() &&
-            !this->pendingStartup_.has_value() && !this->HotkeyNeedsApply())
+        if (!this->editSession_.IsDirty() && !this->StorageNeedsRepair() && !this->OcrNeedsRepair() &&
+            !this->pendingLanguage_.has_value() && !this->pendingStartup_.has_value() && !this->HotkeyNeedsApply())
         {
             if (closeWhenDone)
             {
@@ -936,9 +1077,10 @@ class SettingsWindow::Impl final
         const std::optional<std::string> hotkey = commitSession.ReadString("capture.hotkey");
         if (!startup || !hotkey || (!restoreAll && !this->ValidateHotkey(*hotkey)))
             return;
-        if (!restoreAll && !this->StorageValid())
+        if (!restoreAll && (!this->StorageValid() || !this->OcrValid(commitSession)))
             return;
-        const bool dirty = restoreAll || commitSession.IsDirty() || this->StorageNeedsRepair();
+        const bool dirty =
+            restoreAll || commitSession.IsDirty() || this->StorageNeedsRepair() || this->OcrNeedsRepair();
         const bool needsHotkey = restoreAll || hotkeyChanged || this->HotkeyNeedsApply();
         if (dirty || needsHotkey)
         {
@@ -952,6 +1094,12 @@ class SettingsWindow::Impl final
             for (const char* key : {"capture.selection_border_color", "export.default_format", "export.jpeg_quality"})
                 if (commitSession.RequiresRepair(key))
                     requiredKeys.emplace_back(key);
+            if (this->callbacks_.ocrAvailable)
+            {
+                for (const char* key : {"ocr.model", "ocr.language"})
+                    if (commitSession.RequiresRepair(key))
+                        requiredKeys.emplace_back(key);
+            }
             if (commitSession.IsDirty("capture.selection_border_color") ||
                 commitSession.RequiresRepair("capture.selection_border_color"))
             {
@@ -1149,6 +1297,11 @@ class SettingsWindow::Impl final
                     fields.emplace_back("export.default_format");
                 if (page == this->renderer_->GetControlPageId("jpegQuality"))
                     fields.emplace_back("export.jpeg_quality");
+                if (this->callbacks_.ocrAvailable && page == this->renderer_->GetControlPageId("ocrModel"))
+                {
+                    fields.emplace_back("ocr.model");
+                    fields.emplace_back("ocr.language");
+                }
                 SettingsEditSession candidate = this->editSession_;
                 if (fields.empty() || !candidate.RestoreDefaults(fields))
                 {
@@ -1203,6 +1356,11 @@ class SettingsWindow::Impl final
                         this->SetStatus("settings.defaults_failed");
                         return;
                     }
+                }
+                if (std::find(fields.begin(), fields.end(), "ocr.model") != fields.end() && !this->OcrValid(candidate))
+                {
+                    this->SetStatus("settings.defaults_failed");
+                    return;
                 }
                 this->editSession_ = std::move(candidate);
                 if (std::find(fields.begin(), fields.end(), "export.jpeg_quality") != fields.end())

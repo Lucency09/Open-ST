@@ -10,6 +10,9 @@ add_subdirectory(Hotkeys)
 add_subdirectory(Settings)
 add_subdirectory(SystemIntegration)
 add_subdirectory(Update)
+if(OPEN_ST_ENABLE_OCR)
+    add_subdirectory(OCR)
+endif()
 
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp
     source/diagnostic_text_tests.cpp)
@@ -94,3 +97,21 @@ target_link_options(open_st_about_update_integration_tests PRIVATE
     "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
 gtest_discover_tests(open_st_about_update_integration_tests TEST_PREFIX "application."
     PROPERTIES LABELS "application;integration" TIMEOUT 20 RUN_SERIAL TRUE)
+
+# 单独编译真实 OCR 窗口/会话，链接可控识别和剪贴板替身；基础测试不引入引擎或模型。
+add_executable(open_st_ocr_interaction_tests source/ocr_interaction_tests.cpp
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/ocr_result_window.cpp"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/ocr_session.cpp"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/diagnostic_text.cpp")
+target_compile_definitions(open_st_ocr_interaction_tests PRIVATE OPEN_ST_HAS_OCR=1)
+target_link_libraries(open_st_ocr_interaction_tests PRIVATE
+    OpenST::Graphics OpenST::WindowRenderer OpenST::Common GTest::gtest_main)
+target_include_directories(open_st_ocr_interaction_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/OCR/include"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Export/include"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Localization/include")
+target_link_options(open_st_ocr_interaction_tests PRIVATE
+    "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
+gtest_discover_tests(open_st_ocr_interaction_tests TEST_PREFIX "application."
+    PROPERTIES LABELS "application;integration;ocr" TIMEOUT 30 RUN_SERIAL TRUE)

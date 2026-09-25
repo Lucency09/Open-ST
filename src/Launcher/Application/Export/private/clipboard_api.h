@@ -31,4 +31,8 @@ struct ClipboardApi
 // 返回：成功发布时为 true；准备或系统调用失败时为 false，并释放尚未移交的本地内存；清空剪贴板之后的失败无法恢复旧内容。
 [[nodiscard]] bool CopyImageWithApi(HWND owner, const SdrImageView& image, const ClipboardApi& api,
                                     std::wstring& error);
+// 通过可注入系统边界发布 Unicode 文本，供无剪贴板副作用的测试使用。
+// 入参：owner 为有效窗口；text 为完整 UTF-16 文本；api 为借用接口；error 接收诊断。
+// 返回：成功为 true，失败为 false；内存仅在成功发布后转交系统。
+[[nodiscard]] bool CopyTextWithApi(HWND owner, std::wstring_view text, const ClipboardApi& api, std::wstring& error);
 } // namespace open_st

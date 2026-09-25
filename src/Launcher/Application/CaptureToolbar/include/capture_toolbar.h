@@ -33,7 +33,8 @@ enum class CaptureToolbarCommand : std::uint32_t
     EllipseTool,
     EraserTool,
     TextTool,
-    MosaicTool
+    MosaicTool,
+    Ocr
 };
 enum class ToolbarIcon
 {
@@ -54,7 +55,8 @@ enum class ToolbarIcon
     EllipseTool,
     EraserTool,
     TextTool,
-    MosaicTool
+    MosaicTool,
+    Ocr
 };
 
 struct ToolbarButtonSpec

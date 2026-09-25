@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     使用两个位置参数构建并运行 Open-ST gTest 测试。
 
@@ -8,7 +8,7 @@
     批量测试跳过人工窗口；指定 case 时自动启用，结束后清除环境开关。
 
     本脚本不调用产品构建入口 build.ps1。测试配置和二进制写入
-    testing/testoutput/Debug；GoogleTest installed tree 保存在 .cache/。
+    testing/testoutput/Debug-OCR（关闭 OCR 时为 Debug）；依赖缓存保存在 .cache/。
 
 .EXAMPLE
     .\scripts\test.ps1
@@ -23,19 +23,21 @@
     .\scripts\test.ps1 capture GeometryTest.union_rectangles
 #>
 
+[CmdletBinding()]
+param(
+    [Parameter(Position = 0)][string]$moduleName = '',
+    [Parameter(Position = 1)][string]$caseName = ''
+)
+
 # 任一配置、编译或测试错误都立即终止，防止失败后继续运行并给出假成功结果。
 $ErrorActionPreference = 'Stop'
+# 测试构建配置：默认验证 OCR；需要基础配置回归时直接改为 $false。
+$EnableOcr = $true
 
 # 清除当前进程遗留开关，保证批量回归跳过人工窗口。
 $env:OPEN_ST_INTERACTIVE_UI_TESTS = $null
 
-# 使用 $args 而不是 param()，是为了保持“模块、case”两个纯位置参数的调用形式。
-if ($args.Count -gt 2) {
-    throw 'test.ps1 最多接受两个位置参数：模块名和 case 名。'
-}
-
-$moduleName = if ($args.Count -ge 1) { [string]$args[0] } else { '' }
-$caseName = if ($args.Count -ge 2) { [string]$args[1] } else { '' }
+# OCR 由脚本配置变量控制，命令行保留原有模块、case 两个位置参数。
 
 if ([string]::IsNullOrWhiteSpace($moduleName) -and
     -not [string]::IsNullOrWhiteSpace($caseName)) {
@@ -55,9 +57,14 @@ if (-not [string]::IsNullOrWhiteSpace($caseName) -and
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $testBuildDirectory = Join-Path $projectRoot 'testing\testoutput\Debug'
 $vcpkgInstalledDir = Join-Path $projectRoot '.cache\vcpkg_installed\x64-windows\tests'
+if ($EnableOcr) {
+    $testBuildDirectory = Join-Path $projectRoot 'testing/testoutput/Debug-OCR'
+    $vcpkgInstalledDir = Join-Path $projectRoot '.cache/vcpkg_installed/x64-windows/tests-ocr'
+}
 
 # 当前开发机路径与 build.ps1 保持一致；后续支持其他安装位置时应统一改用 vswhere 发现。
-$vsRoot = 'D:\Program Files (x86)\Visual Studio\2022\Community'
+. (Join-Path $PSScriptRoot 'release_helpers.ps1')
+$vsRoot = Find-ReleaseVisualStudio
 $cmake = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 $ctest = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe'
 $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
@@ -90,10 +97,12 @@ $configureArguments.Add('-DCMAKE_BUILD_TYPE=Debug')                  # 测试统
 $configureArguments.Add('-DCMAKE_TOOLCHAIN_FILE="' + $vcpkgToolchain + '"')
 $configureArguments.Add('-DVCPKG_TARGET_TRIPLET=x64-windows')
 $configureArguments.Add('-DVCPKG_INSTALLED_DIR="' + $vcpkgInstalledDir + '"')
-$configureArguments.Add('-DVCPKG_MANIFEST_FEATURES=tests')           # 只安装 GoogleTest/GoogleMock
+$configureArguments.Add('-DVCPKG_MANIFEST_INSTALL=ON')
+$features = if ($EnableOcr) { 'tests;ocr' } else { 'tests' }
+$configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + $features + '"')
 $configureArguments.Add('-DOPEN_ST_ALLOW_WARNINGS=OFF')              # 测试同样执行 /W4 /WX
 $configureArguments.Add('-DOPEN_ST_BUILD_TESTS=ON')
-$configureArguments.Add('-DOPEN_ST_ENABLE_OCR=OFF')
+$configureArguments.Add('-DOPEN_ST_ENABLE_OCR=' + $(if ($EnableOcr) { 'ON' } else { 'OFF' }))
 $configureArguments.Add('-DOPEN_ST_ENABLE_TRANSLATION=OFF')
 
 $configureCommand = '"' + $cmake + '" ' + ($configureArguments -join ' ')

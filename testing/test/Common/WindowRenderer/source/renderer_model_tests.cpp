@@ -23,6 +23,39 @@ nlohmann::json Document()
         "footer":{"leading":[],"trailing":[{"type":"button","id":"confirm","textKey":"confirm"}]}
     })");
 }
+// 验证多行布局只接受明确类型和有限可视行数，默认单行不变。
+// 入参：无。
+// 返回：无；断言解析结果与错误路径。
+TEST(RendererParserTest, multiline_options_are_explicit_and_bounded)
+{
+    nlohmann::json document = Document();
+    auto& node = document["pages"][0]["content"]["children"][0];
+    node = {{"type", "edit"}, {"id", "text"}};
+    Layout layout;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_FALSE(layout.pages[0].content.children[0].multiline);
+    node["visibleLines"] = 12;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_multiline_options");
+    node["multiline"] = true;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_EQ(layout.pages[0].content.children[0].visibleLines, 12);
+    EXPECT_TRUE(layout.pages[0].content.children[0].verticalScroll);
+    node["verticalScroll"] = false;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_FALSE(layout.pages[0].content.children[0].verticalScroll);
+    for (const nlohmann::json value :
+         {nlohmann::json(0), nlohmann::json(101), nlohmann::json(1.5), nlohmann::json("12")})
+    {
+        node["visibleLines"] = value;
+        EXPECT_EQ(ParseLayout(document, layout).code, "invalid_dimension");
+    }
+    node["visibleLines"] = 1;
+    node["verticalScroll"] = 1;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
+    node["verticalScroll"] = true;
+    node["multiline"] = "yes";
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
+}
 // 验证布局不借用输入 JSON，输入销毁后仍保留控件与文字键。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

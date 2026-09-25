@@ -1,4 +1,4 @@
-﻿# 内部发行辅助：唯一清单、双模式视图和当次原子发布；由 build.ps1 调用。
+# 内部发行辅助：唯一清单、双模式视图和当次原子发布；由 build.ps1 调用。
 Set-StrictMode -Version Latest
 
 # 校验文件操作目标位于指定根目录之下，限制递归清理范围。
@@ -123,6 +123,19 @@ function New-ReleaseStaging {
     $spec = Get-Content -LiteralPath (Join-Path $Repository 'packaging/windows/release-files.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $launcher = Join-Path $Build 'src/Launcher'
     $entries = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $metadata = Get-Content -LiteralPath (Join-Path $Build 'generated/release-metadata.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($metadata.ocr -eq 'ON') {
+        $models = Get-Content -LiteralPath (Join-Path $Repository 'packaging/ocr/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($model in $models.models) {
+            $modelPath = Get-VerifiedChildPath -Root $launcher -Candidate (Join-Path $launcher $model.file)
+            Assert-ReleasePath $modelPath
+            if ((Get-Item -LiteralPath $modelPath).Length -ne $model.size -or
+                (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash -ne $model.sha256) {
+                throw "OCR 模型与固定清单不符：$($model.file)"
+            }
+            $entries.Add($model.file, $modelPath)
+        }
+    }
     foreach ($relative in $spec.launcherFiles) { $entries.Add($relative, (Join-Path $launcher $relative)) }
     foreach ($relative in $spec.repositoryFiles) {
         $target = if ($relative -like 'packaging/*') { [IO.Path]::GetFileName($relative) } else { $relative }
@@ -156,7 +169,6 @@ function New-ReleaseStaging {
         New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($target)) -Force | Out-Null
         Copy-Item -LiteralPath $entry.Value -Destination $target
     }
-    $metadata = Get-Content -LiteralPath (Join-Path $Build 'generated/release-metadata.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $commit = (& git -C $Repository rev-parse HEAD) -join ''
     if ($LASTEXITCODE -ne 0) { throw '读取发行提交号失败。' }
     $metadata | Add-Member -NotePropertyName commit -NotePropertyValue $commit

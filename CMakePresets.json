@@ -12,7 +12,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "OPEN_ST_ALLOW_WARNINGS": "OFF",
-        "OPEN_ST_ENABLE_OCR": "OFF",
+        "OPEN_ST_ENABLE_OCR": "ON",
         "OPEN_ST_ENABLE_TRANSLATION": "OFF",
         "OPEN_ST_BUILD_TESTS": "OFF"
       }

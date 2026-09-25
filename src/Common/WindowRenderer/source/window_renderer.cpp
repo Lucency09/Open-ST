@@ -75,6 +75,7 @@ struct WindowRenderer::Impl
         const Node* node{};
         std::string page;
         HWND window{};
+        renderer_detail::FormEditState editState;
         HWND slider{};
         std::int64_t sliderValue{};
         HWND label{};
@@ -475,7 +476,8 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     if (node.type == NodeType::Edit || node.type == NodeType::Integer)
     {
         const int labelHeight = control.label != nullptr ? height + this->Scale(4) : 0;
-        const int fieldHeight = this->Scale(28);
+        const int fieldHeight =
+            node.multiline ? this->TextHeight(L"M", actualWidth) * node.visibleLines + this->Scale(8) : this->Scale(28);
         const int editWidth = control.slider != nullptr ? std::min(actualWidth, this->Scale(64)) : actualWidth;
         const int gap = control.slider != nullptr ? std::min(std::max(0, actualWidth - editWidth), this->Scale(8)) : 0;
         const int sliderWidth = control.slider != nullptr ? actualWidth - editWidth - gap : 0;
@@ -698,9 +700,16 @@ bool WindowRenderer::Impl::CreateControls()
                 SendMessageW(control.slider, TBM_SETPOS, TRUE, static_cast<LPARAM>(node.minimum));
                 control.sliderValue = node.minimum;
             }
+            const DWORD editStyle =
+                node.multiline ? ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | (node.verticalScroll ? WS_VSCROLL : 0U)
+                               : ES_AUTOHSCROLL;
             control.window =
-                CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, 0,
-                                0, 1, 1, parent, id, instance, nullptr);
+                CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | editStyle, 0, 0, 1,
+                                1, parent, id, instance, nullptr);
+            if (!renderer_detail::AttachFormEditSupport(control.window, control.editState))
+                return false;
+            if (node.multiline || node.maxLength > 0)
+                SendMessageW(control.window, EM_SETLIMITTEXT, static_cast<WPARAM>(node.maxLength), 0);
             control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
                                                   parent, nullptr, instance, nullptr);
             if ((!node.textKey.empty() && control.label == nullptr) || control.errorWindow == nullptr)
@@ -869,7 +878,11 @@ RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
             {
                 const RendererStringResult value = control.read();
                 if (value.success)
-                    SetWindowTextW(control.window, EditWide(value.value).c_str());
+                {
+                    const std::wstring displayed = EditWide(value.value, control.node->multiline);
+                    if (ReadEditText(control.window) != displayed)
+                        SetWindowTextW(control.window, displayed.c_str());
+                }
                 control.error = value.error;
             }
             else
@@ -2292,6 +2305,10 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
     {
         for (const auto& [id, control] : this->impl_->controls)
         {
+            if (control.window == GetFocus() &&
+                (control.node->type == NodeType::Edit || control.node->type == NodeType::Integer) &&
+                (control.editState.composing || (control.node->multiline && message.wParam == VK_RETURN)))
+                return false;
             if (control.node->type == NodeType::Select && SendMessageW(control.window, CB_GETDROPPEDSTATE, 0, 0))
                 return false;
         }
@@ -2308,6 +2325,37 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
     if (handled)
         this->impl_->RevealFocus();
     return handled;
+}
+
+// 将被全局快捷键截获的标准编辑动作交回真实前台多行编辑框。
+// 入参：modifiers 为 MOD_* 修饰键；key 为虚拟键，只支持 Ctrl+A/C/V/X/Z。
+// 返回：真实编辑焦点接收组合时为 true；IME 期间不执行动作，其他情况为 false。
+bool WindowRenderer::ProcessRegisteredEditHotkey(UINT modifiers, UINT key) noexcept
+{
+    if (!this->impl_->Check() || this->impl_->window == nullptr || this->impl_->busy ||
+        GetForegroundWindow() != this->impl_->window || (modifiers & ~MOD_NOREPEAT) != MOD_CONTROL ||
+        (key != 'A' && key != 'C' && key != 'V' && key != 'X' && key != 'Z'))
+        return false;
+    for (const auto& [id, control] : this->impl_->controls)
+    {
+        if (control.node->type != NodeType::Edit || !control.node->multiline || control.window != GetFocus() ||
+            !control.enabled || !IsWindowEnabled(control.window))
+            continue;
+        if (!control.editState.composing)
+        {
+            if (key == 'A')
+                SendMessageW(control.window, EM_SETSEL, 0, -1);
+            else
+                SendMessageW(control.window,
+                             key == 'C'   ? WM_COPY
+                             : key == 'V' ? WM_PASTE
+                             : key == 'X' ? WM_CUT
+                                          : WM_UNDO,
+                             0, 0);
+        }
+        return true;
+    }
+    return false;
 }
 
 // 向宿主提供用于窗口协调的原生句柄。

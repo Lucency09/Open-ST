@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "family": "fast",
+      "language": "chi_sim",
+      "file": "resources/ocr/fast/chi_sim.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/chi_sim.traineddata",
+      "size": 2469156,
+      "sha256": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+      "license": "Apache-2.0"
+    },
+    {
+      "family": "fast",
+      "language": "eng",
+      "file": "resources/ocr/fast/eng.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata",
+      "size": 4113088,
+      "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+      "license": "Apache-2.0"
+    },
+    {
+      "family": "fast",
+      "language": "jpn",
+      "file": "resources/ocr/fast/jpn.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/jpn.traineddata",
+      "size": 2471260,
+      "sha256": "1f5de9236d2e85f5fdf4b3c500f2d4926f8d9449f28f5394472d9e8d83b91b4d",
+      "license": "Apache-2.0"
+    },
+    {
+      "family": "best",
+      "language": "chi_sim",
+      "file": "resources/ocr/best/chi_sim.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/chi_sim.traineddata",
+      "size": 13077423,
+      "sha256": "4fef2d1306c8e87616d4d3e4c6c67faf5d44be3342290cf8f2f0f6e3aa7e735b",
+      "license": "Apache-2.0"
+    },
+    {
+      "family": "best",
+      "language": "eng",
+      "file": "resources/ocr/best/eng.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/eng.traineddata",
+      "size": 15400601,
+      "sha256": "8280aed0782fe27257a68ea10fe7ef324ca0f8d85bd2fd145d1c2b560bcb66ba",
+      "license": "Apache-2.0"
+    },
+    {
+      "family": "best",
+      "language": "jpn",
+      "file": "resources/ocr/best/jpn.traineddata",
+      "url": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/e12c65a915945e4c28e237a9b52bc4a8f39a0cec/jpn.traineddata",
+      "size": 14330109,
+      "sha256": "36bdf9ac823f5911e624c30d0553e890b8abc7c31a65b3ef14da943658c40b79",
+      "license": "Apache-2.0"
+    }
+  ]
+}

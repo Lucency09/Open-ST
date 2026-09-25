@@ -190,7 +190,39 @@ class Parser
         {
             node.type = type == "edit" ? NodeType::Edit : NodeType::Integer;
             if (type == "edit")
-                this->Keys(source, {"type", "id", "labelKey", "width"}, path);
+            {
+                this->Keys(
+                    source,
+                    {"type", "id", "labelKey", "width", "multiline", "visibleLines", "verticalScroll", "maxLength"},
+                    path);
+                if (source.contains("maxLength"))
+                {
+                    const auto& limit = source["maxLength"];
+                    if (!limit.is_number_integer() || limit < 1 || limit > (std::numeric_limits<int>::max)())
+                        this->Fail("invalid_dimension", path + "/maxLength", node.id);
+                    node.maxLength = limit.get<int>();
+                }
+                if (source.contains("multiline"))
+                {
+                    if (!source["multiline"].is_boolean())
+                        this->Fail("invalid_type", path + "/multiline", node.id);
+                    node.multiline = source["multiline"].get<bool>();
+                }
+                if (!node.multiline && (source.contains("visibleLines") || source.contains("verticalScroll")))
+                    this->Fail("invalid_multiline_options", path, node.id);
+                if (source.contains("visibleLines"))
+                {
+                    node.visibleLines = this->Integer(source["visibleLines"], path + "/visibleLines", 1);
+                    if (node.visibleLines > 100)
+                        this->Fail("invalid_dimension", path + "/visibleLines", node.id);
+                }
+                if (source.contains("verticalScroll"))
+                {
+                    if (!source["verticalScroll"].is_boolean())
+                        this->Fail("invalid_type", path + "/verticalScroll", node.id);
+                    node.verticalScroll = source["verticalScroll"].get<bool>();
+                }
+            }
             else
             {
                 this->Keys(source, {"type", "id", "labelKey", "width", "minimum", "maximum", "slider"}, path);

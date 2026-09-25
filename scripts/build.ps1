@@ -18,7 +18,7 @@
     .\scripts\build.ps1 -Configuration Release -Package
 
 .EXAMPLE
-    .\scripts\build.ps1 -Configuration Debug -EnableOcr
+    .\scripts\build.ps1 -Configuration Release -Package -Installer -InnoSetupCompiler "<ISCC.exe路径>"
 #>
 [CmdletBinding()]
 param(
@@ -31,9 +31,6 @@ param(
 
     # 临时允许编译警告存在；未指定时项目使用 /WX 将警告视为错误。
     [switch]$AllowWarnings,
-
-    # 启用本地 OCR 功能，同时启用 vcpkg manifest 中的 ocr feature。
-    [switch]$EnableOcr,
 
     # 启用翻译功能，同时启用 vcpkg manifest 中的 translation feature。
     [switch]$EnableTranslation,
@@ -50,6 +47,8 @@ param(
 
 # 任意 PowerShell 错误都立即终止脚本，防止失败后继续打包不完整产物。
 $ErrorActionPreference = 'Stop'
+# 构建配置：Debug/Release 共用；需要不含 OCR 的构建时直接改为 $false。
+$EnableOcr = $true
 . (Join-Path $PSScriptRoot 'release_helpers.ps1')
 
 # PSScriptRoot 是 scripts/ 所在位置，因此它的父目录就是项目根目录。
@@ -141,9 +140,12 @@ New-Item -ItemType Directory -Force -Path $vcpkgInstalledDir | Out-Null
 $configureArguments.Add('-DCMAKE_TOOLCHAIN_FILE="' + $toolchain + '"')
 $configureArguments.Add('-DVCPKG_TARGET_TRIPLET=x64-windows')
 $configureArguments.Add('-DVCPKG_INSTALLED_DIR="' + $vcpkgInstalledDir + '"')
-if ($manifestFeatures.Count -gt 0) {
-    $configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + ($manifestFeatures -join ';') + '"')
-}
+$configureArguments.Add('-DVCPKG_MANIFEST_INSTALL=ON')
+$configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + ($manifestFeatures -join ';') + '"')
+# 功能档位切换时不沿用另一 installed tree 的导入目标缓存。
+$configureArguments.Add('-Unlohmann_json_DIR')
+$configureArguments.Add('-UTesseract_DIR')
+$configureArguments.Add('-ULeptonica_DIR')
 
 # 先调用 vcvars64.bat，把 cl.exe、link.exe 和 Windows SDK 路径加入当前 cmd 环境，
 # 再在同一个 cmd 进程中连续执行 CMake 配置与构建，确保环境变量不会丢失。

@@ -7,4 +7,4 @@ target_sources(open_st_update
     PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/update_client.h)
 target_include_directories(open_st_update PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private")
 target_link_libraries(open_st_update PUBLIC open_st_project_options
-    PRIVATE nlohmann_json::nlohmann_json winhttp bcrypt advapi32)
+    PRIVATE OpenST::Common nlohmann_json::nlohmann_json winhttp bcrypt advapi32)

@@ -8,6 +8,8 @@
     "startup.enabled": true,
     "capture.hotkey": "Ctrl+Alt+Q",
     "export.default_format": "jpeg",
-    "export.jpeg_quality": 95
+    "export.jpeg_quality": 95,
+    "ocr.model": "fast",
+    "ocr.language": "chi_sim+eng+jpn"
   }
 }

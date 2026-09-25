@@ -108,6 +108,8 @@ class WindowRenderer final
     // 入参：document：调用期间借用的布局 JSON。
     // 返回：成功返回空错误码并清空旧绑定；解析或状态检查失败返回结构化错误，保留之前布局。
     RendererResult LoadLayout(const nlohmann::json& document);
+    // edit 布局可选 multiline（默认 false）；多行支持 visibleLines（1 至 100，默认 6）
+    // 和 verticalScroll（默认 true），以字体行高测量并自动折行；maxLength 可限制用户输入的 UTF-16 单元数。
     // 注册窗口所有文本键使用的本地化查询器。
     // 入参：callback：接收文本键并返回宽字符文本的回调，移入渲染器；其捕获对象须保持存活。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
@@ -242,6 +244,10 @@ class WindowRenderer final
     // 入参：message：待处理的 Win32 消息引用，所属窗口及子控件消息才参与处理。
     // 返回：消息被消费时为 true；无有效窗口、消息不属于本窗口或下拉框应先自行处理时为 false。
     bool ProcessDialogMessage(MSG& message);
+    // 将被系统全局热键截获的编辑组合交还真实前台多行控件。
+    // 入参：modifiers 为 MOD_* 修饰键；key 为虚拟键；只支持 Ctrl+A/C/V/X/Z。
+    // 返回：属于当前可用编辑框时为 true，IME 期间消费但不改文；其他焦点或组合返回 false。
+    bool ProcessRegisteredEditHotkey(UINT modifiers, UINT key) noexcept;
     // 向宿主提供用于窗口协调的原生句柄。
     // 入参：无。
     // 返回：当前 HWND 的借用值；尚未创建或已销毁时为 nullptr，宿主不得据此取得销毁所有权。

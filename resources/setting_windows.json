@@ -242,6 +242,35 @@
       }
     },
     {
+      "id": "ocr",
+      "titleKey": "settings.ocr.title",
+      "content": {
+        "type": "column",
+        "id": "ocrContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "select",
+            "id": "ocrModel",
+            "labelKey": "settings.ocr.model",
+            "width": "fill"
+          },
+          {
+            "type": "select",
+            "id": "ocrLanguage",
+            "labelKey": "settings.ocr.language",
+            "width": "fill"
+          },
+          {
+            "type": "text",
+            "id": "ocrHelp",
+            "textKey": "settings.ocr.help"
+          }
+        ]
+      }
+    },
+    {
       "id": "maintenance",
       "titleKey": "settings.maintenance.title",
       "content": {

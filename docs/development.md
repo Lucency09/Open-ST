@@ -45,6 +45,15 @@
 App 又直接复制文档并持有第二份属性预览。功能回归通过未暴露这些结构问题，导致后续返工。
 以后方案审核和施工收尾都必须执行以上检查；详见 [结构审计](annotation-structure-audit-2026-09-16.md)。
 
+### 1.3 OCR 的复用与生命周期约束
+
+- Application/OCR 唯一拥有引擎、模型验证、自有CPU输入、单工作线程和任务状态；只依赖Common及私有第三方库，不依赖兄弟Graphics/Settings/Export。
+- 图像准备复用正式标注输出，App只做适配；预处理留在OCR，不在Graphics复制识别逻辑。
+- OcrSession拥有截图与结果窗关联；OcrResultWindow只持编辑草稿，复用WindowRenderer多行表单及Export文本复制。识别状态刷新不重写用户草稿或原生撤销历史。
+- 取消立即失效，后台真正结束前不接收新任务；关窗不join。普通退出和退出清理都先等待后台释放，再关闭日志。
+- 独立非模态结果窗必须参与统一模态输入门禁；全局注册的编辑热键也必须校验真实前台、焦点、IME和禁用状态。
+- 模型构建、生成的编译期白名单和ZIP/Setup共用固定清单；运行期只加载验证过的同一份字节，不借运行时可改JSON重新定义信任值。
+
 ## 2. 源码模块布局
 
 `src/` 通过目录嵌套直接表达产品模块的依赖方向。上级目录中的模块可以依赖其子孙目录中的模块；子模块不得反向依赖祖先模块，也不得依赖不在自身子树中的兄弟模块。`common` 是唯一的跨层依赖例外：产品模块可以依赖 Common 及其独立通用子目标，但它们不得依赖任何产品模块。
@@ -288,9 +297,9 @@ Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode�
 - `build.ps1` 只构建产品，永远不加载 `testing/test` 或 `testing/mock`，也不提供开启测试的参数。
 - 不指定配置时为 Debug；Debug 保留完整增量构建树。Release 在临时工作目录完成构建后，只把 EXE、运行时 DLL、资源和许可证整理到 `build/Release/`，随后删除 CMake/Ninja 中间产物。
 - `-Clean` 是终止型操作：Debug 只清理自身构建树；Release 同时清理运行目录与可能残留的临时工作/整理目录，随后立即返回，不重新配置或构建。
-- `-EnableOcr`、`-EnableTranslation` 按需启用对应 vcpkg feature。
+- OCR 由 `build.ps1`／`test.ps1` 顶部固定变量 `$EnableOcr = $true` 控制，Debug/Release 默认包含 OCR；需要基础构建时直接改为 `$false`，不再使用 OCR 命令行开关。`-EnableTranslation` 仍按需启用翻译 feature。
 - `-Package` 只允许用于 Release，并把已经修剪过的 `build/Release/` 复制到版本化 `artifacts/` 目录；复制前会清理同名旧包，避免残留过期 DLL 或资源。
-- 产品脚本通过 vswhere 或 -VisualStudioPath 定位 Visual Studio 并使用其 CMake／Ninja／MSVC；测试脚本仍有开发机路径约束。安装包编译器须预先准备并通过 -InnoSetupCompiler 指定或由脚本发现；脚本不自动安装工具。
+- 产品脚本通过 vswhere 或 -VisualStudioPath 定位 Visual Studio 并使用其 CMake／Ninja／MSVC；测试脚本同样通过 vswhere 发现 Visual Studio。安装包编译器须预先准备并通过 -InnoSetupCompiler 指定或由脚本发现；脚本不自动安装工具。
 
 ### 5.2 测试构建
 
@@ -306,7 +315,7 @@ Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode�
 - 第一个参数是模块名，第二个参数是 case 名；为空即扩大到全部范围。
 - 模块按测试名称前缀筛选，不按目录递归或 label 扩大范围；`graphics`、`selection`、`hdr` 分别选择各自前缀。
 - 测试脚本独立配置、构建并运行 CTest，不调用 `build.ps1`。
-- CMake、vcpkg 和测试二进制等全部测试产物写入 `testing/testoutput/Debug/`。
+- 默认 OCR 测试写入 `testing/testoutput/Debug-OCR/`，关闭 OCR 时写入 `testing/testoutput/Debug/`；依赖缓存仍在 `.cache/`。
 - 性能基准可在该目录的 `benchmark-release/` 子目录独立配置 Release；不改变脚本默认 Debug 行为。
   4K 内存基准用 `OPEN_ST_PIXEL_COPY_BENCHMARKS=1`、`OPEN_ST_EXPORT_BENCHMARKS=1` 分别启用，默认跳过，
   不访问真实剪贴板、不设置机器相关耗时通过阈值；实际数值与测量范围记录在整改报告中。

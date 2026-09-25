@@ -20,8 +20,8 @@ ToolbarResult ValidateButtons(std::span<const ToolbarButtonSpec> specs)
     {
         const ToolbarButtonSpec& spec = specs[index];
         if (static_cast<std::uint32_t>(spec.command) < static_cast<std::uint32_t>(CaptureToolbarCommand::Cancel) ||
-            static_cast<std::uint32_t>(spec.command) > static_cast<std::uint32_t>(CaptureToolbarCommand::MosaicTool) ||
-            static_cast<unsigned int>(spec.icon) > static_cast<unsigned int>(ToolbarIcon::MosaicTool) ||
+            static_cast<std::uint32_t>(spec.command) > static_cast<std::uint32_t>(CaptureToolbarCommand::Ocr) ||
+            static_cast<unsigned int>(spec.icon) > static_cast<unsigned int>(ToolbarIcon::Ocr) ||
             spec.tooltipKey.empty())
         {
             return {false, L"工具栏包含无效命令、图标或文本键。"};

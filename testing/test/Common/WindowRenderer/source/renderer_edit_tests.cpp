@@ -36,12 +36,20 @@ class RendererEditTest : public testing::Test
     bool failRead_{};
     std::vector<open_st::RendererResult> errors_;
 
+    // 提供当前测试需要的表单布局，子类只调整多行属性。
+    // 入参：无。
+    // 返回：独立布局文档。
+    virtual nlohmann::json Document()
+    {
+        return EditDocument();
+    }
+
     // 绑定独立草稿并显示隐藏窗口，不发送真实桌面输入。
     // 入参：无。
     // 返回：无；初始化失败由断言报告。
     void SetUp() override
     {
-        ASSERT_TRUE(this->renderer_.LoadLayout(EditDocument()));
+        ASSERT_TRUE(this->renderer_.LoadLayout(this->Document()));
         // 显示稳定文字键以隔离业务本地化。
         // 入参：key 为布局文字键。
         // 返回：对应测试文字。
@@ -288,5 +296,106 @@ TEST_F(RendererEditTest, integer_slider_and_edit_fit_row_in_normal_and_narrow_wi
     EXPECT_LE(slider.right, viewport.right);
     EXPECT_GE(edit.left, slider.right);
     EXPECT_LE(edit.right, viewport.right);
+}
+class RendererMultilineTest : public RendererEditTest
+{
+  protected:
+    // 在同一绑定夹具中只启用多行布局。
+    // 入参：无。
+    // 返回：十二行且带纵向滚动的编辑布局。
+    nlohmann::json Document() override
+    {
+        auto document = EditDocument();
+        auto& text = document["content"]["children"][0];
+        text["multiline"] = true;
+        text["visibleLines"] = 12;
+        text["maxLength"] = 1000000;
+        return document;
+    }
+};
+
+// 验证多行样式、可视高度、Unicode 换行以及超过单行默认上限的文本。
+// 入参：无。
+// 返回：无；断言不发生截断或额外宿主变更。
+TEST_F(RendererMultilineTest, displays_unicode_lines_and_large_content_without_truncation)
+{
+    const LONG_PTR style = GetWindowLongPtrW(this->Edit(false), GWL_STYLE);
+    EXPECT_NE(style & ES_MULTILINE, 0);
+    EXPECT_NE(style & WS_VSCROLL, 0);
+    EXPECT_EQ(style & ES_AUTOHSCROLL, 0);
+    this->text_ = "中文\n日本語\rEnglish\r\nfinal";
+    ASSERT_TRUE(this->renderer_.RefreshValue("text"));
+    EXPECT_EQ(this->Value(false), L"中文\r\n日本語\r\nEnglish\r\nfinal");
+    EXPECT_EQ(this->textChanges_, 0);
+    RECT multi{}, single{};
+    GetWindowRect(this->Edit(false), &multi);
+    GetWindowRect(this->Edit(true), &single);
+    EXPECT_GT(multi.bottom - multi.top, single.bottom - single.top);
+    this->text_.assign(1000000, 'a');
+    ASSERT_TRUE(this->renderer_.RefreshValue("text"));
+    EXPECT_EQ(GetWindowTextLengthW(this->Edit(false)), 1000000);
+    EXPECT_EQ(SendMessageW(this->Edit(false), EM_GETLIMITTEXT, 0, 0), 1000000);
+}
+
+// 验证编辑、原生撤销和全选可用，同值刷新与状态更新不清空撤销栈。
+// 入参：无。
+// 返回：无；断言可见内容和原生选区。
+TEST_F(RendererMultilineTest, editing_and_same_value_refresh_preserve_native_undo)
+{
+    SendMessageW(this->Edit(false), EM_SETSEL, 0, -1);
+    SendMessageW(this->Edit(false), EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"中文\r\nsecond"));
+    ASSERT_EQ(this->Value(false), L"中文\r\nsecond");
+    ASSERT_TRUE(this->renderer_.RefreshValue("text"));
+    ASSERT_TRUE(this->renderer_.SetStatus(L"status"));
+    EXPECT_NE(SendMessageW(this->Edit(false), EM_CANUNDO, 0, 0), 0);
+    SendMessageW(this->Edit(false), WM_CHAR, 26, 0);
+    EXPECT_EQ(this->Value(false), L"valid");
+    SendMessageW(this->Edit(false), WM_CHAR, 1, 0);
+    DWORD start{}, end{};
+    SendMessageW(this->Edit(false), EM_GETSEL, reinterpret_cast<WPARAM>(&start), reinterpret_cast<LPARAM>(&end));
+    EXPECT_EQ(start, 0U);
+    EXPECT_EQ(end, 5U);
+}
+
+// 验证 Enter 和 IME 确认交给编辑框，单行仍触发默认动作。
+// 入参：无。
+// 返回：无；断言对话框消息是否被消费及确认次数。
+TEST_F(RendererMultilineTest, multiline_and_composition_keys_do_not_invoke_default_action)
+{
+    SetFocus(this->Edit(false));
+    ASSERT_EQ(GetFocus(), this->Edit(false));
+    MSG message{};
+    message.hwnd = this->Edit(false);
+    message.message = WM_KEYDOWN;
+    message.wParam = VK_RETURN;
+    EXPECT_FALSE(this->renderer_.ProcessDialogMessage(message));
+    SendMessageW(this->Edit(false), WM_CHAR, VK_RETURN, 0);
+    EXPECT_NE(this->Value(false).find(L"\r\n"), std::wstring::npos);
+    SendMessageW(this->Edit(false), WM_IME_STARTCOMPOSITION, 0, 0);
+    message.wParam = VK_ESCAPE;
+    EXPECT_FALSE(this->renderer_.ProcessDialogMessage(message));
+    SendMessageW(this->Edit(false), WM_IME_ENDCOMPOSITION, 0, 0);
+    EXPECT_EQ(this->confirmations_, 0);
+    SetFocus(this->Edit(true));
+    ASSERT_EQ(GetFocus(), this->Edit(true));
+    message.hwnd = this->Edit(true);
+    message.wParam = VK_RETURN;
+    EXPECT_TRUE(this->renderer_.ProcessDialogMessage(message));
+    EXPECT_EQ(this->confirmations_, 1);
+}
+
+// 验证后台窗口不能接收全局编辑动作，禁用字段也不接收。
+// 入参：无；不修改真实剪贴板。
+// 返回：无；断言输入归属和文本完整性。
+TEST_F(RendererMultilineTest, registered_edit_hotkeys_reject_background_and_unrelated_combinations)
+{
+    ShowWindow(this->renderer_.NativeHandle(), SW_HIDE);
+    for (const UINT key : {'A', 'C', 'V', 'X', 'Z'})
+        EXPECT_FALSE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, key));
+    EXPECT_FALSE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL | MOD_ALT, 'A'));
+    EXPECT_FALSE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, 'S'));
+    EXPECT_TRUE(this->renderer_.SetEnabled("text", false));
+    EXPECT_FALSE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, 'A'));
+    EXPECT_EQ(this->Value(false), L"valid");
 }
 } // namespace

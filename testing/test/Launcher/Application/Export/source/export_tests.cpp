@@ -33,6 +33,61 @@ std::size_t Count(const ExportSystemFake& fake, const std::string& operation)
     return static_cast<std::size_t>(std::count(fake.calls.begin(), fake.calls.end(), operation));
 }
 
+// 验证 Unicode、代理对、各种换行与末尾空字符均完整交付。
+// 入参：无；系统接口使用内存替身。
+// 返回：无；断言发布格式、字节和内存所有权。
+TEST(ClipboardTextTest, unicode_line_endings_and_empty_text_transfer_ownership)
+{
+    for (const std::wstring text : {std::wstring{}, std::wstring{L"中文\n日本語\rEnglish\r\n\U0001F600"}})
+    {
+        ExportSystemFake fake;
+        std::wstring error;
+        ASSERT_TRUE(CopyTextWithApi(ExportSystemFake::Owner(), text, fake.Clipboard(), error));
+        EXPECT_EQ(fake.publishedFormat, CF_UNICODETEXT);
+        const std::wstring expected = text.empty() ? L"" : L"中文\r\n日本語\r\nEnglish\r\n\U0001F600";
+        ASSERT_EQ(fake.memory.size(), (expected.size() + 1U) * sizeof(wchar_t));
+        EXPECT_EQ(std::memcmp(fake.memory.data(), expected.c_str(), fake.memory.size()), 0);
+        EXPECT_EQ(Count(fake, "free"), 0U);
+        EXPECT_EQ(Count(fake, "clipboardClose"), 1U);
+    }
+}
+
+// 验证文本每个系统失败阶段都立即返回并只释放本地资源。
+// 入参：无；不写真实剪贴板。
+// 返回：无；断言释放、关闭和无重试。
+TEST(ClipboardTextTest, failures_release_owned_memory_and_never_retry)
+{
+    for (const std::string stage : {"owner", "allocate", "lock", "unlock", "open", "empty", "set"})
+    {
+        SCOPED_TRACE(stage);
+        ExportSystemFake fake;
+        fake.failure = stage;
+        std::wstring error;
+        EXPECT_FALSE(CopyTextWithApi(ExportSystemFake::Owner(), L"文本", fake.Clipboard(), error));
+        EXPECT_FALSE(error.empty());
+        EXPECT_EQ(Count(fake, "free"), stage == "owner" || stage == "allocate" ? 0U : 1U);
+        EXPECT_EQ(Count(fake, "clipboardClose"), stage == "empty" || stage == "set" ? 1U : 0U);
+        EXPECT_LE(Count(fake, "open"), 1U);
+    }
+}
+
+// 验证非法编码与嵌入空字符在分配或清空剪贴板之前拒绝。
+// 入参：无。
+// 返回：无；断言原有剪贴板不会受到准备失败影响。
+TEST(ClipboardTextTest, invalid_utf16_or_embedded_null_does_not_touch_clipboard)
+{
+    for (const std::wstring text : {std::wstring{L'a', L'\0', L'b'}, std::wstring{static_cast<wchar_t>(0xD800)},
+                                    std::wstring{static_cast<wchar_t>(0xDC00)}})
+    {
+        ExportSystemFake fake;
+        std::wstring error;
+        EXPECT_FALSE(CopyTextWithApi(ExportSystemFake::Owner(), text, fake.Clipboard(), error));
+        EXPECT_EQ(Count(fake, "allocate"), 0U);
+        EXPECT_EQ(Count(fake, "open"), 0U);
+        EXPECT_FALSE(error.empty());
+    }
+}
+
 // 验证 padding 不计入像素、行序翻转和 X 字节不进入 CF_DIB 透明度语义。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

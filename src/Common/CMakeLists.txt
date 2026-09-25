@@ -11,6 +11,7 @@ target_sources(open_st_common
         source/file_lease.cpp
         source/json_file.cpp
         source/logger.cpp
+        source/sha256.cpp
         source/windows_util.cpp
         private/logger.h
         private/json_file_test_access.h
@@ -22,6 +23,7 @@ target_sources(open_st_common
             include/json_file.h
             include/log.h
             include/log_detail.h
+            include/sha256.h
             include/windows_util.h
 )
 
@@ -29,6 +31,8 @@ target_link_libraries(open_st_common
     PUBLIC
         open_st_project_options
         nlohmann_json::nlohmann_json
+    PRIVATE
+        bcrypt
 )
 
 target_include_directories(open_st_common PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/private")
