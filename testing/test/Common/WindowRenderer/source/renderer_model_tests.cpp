@@ -56,6 +56,29 @@ TEST(RendererParserTest, multiline_options_are_explicit_and_bounded)
     node["multiline"] = "yes";
     EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
 }
+
+// 验证密码和只读字段为严格布尔值，密码多行组合不能静默失去遮罩。
+// 入参：无。
+// 返回：无；断言合法语义和拒绝路径。
+TEST(RendererParserTest, password_and_readonly_options_are_strict_and_password_is_single_line)
+{
+    auto document = Document();
+    auto& node = document["pages"][0]["content"]["children"][0];
+    node = {{"type", "edit"}, {"id", "text"}, {"password", true}, {"readOnly", true}};
+    Layout layout;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    EXPECT_TRUE(layout.pages[0].content.children[0].password);
+    EXPECT_TRUE(layout.pages[0].content.children[0].readOnly);
+    node["multiline"] = true;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_password_options");
+    node["password"] = false;
+    ASSERT_TRUE(ParseLayout(document, layout));
+    node["readOnly"] = "true";
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
+    node["readOnly"] = false;
+    node["password"] = 1;
+    EXPECT_EQ(ParseLayout(document, layout).code, "invalid_type");
+}
 // 验证布局不借用输入 JSON，输入销毁后仍保留控件与文字键。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

@@ -2,6 +2,7 @@
 
 # common 提供不依赖产品模块的公共能力，包括同步日志和按需加载的 JSON 文件缓存。
 add_subdirectory(WindowRenderer)
+add_subdirectory(Http)
 
 add_library(open_st_common STATIC)
 add_library(OpenST::Common ALIAS open_st_common)
@@ -12,6 +13,7 @@ target_sources(open_st_common
         source/json_file.cpp
         source/logger.cpp
         source/sha256.cpp
+        source/verified_file.cpp
         source/windows_util.cpp
         private/logger.h
         private/json_file_test_access.h
@@ -24,6 +26,7 @@ target_sources(open_st_common
             include/log.h
             include/log_detail.h
             include/sha256.h
+            include/verified_file.h
             include/windows_util.h
 )
 

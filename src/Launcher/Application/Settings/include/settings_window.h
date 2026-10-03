@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,15 +26,58 @@ struct SettingsMaintenanceStatus final
     bool running{};
     std::wstring text;
 };
+// 连接测试的宿主快照；Settings 只持请求身份和显示文字，不拥有工作线程。
+struct SettingsTranslationTestStatus final
+{
+    std::uint64_t requestId{};
+    bool running{};
+    std::wstring text;
+};
 // 设置下拉框的自有选项值，领域模块通过 Application 适配。
 struct SettingsOption final
 {
     std::string value;
     std::wstring label;
 };
+// 领域经宿主适配的表单字段，Settings 不保存另一份供应商校验规则。
+struct SettingsTranslationField final
+{
+    std::string key;
+    bool secret{};
+    bool multiline{};
+    std::vector<SettingsOption> options;
+};
 // 由上级 Application 提供本地化查询及保存通知，Settings 不依赖同级本地化模块。
 struct SettingsWindowCallbacks final
 {
+    bool translationAvailable{};
+    // 提交当前未保存条目及代理草稿；返回请求身份或安全拒绝原因，不写盘。
+    std::function<SettingsTranslationTestStatus(const nlohmann::json&, std::string_view, std::string_view)>
+        submitTranslationTest;
+    // 仅查询所给身份的状态；不接管普通翻译的结果。
+    std::function<SettingsTranslationTestStatus(std::uint64_t)> translationTestStatus;
+    // 取消编辑窗口拥有的请求，关闭窗口不等待线程。
+    std::function<void(std::uint64_t)> cancelTranslationTest;
+    // 转交模态循环中的消息给宿主统一分派及尾处理；已消费返回 true。
+    std::function<bool(MSG&)> processThreadMessage;
+    // 查询领域选项；入参为完整设置键或 translation.kind。返回当前语言下的选项。
+    std::function<std::vector<SettingsOption>(std::string_view)> translationChoices;
+    // 创建带新稳定 ID 的默认条目；入参为 kind。返回独立条目，不写盘。
+    std::function<nlohmann::json(std::string_view)> createTranslationProfile;
+    // 查询该类型的字段；入参为 kind。返回配置/秘密字段及显示选项。
+    std::function<std::vector<SettingsTranslationField>(std::string_view)> translationProfileFields;
+    // 校验完整列表；入参为候选。返回空表示有效，否则为不含凭据的本地化错误。
+    std::function<std::wstring(const nlohmann::json&)> validateTranslationInterfaces;
+    // 校验单条配置；入参为候选。返回空表示有效，允许未填写必需凭据。
+    std::function<std::wstring(const nlohmann::json&)> validateTranslationProfile;
+    // 校验语言/代理字段；入参为键和值。返回空表示保存合法。
+    std::function<std::wstring(std::string_view, std::string_view)> validateTranslationField;
+    // 校验语言、代理与列表的完整候选；入参为设置键到值的对象。返回安全错误或空。
+    std::function<std::wstring(const nlohmann::json&)> validateTranslationSettings;
+    // 可选查询模型可用性或 HTTP 风险；入参为条目。返回不含密钥的本地化说明。
+    std::function<std::wstring(const nlohmann::json&)> translationProfileStatus;
+    // 保存相关字段成功后通知宿主，取消在途请求；无入参、无返回，不得抛异常。
+    std::function<void()> translationSettingsApplied;
     // 可选借用图标，调用者保持有效至窗口关闭；Settings 不销毁句柄。
     HICON largeIcon{};
     HICON smallIcon{};

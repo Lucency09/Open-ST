@@ -110,6 +110,18 @@ class CaptureToolbarQueueTest : public ::testing::Test
     std::unique_ptr<App> app_;
 };
 
+// 验证已移除的翻译命令不再占用截图工具栏队列，旧消息无法发起隐式翻译。
+// 入参：无；旧编号恰为保留的OCR命令之后一项。
+// 返回：无，通过真实App命令入口核验拒绝及后续队列可用性。
+TEST_F(CaptureToolbarQueueTest, removed_translation_command_is_rejected)
+{
+    const CaptureToolbarCommand removed =
+        static_cast<CaptureToolbarCommand>(static_cast<std::uint32_t>(CaptureToolbarCommand::Ocr) + 1);
+    EXPECT_FALSE(AppToolbarTestAccess::Post(*this->app_, removed));
+    EXPECT_FALSE(AppToolbarTestAccess::Pending(*this->app_));
+    EXPECT_TRUE(AppToolbarTestAccess::Post(*this->app_, CaptureToolbarCommand::Cancel));
+}
+
 // 验证原生消息队列中只能存在一个成功预订的命令，快捷键不能越过按钮的 pending。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

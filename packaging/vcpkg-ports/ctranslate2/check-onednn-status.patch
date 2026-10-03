@@ -1,0 +1,73 @@
+--- a/src/cpu/primitives.cc
++++ b/src/cpu/primitives.cc
+@@ -3,6 +3,7 @@
+ #include <cmath>
+ #include <functional>
+ #include <numeric>
++#include <new>
+ #include <stdexcept>
+ 
+ #ifdef CT2_WITH_MKL
+@@ -34,6 +35,16 @@
+ namespace ctranslate2 {
+ 
+   static Allocator& allocator = get_allocator<Device::CPU>();
++
++#ifdef CT2_WITH_DNNL
++  // Propagate backend failures instead of decoding uninitialized output buffers.
++  static void check_dnnl_status(dnnl_status_t status) {
++    if (status == dnnl_out_of_memory)
++      throw std::bad_alloc();
++    if (status != dnnl_success)
++      throw std::runtime_error("oneDNN GEMM failed");
++  }
++#endif
+ 
+   template<>
+   template <typename T>
+@@ -674,14 +685,14 @@
+ 
+ #ifdef CT2_WITH_DNNL
+     case cpu::GemmBackend::DNNL: {
+-      dnnl_sgemm(transpose_a ? 'T' : 'N',
++      check_dnnl_status(dnnl_sgemm(transpose_a ? 'T' : 'N',
+                  transpose_b ? 'T' : 'N',
+                  m, n, k,
+                  alpha,
+                  a, lda,
+                  b, ldb,
+                  beta,
+-                 c, ldc);
++                 c, ldc));
+       break;
+     }
+ #endif
+@@ -972,24 +983,24 @@
+ 
+       if (a_shift_compensation) {
+         // If the compensation term is passed as argument, we assume a is already shifted.
+-        dnnl_gemm_u8s8s32(transa, transb,
++        check_dnnl_status(dnnl_gemm_u8s8s32(transa, transb,
+                           'R',
+                           m, n, k,
+                           alpha,
+                           reinterpret_cast<const uint8_t*>(a), lda, 0,
+                           b, ldb, 0,
+                           beta,
+-                          c, ldc, a_shift_compensation);
++                          c, ldc, a_shift_compensation));
+       } else {
+         const int32_t co = 0;
+-        dnnl_gemm_s8s8s32(transa, transb,
++        check_dnnl_status(dnnl_gemm_s8s8s32(transa, transb,
+                           'F',
+                           m, n, k,
+                           alpha,
+                           a, lda, 0,
+                           b, ldb, 0,
+                           beta,
+-                          c, ldc, &co);
++                          c, ldc, &co));
+       }
+       break;
+     }

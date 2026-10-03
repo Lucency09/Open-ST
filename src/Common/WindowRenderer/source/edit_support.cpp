@@ -12,6 +12,12 @@ namespace
 LRESULT CALLBACK FormEditProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
 {
     auto& state = *reinterpret_cast<FormEditState*>(data);
+    const bool readOnly = (GetWindowLongPtrW(window, GWL_STYLE) & ES_READONLY) != 0;
+    if (readOnly &&
+        (message == WM_PASTE || message == WM_CUT || message == WM_CLEAR || message == WM_UNDO || message == EM_UNDO ||
+         message == EM_REPLACESEL || message == WM_IME_STARTCOMPOSITION || message == WM_IME_COMPOSITION ||
+         message == WM_IME_CHAR || (message == WM_CHAR && wParam != 1 && wParam != 3)))
+        return 0;
     if (message == WM_IME_STARTCOMPOSITION)
         state.composing = true;
     else if (message == WM_IME_ENDCOMPOSITION || message == WM_KILLFOCUS)

@@ -186,15 +186,40 @@ class Parser
                 node.children.push_back(
                     this->ParseNode(children[index], path + "/children/" + std::to_string(index), depth + 1));
         }
+        else if (type == "table")
+        {
+            node.type = NodeType::Table;
+            this->Keys(source, {"type", "id", "labelKey", "width", "columns", "visibleRows"}, path);
+            if (source.contains("labelKey"))
+                node.textKey = this->String(source, "labelKey", path);
+            if (source.contains("visibleRows"))
+                node.visibleRows = this->Integer(source["visibleRows"], path + "/visibleRows", 1);
+            if (node.visibleRows > 100)
+                this->Fail("invalid_dimension", path + "/visibleRows", node.id);
+            const nlohmann::json& columns = this->Required(source, "columns", path);
+            if (!columns.is_array() || columns.empty() || columns.size() > 16)
+                this->Fail("invalid_columns", path + "/columns", node.id);
+            for (std::size_t index = 0; index < columns.size(); ++index)
+            {
+                const std::string columnPath = path + "/columns/" + std::to_string(index);
+                const nlohmann::json& sourceColumn = columns[index];
+                this->Keys(sourceColumn, {"textKey", "width"}, columnPath);
+                TableColumn column;
+                column.textKey = this->String(sourceColumn, "textKey", columnPath);
+                if (sourceColumn.contains("width") && sourceColumn["width"] != "fill")
+                    column.width = this->Integer(sourceColumn["width"], columnPath + "/width", 1);
+                node.columns.push_back(std::move(column));
+            }
+        }
         else if (type == "edit" || type == "integer")
         {
             node.type = type == "edit" ? NodeType::Edit : NodeType::Integer;
             if (type == "edit")
             {
-                this->Keys(
-                    source,
-                    {"type", "id", "labelKey", "width", "multiline", "visibleLines", "verticalScroll", "maxLength"},
-                    path);
+                this->Keys(source,
+                           {"type", "id", "labelKey", "width", "multiline", "visibleLines", "verticalScroll",
+                            "maxLength", "password", "readOnly"},
+                           path);
                 if (source.contains("maxLength"))
                 {
                     const auto& limit = source["maxLength"];
@@ -210,6 +235,15 @@ class Parser
                 }
                 if (!node.multiline && (source.contains("visibleLines") || source.contains("verticalScroll")))
                     this->Fail("invalid_multiline_options", path, node.id);
+                for (const char* property : {"password", "readOnly"})
+                {
+                    if (source.contains(property) && !source[property].is_boolean())
+                        this->Fail("invalid_type", path + "/" + property, node.id);
+                }
+                node.password = source.value("password", false);
+                node.readOnly = source.value("readOnly", false);
+                if (node.password && node.multiline)
+                    this->Fail("invalid_password_options", path, node.id);
                 if (source.contains("visibleLines"))
                 {
                     node.visibleLines = this->Integer(source["visibleLines"], path + "/visibleLines", 1);

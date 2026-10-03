@@ -1,6 +1,7 @@
 # 配置 Common 的镜像测试目标、链接依赖及用例发现。
 
 add_subdirectory(WindowRenderer)
+add_subdirectory(Http)
 
 add_executable(open_st_common_tests)
 
@@ -10,6 +11,7 @@ target_sources(open_st_common_tests
         source/coordination_tests.cpp
         source/logger_tests.cpp
         source/sha256_tests.cpp
+        source/verified_file_tests.cpp
         source/windows_util_tests.cpp
 )
 
@@ -21,6 +23,8 @@ target_link_libraries(open_st_common_tests
 )
 
 target_include_directories(open_st_common_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Common/private")
+target_compile_definitions(open_st_common_tests PRIVATE
+    OPEN_ST_VERIFIED_TEST_OUTPUT=L"${PROJECT_SOURCE_DIR}/testing/testoutput/verified-file")
 
 add_executable(open_st_common_process_probe source/coordination_process_probe.cpp)
 target_link_libraries(open_st_common_process_probe PRIVATE OpenST::Common open_st_project_options)

@@ -1,7 +1,7 @@
 // 连接快捷键注册与设置、消息门禁和本地化，保持兄弟模块互不依赖。
 
 #include "annotation_interaction_controller.h"
-#include "ocr_session.h"
+#include "capture_text_session.h"
 #include <app.h>
 #include <hotkeys.h>
 #include <inline_text_editor.h>
@@ -112,7 +112,7 @@ void App::DispatchHotkey(WPARAM id, LPARAM data, DWORD time)
             (void)this->settingsWindow_->ProcessRecordedHotkey(LOWORD(data), HIWORD(data), time);
         return;
     }
-    if (this->ocrSession_ && this->ocrSession_->RegisteredHotkey(LOWORD(data), HIWORD(data)))
+    if (this->textSession_ && this->textSession_->RegisteredHotkey(LOWORD(data), HIWORD(data)))
         return;
     if (this->annotationInteraction_->TextActive())
     {

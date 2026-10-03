@@ -12,12 +12,15 @@ target_sources(open_st_settings_tests
         source/settings_tests.cpp
         source/settings_window_tests.cpp
         source/settings_edit_tests.cpp
+        source/translation_profile_dialog_tests.cpp
+        source/translation_custom_draft_tests.cpp
 )
 
 target_link_libraries(open_st_settings_tests
     PRIVATE
         OpenST::Settings
         OpenST::Common
+        OpenST::WindowRenderer
         open_st_project_options
         GTest::gtest_main
 )

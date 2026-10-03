@@ -1,0 +1,11 @@
+--- a/include/ctranslate2/bfloat16.h
++++ b/include/ctranslate2/bfloat16.h
+@@ -54,7 +54,7 @@
+ 
+     operator float() const {
+       std::array<uint16_t, 2> iraw = {{0, _bits}};
+-      return bit_cast<float>(iraw);
++      return ctranslate2::bit_cast<float>(iraw);
+     }
+ 
+   private:

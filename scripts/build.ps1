@@ -32,9 +32,6 @@ param(
     # 临时允许编译警告存在；未指定时项目使用 /WX 将警告视为错误。
     [switch]$AllowWarnings,
 
-    # 启用翻译功能，同时启用 vcpkg manifest 中的 translation feature。
-    [switch]$EnableTranslation,
-
     # 把干净的 Release 运行目录再复制到版本化 artifacts 目录。
     [switch]$Package,
 
@@ -47,9 +44,11 @@ param(
 
 # 任意 PowerShell 错误都立即终止脚本，防止失败后继续打包不完整产物。
 $ErrorActionPreference = 'Stop'
-# 构建配置：Debug/Release 共用；需要不含 OCR 的构建时直接改为 $false。
+# 构建配置：Debug/Release 共用；关闭对应能力时直接改为 $false。
 $EnableOcr = $true
+$EnableTranslation = $true
 . (Join-Path $PSScriptRoot 'release_helpers.ps1')
+. (Join-Path $PSScriptRoot 'build_environment.ps1')
 
 # PSScriptRoot 是 scripts/ 所在位置，因此它的父目录就是项目根目录。
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -94,7 +93,7 @@ $installerTools = if ($Installer) {
     Resolve-InstallerInputs -Repository $projectRoot -Compiler $InnoSetupCompiler -Redist $VcRedistributable -VisualStudio $vsRoot
 } else { $null }
 
-# 把命令行功能开关映射为 vcpkg.json 中同名的可选 feature。
+# 把顶部功能变量映射为 vcpkg.json 中同名的可选 feature。
 # nlohmann/json 是本地化与设置文件的基础依赖，不受可选 feature 控制。
 $manifestFeatures = [Collections.Generic.List[string]]::new()
 if ($EnableOcr) { $manifestFeatures.Add('ocr') }
@@ -146,19 +145,29 @@ $configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + ($manifestFeatures -join
 $configureArguments.Add('-Unlohmann_json_DIR')
 $configureArguments.Add('-UTesseract_DIR')
 $configureArguments.Add('-ULeptonica_DIR')
+$configureArguments.Add('-Uctranslate2_DIR')
+$configureArguments.Add('-USentencePiece_*')
+$configureArguments.Add('-Uabsl_DIR')
+$configureArguments.Add('-UProtobuf_DIR')
+$configureArguments.Add('-Uutf8_range_DIR')
 
 # 先调用 vcvars64.bat，把 cl.exe、link.exe 和 Windows SDK 路径加入当前 cmd 环境，
 # 再在同一个 cmd 进程中连续执行 CMake 配置与构建，确保环境变量不会丢失。
-$configure = '"' + $cmake + '" ' + ($configureArguments -join ' ')
 $build = '"' + $cmake + '" --build "' + $buildDir + '"'
 
 # PowerShell 7 默认按 UTF-8 接收原生程序输出，但系统 cmd 默认可能仍是代码页 936。
 # chcp 65001 统一子进程代码页；VSLANG=1033 固定 MSVC 工具输出为英文，
 # 既避免 /showIncludes 文本乱码，也让 CMake/Ninja 在不同系统语言上稳定识别依赖扫描前缀。
-$commands = 'chcp 65001 >NUL && set VSLANG=1033 && call "' + $vcvars + '" && ' + $configure + ' && ' + $build
-& cmd.exe /d /s /c $commands
-if ($LASTEXITCODE -ne 0) {
-    throw "构建失败，退出码：$LASTEXITCODE"
+Invoke-OpenStBuildEnvironment -Repository $projectRoot -Action {
+    $deploymentPowerShell = Get-OpenStVcpkgPowerShell -VcpkgRoot $vcpkgRoot
+    $configureArguments.Add('-DZ_VCPKG_PWSH_PATH:FILEPATH="' + $deploymentPowerShell + '"')
+    $configureArguments.Add('-DZ_VCPKG_POWERSHELL_PATH:FILEPATH="' + $deploymentPowerShell + '"')
+    $configure = '"' + $cmake + '" ' + ($configureArguments -join ' ')
+    $commands = 'chcp 65001 >NUL && set VSLANG=1033 && call "' + $vcvars + '" && ' + $configure + ' && ' + $build
+    & cmd.exe /d /s /c $commands
+    if ($LASTEXITCODE -ne 0) {
+        throw "构建失败，退出码：$LASTEXITCODE"
+    }
 }
 
 # Release 的 CMake 工作树不是交付物。先完整准备临时运行目录，成功后再替换旧目录，

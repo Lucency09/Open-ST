@@ -1,6 +1,9 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
 #include "capture_storage_options.h"
+#include "capture_text_session.h"
+#include "diagnostic_text.h"
+#include "app_translation_state.h"
 #include <app.h>
 #include <hotkeys.h>
 #include <pin_window_manager.h>
@@ -8,8 +11,12 @@
 #include <settings_window.h>
 #include <ui_text.h>
 #include <vector>
+#include <windows_util.h>
 #ifdef OPEN_ST_HAS_OCR
 #include <ocr_client.h>
+#endif
+#ifdef OPEN_ST_HAS_TRANSLATION
+#include <translation_client.h>
 #endif
 
 namespace open_st
@@ -45,6 +52,213 @@ PinWindowCallbacks App::MakePinCallbacks()
 SettingsWindowCallbacks App::MakeSettingsCallbacks()
 {
     SettingsWindowCallbacks callbacks;
+    // 子模态接入主循环同一分派，截图状态收尾不能留在被阻塞的外层循环。
+    // 入参：message 为原生消息。返回：完整处理后为真。
+    callbacks.processThreadMessage = [this](MSG& message) { return this->ProcessApplicationMessage(message); };
+#ifdef OPEN_ST_HAS_TRANSLATION
+    callbacks.translationAvailable = true;
+    // 接口测试捕获未保存的单项和代理草稿，临时启用只存在于本次不可变请求。
+    // 入参：profile/proxyMode/proxyAddress 为编辑草稿。返回：身份或安全拒绝信息。
+    callbacks.submitTranslationTest =
+        [this](const nlohmann::json& profile, std::string_view proxyMode, std::string_view proxyAddress)
+    {
+        SettingsTranslationTestStatus status;
+        try
+        {
+            if (this->shuttingDown_)
+            {
+                status.text = GetUiText("translation.error.unavailable");
+                return status;
+            }
+            TranslationClient* client = this->EnsureTranslationClient();
+            if (!client)
+            {
+                status.text = GetUiText("translation.error.unavailable");
+                return status;
+            }
+            if (client->Snapshot().busy)
+            {
+                status.text = GetUiText(TranslationErrorTextKey(TranslationError::Busy));
+                return status;
+            }
+            TranslationRequest request;
+            request.text = "Hello, world!";
+            request.options = {"en", "zh-CN"};
+            nlohmann::json candidate = profile;
+            candidate["enabled"] = true;
+            request.configuration.interfaces = nlohmann::json::array({std::move(candidate)});
+            request.configuration.proxyMode = proxyMode;
+            request.configuration.proxyAddress = proxyAddress;
+            request.diagnostic = true;
+            // 先建立独立补收计时器，避免正常文字会话空闲时移除自身timer导致测试无刷新。
+            if (!SetTimer(this->messageWindow_, TranslationPollTimer, 100, nullptr))
+            {
+                status.text = GetUiText(TranslationErrorTextKey(TranslationError::Unavailable));
+                return status;
+            }
+            TranslationError error{};
+            if (!client->Submit(request, status.requestId, error))
+            {
+                KillTimer(this->messageWindow_, TranslationPollTimer);
+                status.text = GetUiText(TranslationErrorTextKey(error));
+                return status;
+            }
+            this->translation_->probeRequest = status.requestId;
+            status.running = true;
+            status.text = GetUiText("translation.test.started");
+        }
+        catch (...)
+        {
+            status.text = GetUiText(TranslationErrorTextKey(TranslationError::InvalidConfiguration));
+        }
+        return status;
+    };
+    // 只展示当前编辑请求的安全快照；不转存响应、不记录日志、不读取用户配置。
+    // 入参：id 为编辑器借用的请求身份。返回：匹配请求的可复制文本。
+    callbacks.translationTestStatus = [this](std::uint64_t id)
+    {
+        SettingsTranslationTestStatus status;
+        status.requestId = id;
+        status.text = GetUiText("translation.test.cancelled");
+        try
+        {
+            if (!id || !this->translation_ || this->translation_->probeRequest != id || !this->translation_->client)
+                return status;
+            const TranslationSnapshot snapshot = this->translation_->client->Snapshot();
+            if (snapshot.requestId != id)
+                return status;
+            status.running = snapshot.busy;
+            status.text =
+                GetUiText(status.running                                  ? "translation.test.started"
+                          : snapshot.phase == TranslationPhase::Succeeded ? "translation.test.completed"
+                          : snapshot.phase == TranslationPhase::Cancelled ? "translation.test.cancelled"
+                                                                          : TranslationErrorTextKey(snapshot.error));
+            for (const TranslationAttempt& attempt : snapshot.attempts)
+            {
+                if (attempt.error != TranslationError::None)
+                    status.text += L"\r\n" + GetUiText(TranslationErrorTextKey(attempt.error));
+                if (!attempt.diagnostic)
+                    continue;
+                const TranslationDiagnostic& diagnostic = *attempt.diagnostic;
+                status.text += L"\r\n" + GetUiText("translation.test.elapsed") + L": " +
+                               std::to_wstring(diagnostic.elapsedMilliseconds) + L" ms";
+                if (diagnostic.httpStatus)
+                    status.text +=
+                        L"\r\n" + GetUiText("translation.test.http") + L": " + std::to_wstring(diagnostic.httpStatus);
+                if (diagnostic.systemError)
+                    status.text += L"\r\n" + GetUiText("translation.test.system") + L": " +
+                                   std::to_wstring(diagnostic.systemError);
+                if (!diagnostic.providerCode.empty())
+                    status.text += L"\r\n" + GetUiText("translation.test.provider_code") + L": " +
+                                   Utf8ToWide(diagnostic.providerCode);
+                if (!diagnostic.providerMessage.empty())
+                    status.text += L"\r\n" + GetUiText("translation.test.provider_message") + L": " +
+                                   Utf8ToWide(diagnostic.providerMessage);
+                if (!diagnostic.response.empty())
+                    status.text +=
+                        L"\r\n" + GetUiText("translation.test.response") + L":\r\n" + Utf8ToWide(diagnostic.response);
+            }
+            if (snapshot.phase == TranslationPhase::Succeeded && snapshot.result)
+                status.text +=
+                    L"\r\n" + GetUiText("translation.test.result") + L":\r\n" + Utf8ToWide(snapshot.result->text);
+            if (!status.running && !this->shuttingDown_)
+                KillTimer(this->messageWindow_, TranslationPollTimer);
+        }
+        catch (...)
+        {
+            status.text = GetUiText(TranslationErrorTextKey(TranslationError::Unavailable));
+        }
+        return status;
+    };
+    // 关闭或取消编辑器只撤销它拥有的请求，不影响另一文字窗口后续提交的任务。
+    // 入参：id 为原测试身份。返回：无。
+    callbacks.cancelTranslationTest = [this](std::uint64_t id)
+    {
+        if (!id || !this->translation_ || id != this->translation_->probeRequest || !this->translation_->client)
+            return;
+        this->translation_->probeRequest = 0;
+        if (this->translation_->client->Snapshot().requestId == id)
+            this->translation_->client->Cancel();
+        if (!this->shuttingDown_)
+            KillTimer(this->messageWindow_, TranslationPollTimer);
+    };
+    // 按领域目录提供本地化候选，不在Settings复制合法值。
+    // 入参：key为领域字段。返回：窗口自有选项。
+    callbacks.translationChoices = [](std::string_view key)
+    {
+        std::vector<SettingsOption> result;
+        for (const std::string_view value : TranslationChoices(key))
+            result.push_back({std::string(value), GetUiText("translation.choice." + std::string(value))});
+        return result;
+    };
+    // 新条目由领域创建独立稳定身份。入参：kind为类型。返回：草稿条目。
+    callbacks.createTranslationProfile = [](std::string_view kind) { return CreateTranslationProfile(kind); };
+    // 将领域字段适配到普通子表单描述。入参：kind为类型。返回：无业务依赖的字段。
+    callbacks.translationProfileFields = [](std::string_view kind)
+    {
+        std::vector<SettingsTranslationField> result;
+        for (const TranslationProfileField& field : TranslationProfileFields(kind))
+        {
+            SettingsTranslationField item{std::string(field.key), field.secret, field.multiline, {}};
+            for (const std::string_view value : TranslationChoices(std::string(kind) + "." + std::string(field.key)))
+                item.options.push_back({std::string(value), GetUiText("translation.choice." + std::string(value))});
+            result.push_back(std::move(item));
+        }
+        return result;
+    };
+    // 列表验证只返回固定分类，凭据不进入诊断。入参：value为列表。返回：安全错误或空。
+    callbacks.validateTranslationInterfaces = [](const nlohmann::json& value)
+    {
+        const TranslationError error = ValidateTranslationInterfaces(value);
+        return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+    };
+    // 子表单复用领域结构验证。入参：value为条目。返回：安全错误或空。
+    callbacks.validateTranslationProfile = [](const nlohmann::json& value)
+    {
+        const TranslationError error = ValidateTranslationProfile(value);
+        return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+    };
+    // 简单字段与执行共享规则。入参：key/value为字段及草稿。返回：安全错误或空。
+    callbacks.validateTranslationField = [](std::string_view key, std::string_view value)
+    {
+        const TranslationError error = ValidateTranslationField(key, value);
+        return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+    };
+    // 校验一次原子提交的组合，不重读磁盘或发起请求。
+    // 入参：values为全部设置候选。返回：安全错误或空。
+    callbacks.validateTranslationSettings = [](const nlohmann::json& values)
+    {
+        const TranslationSettings settings = ReadTranslationSettings(
+            // 仅借用本次候选值。入参：key为领域字段。返回：独立值或缺失。
+            [&values](std::string_view key) -> std::optional<nlohmann::json>
+            {
+                const auto found = values.find(key);
+                return found == values.end() ? std::nullopt : std::optional<nlohmann::json>(*found);
+            });
+        const TranslationError error = ValidateTranslationConfiguration(settings.configuration, settings.options);
+        return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+    };
+    // 提示本地边界或显式HTTP风险，不在UI线程加载模型。
+    // 入参：profile为条目。返回：安全说明。
+    callbacks.translationProfileStatus = [](const nlohmann::json& profile)
+    {
+        if (profile.value("kind", "") == "ctranslate2_local")
+        {
+            const TranslationError status = QueryLocalTranslationModelFiles(GetExecutableDirectory());
+            return GetUiText("translation.local_help") + L"\n" +
+                   GetUiText(status == TranslationError::None ? "translation.models_present"
+                                                              : TranslationErrorTextKey(status));
+        }
+        return GetUiText(TranslationProfileUsesInsecureHttp(profile) ? "translation.http_warning"
+                                                                     : "translation.online_help");
+    };
+    // 设置成功应用后撤销旧任务，下一次明确操作才重新发送。入参：无。返回：无。
+    callbacks.translationSettingsApplied = [this]() noexcept
+    {
+        if (this->textSession_)
+            this->textSession_->ConfigurationChanged();
+    };
+#endif
 #ifdef OPEN_ST_HAS_OCR
     callbacks.ocrAvailable = true;
     // 从领域模块取得唯一模型档位，界面只负责本地化。

@@ -1,4 +1,4 @@
-# 内部发行辅助：唯一清单、双模式视图和当次原子发布；由 build.ps1 调用。
+﻿# 内部发行辅助：唯一清单、双模式视图和当次原子发布；由 build.ps1 调用。
 Set-StrictMode -Version Latest
 
 # 校验文件操作目标位于指定根目录之下，限制递归清理范围。
@@ -134,6 +134,24 @@ function New-ReleaseStaging {
                 throw "OCR 模型与固定清单不符：$($model.file)"
             }
             $entries.Add($model.file, $modelPath)
+        }
+    }
+    if ($metadata.translation -eq 'ON') {
+        $models = Get-Content -LiteralPath (Join-Path $Repository 'packaging/translation/models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($model in $models.models) {
+            foreach ($file in $model.files) {
+                $modelPath = Get-VerifiedChildPath -Root $launcher -Candidate (Join-Path $launcher $file.file)
+                Assert-ReleasePath $modelPath
+                if ((Get-Item -LiteralPath $modelPath).Length -ne $file.size -or
+                    (Get-FileHash -LiteralPath $modelPath -Algorithm SHA256).Hash -ne $file.sha256) {
+                    throw "翻译模型与固定清单不符：$($file.file)"
+                }
+                $entries.Add($file.file, $modelPath)
+            }
+        }
+        # 来源、署名及转换配方进入两个发行视图；运行期信任值仍由编译期白名单提供。
+        foreach ($name in @('NOTICE.txt', 'models.json')) {
+            $entries.Add(('resources/translation/' + $name), (Join-Path $Repository ('packaging/translation/' + $name)))
         }
     }
     foreach ($relative in $spec.launcherFiles) { $entries.Add($relative, (Join-Path $launcher $relative)) }

@@ -29,10 +29,17 @@ class SettingsEditSession final
 {
   public:
     // 读取原始用户字段和有效显示值，为指定设置字段建立编辑基线与草稿。
-    // 入参：keys 为字符串字段名列表；boolKeys 为布尔字段名列表；integerKeys 为整数列表。
+    // 入参：keys 为字符串字段名列表；boolKeys 为布尔列表；integerKeys 为整数列表；jsonKeys 的结构类型来自可用默认值。
     // 返回：全部基线和有效草稿准备成功时为 true；文件、字段或类型不满足时为 false，保留原会话。
     [[nodiscard]] bool Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys = {},
-                            const std::vector<std::string>& integerKeys = {}) noexcept;
+                            const std::vector<std::string>& integerKeys = {},
+                            const std::vector<std::string>& jsonKeys = {}) noexcept;
+    // 读取已登记的对象/数组草稿，返回副本避免产生第二个可独立修改的引用。
+    // 入参：key 为结构化字段。返回：完整 JSON 副本，失败为空。
+    [[nodiscard]] std::optional<nlohmann::json> ReadJson(std::string_view key) const noexcept;
+    // 原子替换已登记结构化草稿，不写盘、不运行领域逻辑。
+    // 入参：key 为字段；value 必须与基线同为数组或对象。返回：成功为 true。
+    [[nodiscard]] bool ChangeJson(std::string_view key, const nlohmann::json& value) noexcept;
     // 读取已统一为有符号数值语义的整数草稿。
     // 入参：key 为登记的整数字段名。
     // 返回：可表示的整数；字段未登记或类型不符为空。
@@ -96,6 +103,7 @@ class SettingsEditSession final
     struct Field
     {
         bool integer{};
+        bool structured{};
         bool requiresRepair{};
         std::optional<nlohmann::json> raw;
         nlohmann::json baseline;

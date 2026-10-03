@@ -4,6 +4,7 @@
 #include "settings_internal.h"
 #include "settings_messages.h"
 #include "settings_window_test_access.h"
+#include "translation_settings.h"
 #include <algorithm>
 #include <log.h>
 #include <optional>
@@ -34,7 +35,13 @@ class SettingsWindow::Impl final
             !callbacks.hotkeyEncode || !callbacks.hotkeyFormat || !callbacks.hotkeyPrepare || !callbacks.hotkeyFinish ||
             !callbacks.hotkeyStatus || !callbacks.hotkeyRecording || !callbacks.normalizeBorderColor ||
             !callbacks.validImageFormat || !callbacks.validJpegQuality ||
-            (callbacks.ocrAvailable && (!callbacks.ocrModels || !callbacks.ocrLanguages || !callbacks.validOcrOptions)))
+            (callbacks.ocrAvailable &&
+             (!callbacks.ocrModels || !callbacks.ocrLanguages || !callbacks.validOcrOptions)) ||
+            (callbacks.translationAvailable &&
+             (!callbacks.translationChoices || !callbacks.createTranslationProfile ||
+              !callbacks.translationProfileFields || !callbacks.validateTranslationInterfaces ||
+              !callbacks.validateTranslationProfile || !callbacks.validateTranslationField ||
+              !callbacks.validateTranslationSettings)))
         {
             return false;
         }
@@ -45,12 +52,14 @@ class SettingsWindow::Impl final
         {
             return false;
         }
-        if (!this->callbacks_.ocrAvailable && layout.contains("pages") && layout["pages"].is_array())
+        if (layout.contains("pages") && layout["pages"].is_array())
         {
             auto& pages = layout["pages"];
             for (auto page = pages.begin(); page != pages.end();)
             {
-                if (page->is_object() && page->value("id", std::string{}) == "ocr")
+                const std::string id = page->is_object() ? page->value("id", std::string{}) : "";
+                if ((!this->callbacks_.ocrAvailable && id == "ocr") ||
+                    (!this->callbacks_.translationAvailable && (id == "translation" || id == "translationNetwork")))
                     page = pages.erase(page);
                 else
                     ++page;
@@ -67,6 +76,14 @@ class SettingsWindow::Impl final
             {
                 if (result.code == "value_unavailable" && !this->ready_)
                     return;
+                if (result.id.starts_with("translation"))
+                {
+                    if (result.id == "translationInterfaces" && result.code == "value_unavailable")
+                        return;
+                    this->Require(
+                        this->renderer_->SetFieldError(result.id, this->Text("settings.translation.invalid")));
+                    return;
+                }
                 if (result.id == "ocrModel" || result.id == "ocrLanguage")
                 {
                     this->Require(this->renderer_->SetFieldError(result.id, this->Text("settings.ocr.invalid")));
@@ -103,6 +120,22 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
         this->BindStorageControls();
         this->BindOcrControls();
+        if (this->callbacks_.translationAvailable)
+        {
+            this->translationPanel_ = std::make_unique<TranslationSettingsPanel>(
+                *this->renderer_, this->editSession_, this->callbacks_,
+                // 刷新错误和按钮，不保存草稿。
+                // 入参：无。返回：无。
+                [this]()
+                {
+                    this->RefreshStorageErrors();
+                    this->UpdateButtons();
+                },
+                // 子表单保护父窗口与草稿寿命，编辑期间仍允许宿主截图。
+                // 入参：action 为临时编辑动作。返回：无。
+                [this](std::function<void()> action) { this->RunBusy(action, false); });
+            this->translationPanel_->Bind();
+        }
         this->BindMaintenanceControls();
         this->Require(this->renderer_->BindKeyChord(
             "captureHotkey",
@@ -294,6 +327,7 @@ class SettingsWindow::Impl final
             this->closeAfterBusy_ = true;
             return;
         }
+        this->translationPanel_.reset();
         this->renderer_.reset();
         this->editSession_ = {};
         this->callbacks_ = {};
@@ -428,7 +462,14 @@ class SettingsWindow::Impl final
             strings.emplace_back("ocr.model");
             strings.emplace_back("ocr.language");
         }
-        return this->editSession_.Open(strings, {"startup.enabled"}, {"export.jpeg_quality"});
+        std::vector<std::string> jsonKeys;
+        if (this->callbacks_.translationAvailable)
+        {
+            for (const auto key : TRANSLATION_STRING_KEYS)
+                strings.emplace_back(key);
+            jsonKeys.emplace_back(TRANSLATION_INTERFACES_KEY);
+        }
+        return this->editSession_.Open(strings, {"startup.enabled"}, {"export.jpeg_quality"}, jsonKeys);
     }
 
     // 绑定 OCR 下拉草稿，领域选项及校验完全由宿主提供。
@@ -610,7 +651,27 @@ class SettingsWindow::Impl final
             keys.emplace_back("ocr.model");
             keys.emplace_back("ocr.language");
         }
+        if (this->callbacks_.translationAvailable)
+        {
+            keys.emplace_back(TRANSLATION_INTERFACES_KEY);
+            for (const auto key : TRANSLATION_STRING_KEYS)
+                keys.emplace_back(key);
+        }
         return keys;
+    }
+
+    // 查询翻译字段是否存在待提交的类型修复。
+    // 入参：无。返回：任一字段需要明确修复为 true。
+    bool TranslationNeedsRepair() const noexcept
+    {
+        if (!this->callbacks_.translationAvailable)
+            return false;
+        if (this->editSession_.RequiresRepair(TRANSLATION_INTERFACES_KEY))
+            return true;
+        for (const auto key : TRANSLATION_STRING_KEYS)
+            if (this->editSession_.RequiresRepair(key))
+                return true;
+        return false;
     }
 
     // 校验候选的实际类型与业务语义，完全独立于原始未完成输入缓冲。
@@ -628,6 +689,7 @@ class SettingsWindow::Impl final
         return language && startup && hotkey && this->callbacks_.hotkeyDecode(*hotkey) && color &&
                this->callbacks_.normalizeBorderColor(*color) && format && this->callbacks_.validImageFormat(*format) &&
                quality && this->callbacks_.validJpegQuality(*quality) && options.success && this->OcrValid(candidate) &&
+               TranslationSettingsError(candidate, this->callbacks_).empty() &&
                std::any_of(options.options.begin(), options.options.end(),
                            // 在当前资源选项中精确匹配候选语言。
                            // 入参：option 为正在检查的语言选项。
@@ -685,6 +747,8 @@ class SettingsWindow::Impl final
                 }
             }
         }
+        if (this->callbacks_.translationAvailable)
+            result += L"\n" + this->Text("settings.translation.restore_warning");
         return result;
     }
 
@@ -864,6 +928,8 @@ class SettingsWindow::Impl final
             this->renderer_->SetFieldError("defaultSaveFormat", this->StorageFieldError("export.default_format")));
         this->Require(this->renderer_->SetFieldError("jpegQuality", this->StorageFieldError("export.jpeg_quality")));
         this->RefreshOcrErrors();
+        if (this->translationPanel_)
+            this->translationPanel_->Refresh();
     }
     // 判断当前草稿是否仍需注册或清理，宿主未提供查询时仅消费本地清理状态。
     // 入参：无。
@@ -943,8 +1009,10 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled(
             "applyButton",
             this->ready_ && this->StorageValid() && this->OcrValid(this->editSession_) &&
-                (this->editSession_.IsDirty() || this->StorageNeedsRepair() || this->OcrNeedsRepair() ||
-                 this->pendingLanguage_.has_value() || this->pendingStartup_.has_value() || this->HotkeyNeedsApply())));
+                TranslationSettingsError(this->editSession_, this->callbacks_).empty() &&
+                (this->editSession_.IsDirty() || this->StorageNeedsRepair() || this->TranslationNeedsRepair() ||
+                 this->OcrNeedsRepair() || this->pendingLanguage_.has_value() || this->pendingStartup_.has_value() ||
+                 this->HotkeyNeedsApply())));
         this->Require(this->renderer_->SetEnabled("startupRepairButton", this->ready_));
         this->Require(this->renderer_->SetEnabled("captureHotkey", this->ready_));
         this->Require(this->renderer_->SetEnabled("selectionBorderColor", this->ready_));
@@ -955,8 +1023,11 @@ class SettingsWindow::Impl final
             this->Require(this->renderer_->SetEnabled("ocrModel", this->ready_));
             this->Require(this->renderer_->SetEnabled("ocrLanguage", this->ready_));
         }
-        this->Require(this->renderer_->SetEnabled("acceptButton", this->ready_ && this->StorageValid() &&
-                                                                      this->OcrValid(this->editSession_)));
+        this->Require(this->renderer_->SetEnabled(
+            "acceptButton", this->ready_ && this->StorageValid() && this->OcrValid(this->editSession_) &&
+                                TranslationSettingsError(this->editSession_, this->callbacks_).empty()));
+        if (this->translationPanel_)
+            this->translationPanel_->Enable(this->ready_);
         this->UpdateMaintenanceButtons();
     }
 
@@ -1034,13 +1105,15 @@ class SettingsWindow::Impl final
         {
             return;
         }
-        if (!this->StorageValid() || !this->OcrValid(this->editSession_))
+        if (!this->StorageValid() || !this->OcrValid(this->editSession_) ||
+            !TranslationSettingsError(this->editSession_, this->callbacks_).empty())
         {
             this->RefreshStorageErrors();
             return;
         }
-        if (!this->editSession_.IsDirty() && !this->StorageNeedsRepair() && !this->OcrNeedsRepair() &&
-            !this->pendingLanguage_.has_value() && !this->pendingStartup_.has_value() && !this->HotkeyNeedsApply())
+        if (!this->editSession_.IsDirty() && !this->StorageNeedsRepair() && !this->TranslationNeedsRepair() &&
+            !this->OcrNeedsRepair() && !this->pendingLanguage_.has_value() && !this->pendingStartup_.has_value() &&
+            !this->HotkeyNeedsApply())
         {
             if (closeWhenDone)
             {
@@ -1077,10 +1150,11 @@ class SettingsWindow::Impl final
         const std::optional<std::string> hotkey = commitSession.ReadString("capture.hotkey");
         if (!startup || !hotkey || (!restoreAll && !this->ValidateHotkey(*hotkey)))
             return;
-        if (!restoreAll && (!this->StorageValid() || !this->OcrValid(commitSession)))
+        if (!restoreAll && (!this->StorageValid() || !this->OcrValid(commitSession) ||
+                            !TranslationSettingsError(commitSession, this->callbacks_).empty()))
             return;
-        const bool dirty =
-            restoreAll || commitSession.IsDirty() || this->StorageNeedsRepair() || this->OcrNeedsRepair();
+        const bool dirty = restoreAll || commitSession.IsDirty() || this->StorageNeedsRepair() ||
+                           this->TranslationNeedsRepair() || this->OcrNeedsRepair();
         const bool needsHotkey = restoreAll || hotkeyChanged || this->HotkeyNeedsApply();
         if (dirty || needsHotkey)
         {
@@ -1150,6 +1224,21 @@ class SettingsWindow::Impl final
                 }
                 candidate.prepared = true;
             }
+            bool translationChanged = this->callbacks_.translationAvailable &&
+                                      (restoreAll || commitSession.IsDirty(TRANSLATION_INTERFACES_KEY) ||
+                                       commitSession.RequiresRepair(TRANSLATION_INTERFACES_KEY));
+            if (this->callbacks_.translationAvailable)
+            {
+                if (commitSession.RequiresRepair(TRANSLATION_INTERFACES_KEY))
+                    requiredKeys.emplace_back(TRANSLATION_INTERFACES_KEY);
+                for (const auto key : TRANSLATION_STRING_KEYS)
+                {
+                    translationChanged =
+                        translationChanged || commitSession.IsDirty(key) || commitSession.RequiresRepair(key);
+                    if (commitSession.RequiresRepair(key))
+                        requiredKeys.emplace_back(key);
+                }
+            }
             const SettingsCommitResult committed =
                 dirty ? commitSession.Commit(requiredKeys, explicitlyEditedKeys) : SettingsCommitResult::Unchanged;
             if (committed != SettingsCommitResult::Saved && committed != SettingsCommitResult::Unchanged)
@@ -1169,6 +1258,8 @@ class SettingsWindow::Impl final
                 this->hotkeyCleanupPending_ = !this->callbacks_.hotkeyFinish(true);
             }
             this->editSession_ = std::move(commitSession);
+            if (translationChanged && this->callbacks_.translationSettingsApplied)
+                this->callbacks_.translationSettingsApplied();
             if (restoreAll)
             {
                 this->integerInputInvalid_ = false;
@@ -1302,6 +1393,14 @@ class SettingsWindow::Impl final
                     fields.emplace_back("ocr.model");
                     fields.emplace_back("ocr.language");
                 }
+                if (this->callbacks_.translationAvailable)
+                {
+                    if (page == this->renderer_->GetControlPageId("translationInterfaces"))
+                        fields.emplace_back(TRANSLATION_INTERFACES_KEY);
+                    for (const auto key : TRANSLATION_STRING_KEYS)
+                        if (page == this->renderer_->GetControlPageId(key))
+                            fields.emplace_back(key);
+                }
                 SettingsEditSession candidate = this->editSession_;
                 if (fields.empty() || !candidate.RestoreDefaults(fields))
                 {
@@ -1350,6 +1449,16 @@ class SettingsWindow::Impl final
                     {
                         const std::optional<std::int64_t> value = candidate.ReadInteger(key);
                         valid = value && this->callbacks_.validJpegQuality(*value);
+                    }
+                    if (key == TRANSLATION_INTERFACES_KEY)
+                    {
+                        const auto value = candidate.ReadJson(key);
+                        valid = value && this->callbacks_.validateTranslationInterfaces(*value).empty();
+                    }
+                    else if (key.starts_with("translation."))
+                    {
+                        const auto value = candidate.ReadString(key);
+                        valid = value && this->callbacks_.validateTranslationField(key, *value).empty();
                     }
                     if (!valid)
                     {
@@ -1438,7 +1547,7 @@ class SettingsWindow::Impl final
     // 在确认、提交和运行期应用期间禁用重复操作，异常后恢复交互并处理延迟关闭。
     // 入参：operation 为本次受忙状态保护的同步操作，借用到调用结束。
     // 返回：无返回值。
-    void RunBusy(const std::function<void()>& operation)
+    void RunBusy(const std::function<void()>& operation, bool notifyHost = true)
     {
         bool notified = false;
         this->closeAfterBusy_ = false;
@@ -1447,8 +1556,11 @@ class SettingsWindow::Impl final
             // 先结束完整录入，再进入业务忙状态，异常也经下方统一恢复。
             this->Require(this->renderer_->SetBusy(true));
             this->busy_ = true;
-            this->NotifyBusy(true);
-            notified = true;
+            if (notifyHost)
+            {
+                this->NotifyBusy(true);
+                notified = true;
+            }
             operation();
         }
         catch (...)
@@ -1489,6 +1601,7 @@ class SettingsWindow::Impl final
         }
     }
 
+    std::unique_ptr<TranslationSettingsPanel> translationPanel_;
     SettingsEditSession editSession_;
     SettingsWindowCallbacks callbacks_;
     std::unique_ptr<WindowRenderer> renderer_;

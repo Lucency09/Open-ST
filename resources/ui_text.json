@@ -6,6 +6,11 @@
     "ja-JP"
   ],
   "texts": {
+    "translation.models_present": {
+      "zh-CN": "模型文件齐全；首次使用时验证并加载。",
+      "en-US": "Model files are present; they will be verified and loaded on first use.",
+      "ja-JP": "モデルファイルが揃っています。初回利用時に検証して読み込みます。"
+    },
     "annotation.element.properties": {
       "zh-CN": "元素属性",
       "en-US": "Element properties",
@@ -267,9 +272,9 @@
       "ja-JP": "初期キャプチャキー：{hotkey}。確認後に登録を試み、トレイで動作します。"
     },
     "welcome.privacy": {
-      "zh-CN": "当前截图在本机处理。后续 OCR 在本机执行；文字翻译上传文字，图片翻译上传处理后的图片。这些翻译能力尚未提供。",
-      "en-US": "Captures are processed locally. Planned OCR will run locally; text translation will upload text and image translation will upload processed images. These features are not available yet.",
-      "ja-JP": "現在のキャプチャは端末内で処理します。今後の OCR は端末内で実行し、テキスト翻訳は文字を、画像翻訳は処理後の画像を送信します。これらはまだ利用できません。"
+      "zh-CN": "截图、OCR 和本地翻译均在本机处理。启用在线翻译后，文字会按接口顺序发送，失败可能尝试多个已启用接口。图片翻译尚未提供。",
+      "en-US": "Captures, OCR, and local translation run on this device. Enabled online translation services receive text in the configured order; failures may send it to multiple enabled services. Image translation is not available yet.",
+      "ja-JP": "キャプチャ、OCR、ローカル翻訳は端末内で処理します。オンライン翻訳を有効にすると、設定した順に文字が送信され、失敗時は複数の有効なサービスへ送信される場合があります。画像翻訳はまだ利用できません。"
     },
     "welcome.confirm": {
       "zh-CN": "确认",
@@ -1235,6 +1240,916 @@
       "zh-CN": "取消",
       "en-US": "Cancel",
       "ja-JP": "キャンセル"
+    },
+    "translation.window.title": {
+      "zh-CN": "文字识别与翻译",
+      "en-US": "Recognize and translate text",
+      "ja-JP": "文字認識と翻訳"
+    },
+    "translation.source": {
+      "zh-CN": "源语言",
+      "en-US": "Source language",
+      "ja-JP": "原文の言語"
+    },
+    "translation.target": {
+      "zh-CN": "目标语言",
+      "en-US": "Target language",
+      "ja-JP": "翻訳先の言語"
+    },
+    "translation.result": {
+      "zh-CN": "译文",
+      "en-US": "Translation",
+      "ja-JP": "翻訳結果"
+    },
+    "translation.copy_source": {
+      "zh-CN": "复制原文",
+      "en-US": "Copy source",
+      "ja-JP": "原文をコピー"
+    },
+    "translation.copy_result": {
+      "zh-CN": "复制译文",
+      "en-US": "Copy translation",
+      "ja-JP": "訳文をコピー"
+    },
+    "translation.action": {
+      "zh-CN": "翻译",
+      "en-US": "Translate",
+      "ja-JP": "翻訳"
+    },
+    "translation.cancel": {
+      "zh-CN": "取消翻译",
+      "en-US": "Cancel translation",
+      "ja-JP": "翻訳をキャンセル"
+    },
+    "translation.no_result": {
+      "zh-CN": "尚无译文",
+      "en-US": "No translation yet",
+      "ja-JP": "翻訳結果はまだありません"
+    },
+    "translation.origin": {
+      "zh-CN": "来自：{name}",
+      "en-US": "From: {name}",
+      "ja-JP": "提供元：{name}"
+    },
+    "translation.stale": {
+      "zh-CN": "已过期，请重新翻译",
+      "en-US": "Out of date; translate again",
+      "ja-JP": "内容が変更されました。再翻訳してください"
+    },
+    "translation.route_help": {
+      "zh-CN": "按启用顺序尝试；失败可能将原文发送给多个在线接口并产生多笔费用。仅启用本地项可离线使用。取消不保证撤销服务端处理。",
+      "en-US": "Enabled providers are tried in order. Fallback may send text to multiple online services and incur multiple charges. Enable only local providers to stay offline. Cancelling does not undo server processing.",
+      "ja-JP": "有効な順に試行します。失敗時は複数のオンラインサービスへ原文を送信し、料金が複数発生する場合があります。ローカルのみ有効ならオフラインで利用できます。キャンセルしてもサーバーの処理は取り消せません。"
+    },
+    "translation.http_warning": {
+      "zh-CN": "此配置使用未加密的 HTTP；原文和凭据可能被读取。",
+      "en-US": "This configuration uses unencrypted HTTP; text and credentials may be exposed.",
+      "ja-JP": "この設定は暗号化されていないHTTPを使用します。原文と認証情報が読み取られる可能性があります。"
+    },
+    "translation.local": {
+      "zh-CN": "本地",
+      "en-US": "Local",
+      "ja-JP": "ローカル"
+    },
+    "translation.online": {
+      "zh-CN": "在线",
+      "en-US": "Online",
+      "ja-JP": "オンライン"
+    },
+    "translation.local_help": {
+      "zh-CN": "内置 OPUS-MT 中英双向模型；首次使用时校验并加载。自动识别支持中英文；其他语言或无法判定时继续下一个接口。短文本和混合语言的识别可能受限。",
+      "en-US": "Bundled OPUS-MT Chinese–English models are verified and loaded on first use. Automatic detection supports Chinese and English; other or undetermined languages continue to the next interface. Short or mixed-language text may be difficult to detect.",
+      "ja-JP": "内蔵 OPUS-MT 中英モデルを初回利用時に検証・読み込みします。中国語と英語を自動検出し、その他の言語や判定できない場合は次のインターフェースへ進みます。短文や混在言語では判定が難しい場合があります。"
+    },
+    "translation.online_help": {
+      "zh-CN": "此项会将原文发送到在线服务。请填写自己的凭据。",
+      "en-US": "This provider sends source text to an online service. Use your own credentials.",
+      "ja-JP": "原文をオンラインサービスに送信します。ご自身の認証情報を設定してください。"
+    },
+    "translation.completed": {
+      "zh-CN": "翻译完成",
+      "en-US": "Translation complete",
+      "ja-JP": "翻訳が完了しました"
+    },
+    "translation.attempting": {
+      "zh-CN": "正在尝试：{name}（第 {index} 项／共 {total} 项）",
+      "en-US": "Trying {name} ({index} of {total})",
+      "ja-JP": "試行中：{name}（{index}／{total}）"
+    },
+    "translation.unattempted": {
+      "zh-CN": "尚有 {count} 项未尝试",
+      "en-US": "{count} providers were not attempted",
+      "ja-JP": "未試行の提供元：{count}件"
+    },
+    "settings.translation.title": {
+      "zh-CN": "翻译接口",
+      "en-US": "Translation providers",
+      "ja-JP": "翻訳サービス"
+    },
+    "settings.translation.privacy": {
+      "zh-CN": "按列表顺序尝试已启用接口，成功后停止。在线接口会收到原文；本地项不联网。",
+      "en-US": "Enabled providers are tried in order until one succeeds. Online providers receive the source text; local providers do not use the network.",
+      "ja-JP": "有効な提供元を順に試し、成功した時点で終了します。オンラインには原文が送信され、ローカルは通信しません。"
+    },
+    "settings.translation.interfaces": {
+      "zh-CN": "接口顺序",
+      "en-US": "Provider order",
+      "ja-JP": "試行順序"
+    },
+    "settings.translation.new_kind": {
+      "zh-CN": "新增类型",
+      "en-US": "New provider type",
+      "ja-JP": "追加する種類"
+    },
+    "settings.translation.add": {
+      "zh-CN": "新增",
+      "en-US": "Add",
+      "ja-JP": "追加"
+    },
+    "settings.translation.copy": {
+      "zh-CN": "复制",
+      "en-US": "Duplicate",
+      "ja-JP": "複製"
+    },
+    "settings.translation.delete": {
+      "zh-CN": "删除",
+      "en-US": "Delete",
+      "ja-JP": "削除"
+    },
+    "settings.translation.toggle": {
+      "zh-CN": "启用／停用",
+      "en-US": "Enable / disable",
+      "ja-JP": "有効／無効"
+    },
+    "settings.translation.up": {
+      "zh-CN": "上移",
+      "en-US": "Move up",
+      "ja-JP": "上へ"
+    },
+    "settings.translation.down": {
+      "zh-CN": "下移",
+      "en-US": "Move down",
+      "ja-JP": "下へ"
+    },
+    "settings.translation.edit": {
+      "zh-CN": "编辑接口",
+      "en-US": "Edit provider",
+      "ja-JP": "提供元を編集"
+    },
+    "settings.translation.source_language": {
+      "zh-CN": "默认源语言",
+      "en-US": "Default source language",
+      "ja-JP": "既定の原文言語"
+    },
+    "settings.translation.target_language": {
+      "zh-CN": "默认目标语言",
+      "en-US": "Default target language",
+      "ja-JP": "既定の翻訳先言語"
+    },
+    "settings.translation.credentials": {
+      "zh-CN": "密钥以明文存于程序旁 data/settings.json。遮罩只隐藏显示；共享目录中有读取权限的用户可读取密钥。",
+      "en-US": "Keys are stored as plain text in data/settings.json beside the program. Masking only hides the display; users with read access to that directory can read them.",
+      "ja-JP": "キーはプログラム横のdata/settings.jsonに平文で保存されます。伏字は表示のみを隠します。フォルダーの読み取り権限がある利用者はキーを読めます。"
+    },
+    "settings.translation.network.title": {
+      "zh-CN": "翻译网络",
+      "en-US": "Translation network",
+      "ja-JP": "翻訳のネットワーク"
+    },
+    "settings.translation.network.proxy_mode": {
+      "zh-CN": "代理方式",
+      "en-US": "Proxy mode",
+      "ja-JP": "プロキシ方式"
+    },
+    "settings.translation.network.proxy_address": {
+      "zh-CN": "HTTP 代理地址",
+      "en-US": "HTTP proxy address",
+      "ja-JP": "HTTPプロキシのアドレス"
+    },
+    "settings.translation.network.help": {
+      "zh-CN": "跟随系统或填写 host:port／http://host:port。代理失败不会自动直连；本地翻译不使用代理。",
+      "en-US": "Follow system settings or enter host:port / http://host:port. Proxy failures never fall back to direct access. Local translation does not use a proxy.",
+      "ja-JP": "システム設定に従うかhost:port／http://host:portを入力します。プロキシ失敗時に直接接続へ切り替えません。ローカル翻訳はプロキシを使いません。"
+    },
+    "settings.translation.profile_name": {
+      "zh-CN": "接口名称",
+      "en-US": "Provider name",
+      "ja-JP": "提供元の名前"
+    },
+    "settings.translation.enabled": {
+      "zh-CN": "启用此接口",
+      "en-US": "Enable this provider",
+      "ja-JP": "この提供元を有効にする"
+    },
+    "settings.translation.profile_hint": {
+      "zh-CN": "修改只保存到草稿。确认返回后，点击设置页“应用”才写入配置。",
+      "en-US": "Changes remain in the draft. Confirm here, then apply on the settings page to save.",
+      "ja-JP": "変更は下書きに保持されます。ここで確定した後、設定ページで適用すると保存されます。"
+    },
+    "settings.translation.secret_list": {
+      "zh-CN": "已命名密钥",
+      "en-US": "Named secrets",
+      "ja-JP": "名前付きシークレット"
+    },
+    "settings.translation.secret_value": {
+      "zh-CN": "密钥值",
+      "en-US": "Secret value",
+      "ja-JP": "シークレットの値"
+    },
+    "settings.translation.secret_name": {
+      "zh-CN": "新密钥名称",
+      "en-US": "New secret name",
+      "ja-JP": "新しいシークレット名"
+    },
+    "settings.translation.secret_add": {
+      "zh-CN": "添加密钥",
+      "en-US": "Add secret",
+      "ja-JP": "シークレットを追加"
+    },
+    "settings.translation.secret_delete": {
+      "zh-CN": "删除密钥",
+      "en-US": "Delete secret",
+      "ja-JP": "シークレットを削除"
+    },
+    "settings.translation.select_secret": {
+      "zh-CN": "请先选择密钥",
+      "en-US": "Select a secret first",
+      "ja-JP": "先にシークレットを選択してください"
+    },
+    "settings.translation.invalid_json": {
+      "zh-CN": "配置不是有效的 JSON",
+      "en-US": "Configuration is not valid JSON",
+      "ja-JP": "設定は有効なJSONではありません"
+    },
+    "settings.translation.invalid": {
+      "zh-CN": "接口配置无效，请检查字段、模板及语言能力",
+      "en-US": "Invalid provider configuration; check fields, templates and supported languages",
+      "ja-JP": "提供元の設定が無効です。項目、テンプレート、対応言語を確認してください"
+    },
+    "settings.translation.on": {
+      "zh-CN": "已启用",
+      "en-US": "Enabled",
+      "ja-JP": "有効"
+    },
+    "settings.translation.off": {
+      "zh-CN": "已停用",
+      "en-US": "Disabled",
+      "ja-JP": "無効"
+    },
+    "settings.translation.restore_warning": {
+      "zh-CN": "恢复全部默认会删除自定义翻译接口并清空所有密钥，恢复默认接口顺序。",
+      "en-US": "Restoring all defaults deletes custom providers, clears all keys, and resets provider order.",
+      "ja-JP": "すべて既定に戻すとカスタム提供元と全キーが削除され、試行順序がリセットされます。"
+    },
+    "settings.translation.field.app_id": {
+      "zh-CN": "AppID",
+      "en-US": "App ID",
+      "ja-JP": "App ID"
+    },
+    "settings.translation.field.api_key": {
+      "zh-CN": "密钥",
+      "en-US": "API key",
+      "ja-JP": "APIキー"
+    },
+    "settings.translation.field.base_url": {
+      "zh-CN": "服务基础地址",
+      "en-US": "Base URL",
+      "ja-JP": "ベースURL"
+    },
+    "settings.translation.field.model": {
+      "zh-CN": "模型名称",
+      "en-US": "Model",
+      "ja-JP": "モデル名"
+    },
+    "settings.translation.field.service": {
+      "zh-CN": "服务方案",
+      "en-US": "Service plan",
+      "ja-JP": "サービスプラン"
+    },
+    "settings.translation.field.region": {
+      "zh-CN": "区域",
+      "en-US": "Region",
+      "ja-JP": "リージョン"
+    },
+    "settings.translation.field.configuration": {
+      "zh-CN": "请求与响应配置（JSON）",
+      "en-US": "Request and response configuration (JSON)",
+      "ja-JP": "リクエストと応答の設定（JSON）"
+    },
+    "translation.choice.auto": {
+      "zh-CN": "自动识别",
+      "en-US": "Automatic",
+      "ja-JP": "自動検出"
+    },
+    "translation.language.auto": {
+      "zh-CN": "自动识别",
+      "en-US": "Automatic",
+      "ja-JP": "自動検出"
+    },
+    "translation.choice.zh-CN": {
+      "zh-CN": "中文（简体）",
+      "en-US": "Chinese (Simplified)",
+      "ja-JP": "中国語（簡体字）"
+    },
+    "translation.language.zh-CN": {
+      "zh-CN": "中文（简体）",
+      "en-US": "Chinese (Simplified)",
+      "ja-JP": "中国語（簡体字）"
+    },
+    "translation.choice.en": {
+      "zh-CN": "英文",
+      "en-US": "English",
+      "ja-JP": "英語"
+    },
+    "translation.language.en": {
+      "zh-CN": "英文",
+      "en-US": "English",
+      "ja-JP": "英語"
+    },
+    "translation.choice.ja": {
+      "zh-CN": "日文",
+      "en-US": "Japanese",
+      "ja-JP": "日本語"
+    },
+    "translation.language.ja": {
+      "zh-CN": "日文",
+      "en-US": "Japanese",
+      "ja-JP": "日本語"
+    },
+    "translation.choice.baidu": {
+      "zh-CN": "百度官方翻译",
+      "en-US": "Baidu Translate",
+      "ja-JP": "百度翻訳"
+    },
+    "translation.choice.google": {
+      "zh-CN": "Google 网页翻译",
+      "en-US": "Google web translation",
+      "ja-JP": "Googleウェブ翻訳"
+    },
+    "translation.choice.openai": {
+      "zh-CN": "OpenAI 兼容接口",
+      "en-US": "OpenAI compatible",
+      "ja-JP": "OpenAI互換"
+    },
+    "translation.choice.deepl": {
+      "zh-CN": "DeepL",
+      "en-US": "DeepL",
+      "ja-JP": "DeepL"
+    },
+    "translation.choice.microsoft": {
+      "zh-CN": "Microsoft Translator",
+      "en-US": "Microsoft Translator",
+      "ja-JP": "Microsoft Translator"
+    },
+    "translation.choice.ctranslate2_local": {
+      "zh-CN": "CTranslate2 本地中英翻译",
+      "en-US": "CTranslate2 local Chinese–English",
+      "ja-JP": "CTranslate2 ローカル中英翻訳"
+    },
+    "translation.choice.custom_http": {
+      "zh-CN": "自定义 HTTP",
+      "en-US": "Custom HTTP",
+      "ja-JP": "カスタムHTTP"
+    },
+    "translation.choice.system": {
+      "zh-CN": "跟随系统",
+      "en-US": "System settings",
+      "ja-JP": "システム設定"
+    },
+    "translation.choice.custom": {
+      "zh-CN": "自定义 HTTP 代理",
+      "en-US": "Custom HTTP proxy",
+      "ja-JP": "カスタムHTTPプロキシ"
+    },
+    "translation.choice.free": {
+      "zh-CN": "Free",
+      "en-US": "Free",
+      "ja-JP": "Free"
+    },
+    "translation.choice.pro": {
+      "zh-CN": "Pro",
+      "en-US": "Pro",
+      "ja-JP": "Pro"
+    },
+    "translation.error.none": {
+      "zh-CN": "成功",
+      "en-US": "Success",
+      "ja-JP": "成功"
+    },
+    "translation.error.busy": {
+      "zh-CN": "上一任务仍在收尾，请稍后重试",
+      "en-US": "The previous task is still finishing; try again shortly",
+      "ja-JP": "前の処理の終了を待ってから再試行してください"
+    },
+    "translation.error.configuration": {
+      "zh-CN": "翻译配置无效，请检查设置",
+      "en-US": "Invalid translation configuration; check settings",
+      "ja-JP": "翻訳設定が無効です。設定を確認してください"
+    },
+    "translation.error.credentials": {
+      "zh-CN": "未填写所需凭据，请在设置中配置",
+      "en-US": "Required credentials are missing; configure them in settings",
+      "ja-JP": "必要な認証情報がありません。設定で入力してください"
+    },
+    "translation.error.input": {
+      "zh-CN": "原文或请求参数无效，请修改后重试",
+      "en-US": "Invalid source text or request parameters",
+      "ja-JP": "原文またはリクエストの項目が無効です"
+    },
+    "translation.error.limit": {
+      "zh-CN": "输入超过此接口的处理上限",
+      "en-US": "Input exceeds this provider's limit",
+      "ja-JP": "入力がこの提供元の上限を超えています"
+    },
+    "translation.error.same_language": {
+      "zh-CN": "源语言与目标语言相同",
+      "en-US": "Source and target languages are the same",
+      "ja-JP": "原文と翻訳先の言語が同じです"
+    },
+    "translation.error.authentication": {
+      "zh-CN": "凭据验证失败",
+      "en-US": "Authentication failed",
+      "ja-JP": "認証に失敗しました"
+    },
+    "translation.error.permission": {
+      "zh-CN": "没有使用此服务的权限",
+      "en-US": "Permission denied",
+      "ja-JP": "このサービスの利用権限がありません"
+    },
+    "translation.error.quota": {
+      "zh-CN": "余额或额度不足",
+      "en-US": "Insufficient balance or quota",
+      "ja-JP": "残高または利用枠が不足しています"
+    },
+    "translation.error.rate": {
+      "zh-CN": "请求受到限流",
+      "en-US": "Rate limited",
+      "ja-JP": "リクエストが制限されました"
+    },
+    "translation.error.proxy": {
+      "zh-CN": "代理连接或配置失败",
+      "en-US": "Proxy connection or configuration failed",
+      "ja-JP": "プロキシの接続または設定に失敗しました"
+    },
+    "translation.error.tls": {
+      "zh-CN": "安全连接验证失败",
+      "en-US": "Secure connection validation failed",
+      "ja-JP": "安全な接続の検証に失敗しました"
+    },
+    "translation.error.network": {
+      "zh-CN": "网络连接失败",
+      "en-US": "Network connection failed",
+      "ja-JP": "ネットワーク接続に失敗しました"
+    },
+    "translation.error.timeout": {
+      "zh-CN": "此接口超时",
+      "en-US": "Provider timed out",
+      "ja-JP": "この提供元はタイムアウトしました"
+    },
+    "translation.error.cancelled": {
+      "zh-CN": "翻译已取消",
+      "en-US": "Translation cancelled",
+      "ja-JP": "翻訳をキャンセルしました"
+    },
+    "translation.error.service": {
+      "zh-CN": "翻译服务异常",
+      "en-US": "Translation service error",
+      "ja-JP": "翻訳サービスでエラーが発生しました"
+    },
+    "translation.error.response": {
+      "zh-CN": "响应格式不受支持",
+      "en-US": "Unsupported response format",
+      "ja-JP": "応答形式に対応していません"
+    },
+    "translation.error.empty": {
+      "zh-CN": "未返回有效译文",
+      "en-US": "No valid translation returned",
+      "ja-JP": "有効な翻訳結果がありません"
+    },
+    "translation.error.truncated": {
+      "zh-CN": "译文不完整，未发布部分结果",
+      "en-US": "Translation was truncated; no partial result was published",
+      "ja-JP": "翻訳が途中で終了したため、部分結果は表示しません"
+    },
+    "translation.error.context": {
+      "zh-CN": "内容超过模型上下文限制",
+      "en-US": "Input exceeds model context limit",
+      "ja-JP": "入力がモデルのコンテキスト上限を超えています"
+    },
+    "translation.error.redirect": {
+      "zh-CN": "服务返回了不允许的重定向",
+      "en-US": "Provider returned a disallowed redirect",
+      "ja-JP": "許可されていないリダイレクトが返されました"
+    },
+    "translation.error.not_applicable": {
+      "zh-CN": "此项不支持所选语言；本地项需明确选择中文或英文",
+      "en-US": "Unsupported language selection; local providers require explicit Chinese or English",
+      "ja-JP": "選択した言語に非対応です。ローカルでは中国語または英語を指定してください"
+    },
+    "translation.error.memory": {
+      "zh-CN": "内存不足，已停止本轮翻译",
+      "en-US": "Out of memory; this translation run stopped",
+      "ja-JP": "メモリ不足のため、この翻訳処理を中止しました"
+    },
+    "translation.error.no_interfaces": {
+      "zh-CN": "没有启用的翻译接口，请先设置",
+      "en-US": "No translation providers are enabled",
+      "ja-JP": "翻訳サービスが有効になっていません"
+    },
+    "translation.error.budget": {
+      "zh-CN": "本轮时间预算已耗尽",
+      "en-US": "Translation run time budget exhausted",
+      "ja-JP": "翻訳処理全体の制限時間に達しました"
+    },
+    "translation.error.model_missing": {
+      "zh-CN": "本地模型文件缺失，请修复安装",
+      "en-US": "Local model files are missing; repair the installation",
+      "ja-JP": "ローカルモデルがありません。インストールを修復してください"
+    },
+    "translation.error.model_integrity": {
+      "zh-CN": "本地模型校验失败，请修复安装",
+      "en-US": "Local model integrity check failed; repair the installation",
+      "ja-JP": "ローカルモデルの検証に失敗しました。インストールを修復してください"
+    },
+    "translation.error.unavailable": {
+      "zh-CN": "翻译功能暂不可用",
+      "en-US": "Translation is unavailable",
+      "ja-JP": "翻訳を利用できません"
+    },
+    "settings.translation.profile_type": {
+      "zh-CN": "接口类型",
+      "en-US": "Provider type",
+      "ja-JP": "提供元の種類"
+    },
+    "settings.translation.column_enabled": {
+      "zh-CN": "启用状态",
+      "en-US": "Status",
+      "ja-JP": "有効状態"
+    },
+    "settings.translation.secret_empty": {
+      "zh-CN": "未填写",
+      "en-US": "Not set",
+      "ja-JP": "未入力"
+    },
+    "settings.translation.custom.basic": {
+      "zh-CN": "基本信息",
+      "en-US": "General",
+      "ja-JP": "基本情報"
+    },
+    "settings.translation.custom.request": {
+      "zh-CN": "请求参数",
+      "en-US": "Request",
+      "ja-JP": "リクエスト"
+    },
+    "settings.translation.custom.response": {
+      "zh-CN": "响应处理",
+      "en-US": "Response",
+      "ja-JP": "応答の処理"
+    },
+    "settings.translation.custom.secrets": {
+      "zh-CN": "命名密钥",
+      "en-US": "Named secrets",
+      "ja-JP": "名前付きシークレット"
+    },
+    "settings.translation.custom.method": {
+      "zh-CN": "请求方法",
+      "en-US": "Method",
+      "ja-JP": "メソッド"
+    },
+    "settings.translation.custom.url": {
+      "zh-CN": "接口地址",
+      "en-US": "URL",
+      "ja-JP": "URL"
+    },
+    "settings.translation.custom.source_languages": {
+      "zh-CN": "源语言映射",
+      "en-US": "Source language mapping",
+      "ja-JP": "原文言語の対応"
+    },
+    "settings.translation.custom.target_languages": {
+      "zh-CN": "目标语言映射",
+      "en-US": "Target language mapping",
+      "ja-JP": "翻訳先言語の対応"
+    },
+    "settings.translation.custom.headers": {
+      "zh-CN": "请求头",
+      "en-US": "Headers",
+      "ja-JP": "ヘッダー"
+    },
+    "settings.translation.custom.query": {
+      "zh-CN": "查询参数",
+      "en-US": "Query parameters",
+      "ja-JP": "クエリパラメーター"
+    },
+    "settings.translation.custom.body_mode": {
+      "zh-CN": "正文格式",
+      "en-US": "Body format",
+      "ja-JP": "本文の形式"
+    },
+    "settings.translation.custom.json_body": {
+      "zh-CN": "JSON 请求体模板",
+      "en-US": "JSON body template",
+      "ja-JP": "JSON本文テンプレート"
+    },
+    "settings.translation.custom.form_body": {
+      "zh-CN": "表单参数",
+      "en-US": "Form fields",
+      "ja-JP": "フォーム項目"
+    },
+    "settings.translation.custom.raw_body": {
+      "zh-CN": "纯文本请求体模板",
+      "en-US": "Text body template",
+      "ja-JP": "テキスト本文テンプレート"
+    },
+    "settings.translation.custom.response_mode": {
+      "zh-CN": "响应格式",
+      "en-US": "Response format",
+      "ja-JP": "応答の形式"
+    },
+    "settings.translation.custom.extraction": {
+      "zh-CN": "译文提取方式",
+      "en-US": "Translation extraction",
+      "ja-JP": "訳文の取得方法"
+    },
+    "settings.translation.custom.text_pointer": {
+      "zh-CN": "译文字段路径（可留空表示根）",
+      "en-US": "Text path (empty for root)",
+      "ja-JP": "訳文のパス（空欄はルート）"
+    },
+    "settings.translation.custom.array_pointer": {
+      "zh-CN": "译文数组路径（可留空表示根）",
+      "en-US": "Array path (empty for root)",
+      "ja-JP": "配列のパス（空欄はルート）"
+    },
+    "settings.translation.custom.item_pointer": {
+      "zh-CN": "数组项的译文字段路径",
+      "en-US": "Text path within each item",
+      "ja-JP": "各要素内の訳文パス"
+    },
+    "settings.translation.custom.separator": {
+      "zh-CN": "数组译文连接符（支持换行）",
+      "en-US": "Join separator (line breaks allowed)",
+      "ja-JP": "連結文字（改行可）"
+    },
+    "settings.translation.custom.use_success": {
+      "zh-CN": "检查业务成功条件",
+      "en-US": "Check a success condition",
+      "ja-JP": "成功条件を確認する"
+    },
+    "settings.translation.custom.success_pointer": {
+      "zh-CN": "成功字段路径",
+      "en-US": "Success field path",
+      "ja-JP": "成功フィールドのパス"
+    },
+    "settings.translation.custom.scalar_type": {
+      "zh-CN": "比较值类型",
+      "en-US": "Value type",
+      "ja-JP": "比較値の型"
+    },
+    "settings.translation.custom.success_value": {
+      "zh-CN": "成功时的比较值",
+      "en-US": "Expected success value",
+      "ja-JP": "成功時の期待値"
+    },
+    "settings.translation.custom.success_boolean": {
+      "zh-CN": "成功值为 true",
+      "en-US": "Success value is true",
+      "ja-JP": "成功値をtrueにする"
+    },
+    "settings.translation.custom.use_errors": {
+      "zh-CN": "映射业务错误",
+      "en-US": "Map service errors",
+      "ja-JP": "サービスエラーを対応付ける"
+    },
+    "settings.translation.custom.error_pointer": {
+      "zh-CN": "错误码字段路径",
+      "en-US": "Error code path",
+      "ja-JP": "エラーコードのパス"
+    },
+    "settings.translation.custom.error_map": {
+      "zh-CN": "错误码 → 错误类别",
+      "en-US": "Error code → category",
+      "ja-JP": "エラーコード → 種類"
+    },
+    "settings.translation.custom.template_help": {
+      "zh-CN": "模板可使用 {{text}}、{{source}}、{{target}} 和 {{secret.名称}}。密钥值只在密钥编辑框填写。",
+      "en-US": "Templates support {{text}}, {{source}}, {{target}}, and {{secret.name}}. Enter secret values only in secret fields.",
+      "ja-JP": "{{text}}、{{source}}、{{target}}、{{secret.name}}を使用できます。シークレットの値は専用欄に入力してください。"
+    },
+    "settings.translation.kv.key": {
+      "zh-CN": "名称",
+      "en-US": "Name",
+      "ja-JP": "名前"
+    },
+    "settings.translation.kv.value": {
+      "zh-CN": "值",
+      "en-US": "Value",
+      "ja-JP": "値"
+    },
+    "settings.translation.kv.edit": {
+      "zh-CN": "编辑参数",
+      "en-US": "Edit entry",
+      "ja-JP": "項目を編集"
+    },
+    "settings.translation.kv.invalid_key": {
+      "zh-CN": "名称无效，请检查格式",
+      "en-US": "Invalid name; check the format",
+      "ja-JP": "名前の形式を確認してください"
+    },
+    "settings.translation.kv.duplicate_key": {
+      "zh-CN": "该名称已存在",
+      "en-US": "This name already exists",
+      "ja-JP": "この名前は既に存在します"
+    },
+    "translation.choice.GET": {
+      "zh-CN": "GET",
+      "en-US": "GET",
+      "ja-JP": "GET"
+    },
+    "translation.choice.POST": {
+      "zh-CN": "POST",
+      "en-US": "POST",
+      "ja-JP": "POST"
+    },
+    "translation.choice.PUT": {
+      "zh-CN": "PUT",
+      "en-US": "PUT",
+      "ja-JP": "PUT"
+    },
+    "translation.choice.PATCH": {
+      "zh-CN": "PATCH",
+      "en-US": "PATCH",
+      "ja-JP": "PATCH"
+    },
+    "translation.choice.none": {
+      "zh-CN": "无正文",
+      "en-US": "No body",
+      "ja-JP": "本文なし"
+    },
+    "translation.choice.json": {
+      "zh-CN": "JSON",
+      "en-US": "JSON",
+      "ja-JP": "JSON"
+    },
+    "translation.choice.form": {
+      "zh-CN": "表单键值",
+      "en-US": "Form fields",
+      "ja-JP": "フォーム項目"
+    },
+    "translation.choice.raw": {
+      "zh-CN": "纯文本",
+      "en-US": "Plain text",
+      "ja-JP": "プレーンテキスト"
+    },
+    "translation.choice.text": {
+      "zh-CN": "纯文本",
+      "en-US": "Plain text",
+      "ja-JP": "プレーンテキスト"
+    },
+    "translation.choice.single": {
+      "zh-CN": "单个文本字段",
+      "en-US": "Single text field",
+      "ja-JP": "単一のテキスト"
+    },
+    "translation.choice.array": {
+      "zh-CN": "数组合并",
+      "en-US": "Join array items",
+      "ja-JP": "配列要素を連結"
+    },
+    "translation.choice.string": {
+      "zh-CN": "字符串",
+      "en-US": "String",
+      "ja-JP": "文字列"
+    },
+    "translation.choice.number": {
+      "zh-CN": "数值",
+      "en-US": "Number",
+      "ja-JP": "数値"
+    },
+    "translation.choice.boolean": {
+      "zh-CN": "布尔值",
+      "en-US": "Boolean",
+      "ja-JP": "真偽値"
+    },
+    "translation.choice.null": {
+      "zh-CN": "空值 null",
+      "en-US": "Null",
+      "ja-JP": "null"
+    },
+    "translation.choice.authentication": {
+      "zh-CN": "鉴权失败",
+      "en-US": "Authentication",
+      "ja-JP": "認証失敗"
+    },
+    "translation.choice.permission": {
+      "zh-CN": "权限不足",
+      "en-US": "Permission",
+      "ja-JP": "権限不足"
+    },
+    "translation.choice.quota": {
+      "zh-CN": "额度不足",
+      "en-US": "Quota",
+      "ja-JP": "利用枠不足"
+    },
+    "translation.choice.rate_limited": {
+      "zh-CN": "限流",
+      "en-US": "Rate limit",
+      "ja-JP": "レート制限"
+    },
+    "translation.choice.input": {
+      "zh-CN": "输入错误（停止本轮）",
+      "en-US": "Input error (stop this run)",
+      "ja-JP": "入力エラー（処理を中止）"
+    },
+    "translation.choice.service": {
+      "zh-CN": "服务错误",
+      "en-US": "Service error",
+      "ja-JP": "サービスエラー"
+    },
+    "translation.choice.context_limit": {
+      "zh-CN": "上下文超限",
+      "en-US": "Context limit",
+      "ja-JP": "コンテキスト上限"
+    },
+    "settings.translation.custom.success_number": {
+      "zh-CN": "成功时的数值",
+      "en-US": "Expected numeric value",
+      "ja-JP": "成功時の数値"
+    },
+    "translation.test.sample": {
+      "zh-CN": "测试样本：Hello, world!（英语 → 简体中文）",
+      "en-US": "Sample: Hello, world! (English → Simplified Chinese)",
+      "ja-JP": "テスト：Hello, world!（英語 → 簡体字中国語）"
+    },
+    "translation.test.start": {
+      "zh-CN": "测试连接",
+      "en-US": "Test connection",
+      "ja-JP": "接続テスト"
+    },
+    "translation.test.cancel": {
+      "zh-CN": "取消测试",
+      "en-US": "Cancel test",
+      "ja-JP": "テストをキャンセル"
+    },
+    "translation.test.output": {
+      "zh-CN": "测试结果（可选择复制）",
+      "en-US": "Test results (select to copy)",
+      "ja-JP": "テスト結果（選択してコピー可能）"
+    },
+    "translation.test.previous": {
+      "zh-CN": "配置已修改，以下为上次配置的测试结果。",
+      "en-US": "Configuration changed. Results below are from the previous configuration.",
+      "ja-JP": "設定が変更されました。以下は前の設定のテスト結果です。"
+    },
+    "translation.test.elapsed": {
+      "zh-CN": "耗时",
+      "en-US": "Elapsed",
+      "ja-JP": "所要時間"
+    },
+    "translation.test.http": {
+      "zh-CN": "HTTP 状态",
+      "en-US": "HTTP status",
+      "ja-JP": "HTTP 状態"
+    },
+    "translation.test.system": {
+      "zh-CN": "系统错误",
+      "en-US": "System error",
+      "ja-JP": "システムエラー"
+    },
+    "translation.test.provider_code": {
+      "zh-CN": "服务错误码",
+      "en-US": "Service error code",
+      "ja-JP": "サービスエラーコード"
+    },
+    "translation.test.provider_message": {
+      "zh-CN": "服务消息",
+      "en-US": "Service message",
+      "ja-JP": "サービスメッセージ"
+    },
+    "translation.test.response": {
+      "zh-CN": "脱敏响应",
+      "en-US": "Redacted response",
+      "ja-JP": "秘匿済み応答"
+    },
+    "translation.test.result": {
+      "zh-CN": "译文",
+      "en-US": "Translation",
+      "ja-JP": "翻訳結果"
+    },
+    "translation.test.started": {
+      "zh-CN": "正在测试连接…",
+      "en-US": "Testing connection…",
+      "ja-JP": "接続をテスト中…"
+    },
+    "translation.test.completed": {
+      "zh-CN": "测试完成",
+      "en-US": "Test completed",
+      "ja-JP": "テスト完了"
+    },
+    "translation.test.cancelled": {
+      "zh-CN": "测试已取消。",
+      "en-US": "Test cancelled.",
+      "ja-JP": "テストをキャンセルしました。"
     }
   }
 }

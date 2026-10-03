@@ -1,6 +1,6 @@
 // 使用真实结果窗口与会话编排、可控 OCR 边界验证输入归属和迟到结果，不识别或写真实剪贴板。
-#include "ocr_result_window.h"
-#include "ocr_session.h"
+#include "capture_text_session.h"
+#include "text_result_window.h"
 #include <clipboard_writer.h>
 #include <gtest/gtest.h>
 #include <ocr_client.h>
@@ -159,7 +159,7 @@ class OcrInteractionTest : public testing::Test
   protected:
     OcrBoundaryState state_;
     HWND owner_{};
-    std::unique_ptr<open_st::OcrSession> session_;
+    std::unique_ptr<open_st::CaptureTextSession> session_;
     open_st::SdrSelectionFrame frame_{{0, 0, 2, 2}, std::vector<std::uint8_t>(16, 255)};
 
     // 创建隐藏稳定宿主及真实协调器。
@@ -171,7 +171,7 @@ class OcrInteractionTest : public testing::Test
         this->owner_ = CreateWindowExW(0, L"STATIC", L"OCR integration owner", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                        GetModuleHandleW(nullptr), nullptr);
         ASSERT_NE(this->owner_, nullptr);
-        this->session_ = std::make_unique<open_st::OcrSession>(this->owner_, nullptr);
+        this->session_ = std::make_unique<open_st::CaptureTextSession>(this->owner_, nullptr);
     }
     // 先停止边界并关闭会话，随后销毁稳定 HWND。
     // 入参：无。
@@ -414,6 +414,6 @@ TEST_F(OcrInteractionTest, closing_completed_result_stops_poll_timer_without_des
     this->session_->Poll();
     EXPECT_EQ(this->Window(), nullptr);
     EXPECT_EQ(this->state_.destroys, 0);
-    EXPECT_EQ(KillTimer(this->owner_, open_st::OcrPollTimer), FALSE);
+    EXPECT_EQ(KillTimer(this->owner_, open_st::TextPollTimer), FALSE);
 }
 } // namespace

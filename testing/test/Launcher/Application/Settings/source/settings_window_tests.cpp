@@ -100,6 +100,78 @@ struct BusyMessageProbe
 };
 thread_local BusyMessageProbe* BusyMessageProbe::current{};
 
+// 驱动新增/编辑模态表单确认，仅读写本测试线程的隔离窗口。
+struct ProfileConfirmationDriver
+{
+    HWND owner{};
+    bool enabled{}, visited{}, timeout{};
+    UINT_PTR timer{};
+    ULONGLONG deadline{};
+    static thread_local ProfileConfirmationDriver* current;
+    // 注册短期本线程驱动。
+    // 入参：parent为设置宿主，enable为拟保存启用状态。
+    // 返回：仅等待真实模态窗口出现的驱动。
+    ProfileConfirmationDriver(HWND parent, bool enable) : owner(parent), enabled(enable)
+    {
+        current = this;
+        this->deadline = GetTickCount64() + 5000;
+        this->timer = SetTimer(this->owner, 988, 15, Tick);
+        EXPECT_NE(this->timer, 0U);
+    }
+    // 清理驱动定时器。
+    // 入参：无。
+    // 返回：无。
+    ~ProfileConfirmationDriver()
+    {
+        if (this->timer)
+            KillTimer(this->owner, this->timer);
+        current = nullptr;
+    }
+    // 仅匹配本测试设置窗口拥有的Renderer。
+    // 入参：window为候选；data为句柄输出。
+    // 返回：找到后停止。
+    static BOOL CALLBACK Find(HWND window, LPARAM data)
+    {
+        wchar_t type[128]{};
+        GetClassNameW(window, type, 128);
+        if (GetWindow(window, GW_OWNER) == current->owner && std::wstring_view(type) == L"OpenST.WindowRenderer")
+        {
+            *reinterpret_cast<HWND*>(data) = window;
+            return FALSE;
+        }
+        return TRUE;
+    }
+    // 编辑启用状态并确认，超时显式失败且关闭本测试子窗。
+    // 入参：系统定时器参数忽略。
+    // 返回：无。
+    static void CALLBACK Tick(HWND, UINT, UINT_PTR, DWORD)
+    {
+        HWND window{};
+        EnumThreadWindows(GetCurrentThreadId(), Find, reinterpret_cast<LPARAM>(&window));
+        if (GetTickCount64() > current->deadline)
+        {
+            current->timeout = true;
+            if (window)
+                PostMessageW(window, WM_CLOSE, 0, 0);
+            return;
+        }
+        if (!window || current->visited)
+            return;
+        current->visited = true;
+        ControlSearch enabled{L"Button", L"settings.translation.enabled"};
+        EnumChildWindows(window, FindControl, reinterpret_cast<LPARAM>(&enabled));
+        ASSERT_NE(enabled.found, nullptr);
+        const bool checked = SendMessageW(enabled.found, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (checked != current->enabled)
+            SendMessageW(enabled.found, BM_CLICK, 0, 0);
+        ControlSearch accept{L"Button", L"dialog.ok"};
+        EnumChildWindows(window, FindControl, reinterpret_cast<LPARAM>(&accept));
+        ASSERT_NE(accept.found, nullptr);
+        ASSERT_TRUE(IsWindowEnabled(accept.found));
+        SendMessageW(accept.found, BM_CLICK, 0, 0);
+    }
+};
+thread_local ProfileConfirmationDriver* ProfileConfirmationDriver::current{};
 class SettingsWindowTest : public testing::Test
 {
   protected:
@@ -320,6 +392,53 @@ class SettingsWindowTest : public testing::Test
         // 入参：value 为质量值。
         // 返回：1 到 100 含端点为 true。
         callbacks.validJpegQuality = [](std::int64_t value) { return value >= 1 && value <= 100; };
+        callbacks.translationAvailable = this->translationAvailable_;
+        // 提供固定测试领域选项，不链接真实 Translation 或联网。
+        // 入参：key 为领域设置键。返回：测试允许值。
+        callbacks.translationChoices = [](std::string_view key)
+        {
+            if (key == "translation.kind")
+                return std::vector<open_st::SettingsOption>{{"test", L"Test provider"}};
+            if (key == "translation.network.proxy_mode")
+                return std::vector<open_st::SettingsOption>{{"system", L"System"}, {"custom", L"Custom"}};
+            return std::vector<open_st::SettingsOption>{{"auto", L"Auto"}, {"zh-CN", L"Chinese"}, {"en", L"English"}};
+        };
+        // 创建独立身份，复制不能重用旧条目ID。
+        // 入参：kind 为测试类型。返回：完整默认条目。
+        callbacks.createTranslationProfile = [this](std::string_view kind)
+        {
+            return nlohmann::json{{"id", "fresh-" + std::to_string(++this->translationIdentity_)},
+                                  {"name", "New"},
+                                  {"kind", kind},
+                                  {"enabled", false},
+                                  {"configuration", nlohmann::json::object()},
+                                  {"secrets", {{"api_key", ""}}}};
+        };
+        // 本用例只需要一个遮罩字段。
+        // 入参：kind 未使用。返回：测试字段描述。
+        callbacks.translationProfileFields = [](std::string_view)
+        { return std::vector<open_st::SettingsTranslationField>{{"api_key", true, false, {}}}; };
+        // 使用安全错误描述模拟领域拒绝，不回显候选正文。
+        // 入参：value 为列表。返回：通过或固定错误。
+        callbacks.validateTranslationInterfaces = [this](const nlohmann::json& value)
+        {
+            return this->translationValid_ && value.is_array() && value.size() <= 16
+                       ? L""
+                       : L"Invalid translation configuration";
+        };
+        // 模拟有效条目；本测试不是领域协议用例。
+        // 入参：profile 未使用。返回：固定允许。
+        callbacks.validateTranslationProfile = [](const nlohmann::json&) { return L""; };
+        // 字段合法性由窄回调提供。
+        // 入参：key/value 未使用。返回：固定允许。
+        callbacks.validateTranslationField = [](std::string_view, std::string_view) { return L""; };
+        // 模拟完整配置校验，便于确认按钮与保存边界测试。
+        // 入参：values 未使用。返回：测试指定合法性。
+        callbacks.validateTranslationSettings = [this](const nlohmann::json&)
+        { return this->translationValid_ ? L"" : L"Invalid translation configuration"; };
+        // 记录提交后的运行期通知，不执行翻译。
+        // 入参：无。返回：无。
+        callbacks.translationSettingsApplied = [this]() { ++this->translationApplied_; };
         callbacks.ocrAvailable = this->ocrAvailable_;
         // 用测试选项模拟上级领域，不依赖真实识别库。
         // 入参：无。
@@ -518,6 +637,49 @@ class SettingsWindowTest : public testing::Test
         return PostThreadMessageW(GetCurrentThreadId(), message, 0, 0) != FALSE;
     }
 
+    // 补充隔离测试默认及用户列表，不读取用户真实服务凭据。
+    // 入参：无。返回：无。
+    void PrepareTranslation()
+    {
+        this->translationAvailable_ = true;
+        for (const auto relative : {"resources/default_settings.json", "data/settings.json"})
+        {
+            nlohmann::json document;
+            {
+                std::ifstream input(this->root_ / relative, std::ios::binary);
+                document = nlohmann::json::parse(input);
+            }
+            auto& values = document["settings"];
+            values["translation.interfaces"] = nlohmann::json::array({{{"id", "first"},
+                                                                       {"name", "Primary"},
+                                                                       {"kind", "test"},
+                                                                       {"enabled", true},
+                                                                       {"configuration", nlohmann::json::object()},
+                                                                       {"secrets", {{"api_key", ""}}}},
+                                                                      {{"id", "second"},
+                                                                       {"name", "Secondary"},
+                                                                       {"kind", "test"},
+                                                                       {"enabled", false},
+                                                                       {"configuration", nlohmann::json::object()},
+                                                                       {"secrets", {{"api_key", ""}}}}});
+            values["translation.source_language"] = "auto";
+            values["translation.target_language"] = "zh-CN";
+            values["translation.network.proxy_mode"] = "system";
+            values["translation.network.proxy_address"] = "";
+            this->Write(relative, document.dump());
+        }
+    }
+
+    // 通过真实新增子窗保存新的独立身份，只更新父设置草稿。
+    // 入参：enabled为新条目启用状态。
+    // 返回：无，断言子窗曾出现并在期限内确认。
+    void AddTranslation(bool enabled = false)
+    {
+        ProfileConfirmationDriver driver(this->window_.NativeHandle(), enabled);
+        this->Click("settings.translation.add");
+        EXPECT_TRUE(driver.visited);
+        EXPECT_FALSE(driver.timeout);
+    }
     std::filesystem::path root_;
     std::vector<std::string> availableLanguages_{"en-US", "zh-CN", "ja-JP"};
     std::string appliedLanguage_{"en-US"};
@@ -543,6 +705,9 @@ class SettingsWindowTest : public testing::Test
     bool openDirectorySucceeds_{true};
     bool clearHistorySucceeds_{true};
     bool maintenanceRunning_{};
+    bool translationAvailable_{};
+    bool translationValid_{true};
+    unsigned translationIdentity_{}, translationApplied_{};
     bool ocrAvailable_{};
     bool ocrValid_{true};
     std::wstring maintenanceText_{L"maintenance idle"};
@@ -1801,5 +1966,193 @@ TEST_F(SettingsWindowTest, ocr_invalidated_options_are_rechecked_before_commit)
     this->SelectOcr(L"Best model");
     this->Click("settings.apply");
     EXPECT_EQ(open_st::GetStringSetting("ocr.model"), "best");
+}
+// 验证新增取得新身份、排序保持身份，应用一次才持久化并通知。
+// 入参：无。返回：无；不创建服务请求。
+TEST_F(SettingsWindowTest, translation_order_and_add_share_atomic_settings_draft)
+{
+    this->PrepareTranslation();
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->AddTranslation();
+    this->Click("settings.translation.up");
+    ASSERT_EQ(open_st::GetJsonSetting("translation.interfaces")->size(), 2U);
+    EXPECT_EQ(this->translationApplied_, 0U);
+    this->Click("settings.apply");
+    const auto stored = *open_st::GetJsonSetting("translation.interfaces");
+    ASSERT_EQ(stored.size(), 3U);
+    EXPECT_EQ(stored[0]["id"], "first");
+    EXPECT_EQ(stored[1]["id"], "fresh-1");
+    EXPECT_EQ(stored[2]["id"], "second");
+    EXPECT_EQ(stored[1]["enabled"], false);
+    EXPECT_EQ(this->translationApplied_, 1U);
+    this->Click("settings.translation.delete");
+    this->Click("settings.cancel");
+    EXPECT_EQ(*open_st::GetJsonSetting("translation.interfaces"), stored);
+    EXPECT_EQ(this->translationApplied_, 1U);
+}
+
+// 验证环境变量式三列表和五个右侧操作在最小窗口保持矩形隔离，不保留复制/独立启停按钮。
+// 入参：无。
+// 返回：无，使用真实原生控件和当前最小窗口约束。
+TEST_F(SettingsWindowTest, translation_table_columns_and_buttons_fit_minimum_window)
+{
+    this->PrepareTranslation();
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    const HWND table = this->Control(WC_LISTVIEWW);
+    ASSERT_NE(table, nullptr);
+    EXPECT_EQ(Header_GetItemCount(ListView_GetHeader(table)), 3);
+    EXPECT_EQ(ListView_GetItemCount(table), 2);
+    EXPECT_EQ(GetWindowLongPtrW(table, GWL_STYLE) & LVS_EDITLABELS, 0);
+    EXPECT_EQ(this->Control(L"Button", this->Text("settings.translation.copy")), nullptr);
+    EXPECT_EQ(this->Control(L"Button", this->Text("settings.translation.toggle")), nullptr);
+    MINMAXINFO minimum{};
+    SendMessageW(this->window_.NativeHandle(), WM_GETMINMAXINFO, 0, reinterpret_cast<LPARAM>(&minimum));
+    ASSERT_GT(minimum.ptMinTrackSize.x, 0);
+    ASSERT_GT(minimum.ptMinTrackSize.y, 0);
+    ASSERT_TRUE(SetWindowPos(this->window_.NativeHandle(), nullptr, 0, 0, minimum.ptMinTrackSize.x,
+                             minimum.ptMinTrackSize.y, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE));
+    this->Pump();
+    RECT tableRect{}, previous{};
+    GetWindowRect(table, &tableRect);
+    EXPECT_GT(tableRect.right - tableRect.left, 100);
+    bool first = true;
+    for (const char* action : {"add", "edit", "delete", "up", "down"})
+    {
+        const HWND button = this->Control(L"Button", this->Text("settings.translation." + std::string(action)));
+        ASSERT_NE(button, nullptr);
+        RECT rect{};
+        GetWindowRect(button, &rect);
+        EXPECT_GE(rect.left, tableRect.right);
+        EXPECT_GT(rect.right - rect.left, 40);
+        if (!first)
+            EXPECT_GE(rect.top, previous.bottom);
+        previous = rect;
+        first = false;
+    }
+}
+// 验证双击选中行打开编辑，确认只替换该稳定身份而不新增或命中另一行。
+// 入参：无。
+// 返回：无，点击应用之前磁盘列表保持原值。
+TEST_F(SettingsWindowTest, translation_table_double_click_edits_selected_identity)
+{
+    this->PrepareTranslation();
+    std::vector<bool> busyStates;
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    // 普通编辑不进入保存忙状态，宿主截图门禁保持开放。
+    // 入参：busy 为宿主通知。返回：无。
+    callbacks.busyChanged = [&](bool busy) { busyStates.push_back(busy); };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->SelectPage(3);
+    ShowWindow(this->window_.NativeHandle(), SW_SHOWNOACTIVATE);
+    const HWND table = this->Control(WC_LISTVIEWW);
+    ASSERT_NE(table, nullptr);
+    ListView_SetItemState(table, 1, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ProfileConfirmationDriver driver(this->window_.NativeHandle(), true);
+    NMITEMACTIVATE activation{};
+    activation.hdr.hwndFrom = table;
+    activation.hdr.idFrom = static_cast<UINT_PTR>(GetDlgCtrlID(table));
+    activation.hdr.code = NM_DBLCLK;
+    activation.iItem = 1;
+    SendMessageW(GetParent(table), WM_NOTIFY, activation.hdr.idFrom, reinterpret_cast<LPARAM>(&activation));
+    EXPECT_TRUE(driver.visited);
+    EXPECT_FALSE(driver.timeout);
+    EXPECT_TRUE(busyStates.empty());
+    EXPECT_FALSE((*open_st::GetJsonSetting("translation.interfaces"))[1]["enabled"].get<bool>());
+    this->Click("settings.apply");
+    EXPECT_EQ(busyStates, (std::vector<bool>{true, false}));
+    const auto list = *open_st::GetJsonSetting("translation.interfaces");
+    ASSERT_EQ(list.size(), 2U);
+    EXPECT_EQ(list[0]["id"], "first");
+    EXPECT_EQ(list[1]["id"], "second");
+    EXPECT_TRUE(list[1]["enabled"].get<bool>());
+}
+// 验证翻译页面恢复只修改本页草稿，相关保存通知不影响其他页面设置。
+// 入参：无。返回：无。
+TEST_F(SettingsWindowTest, translation_page_restore_replaces_list_only_after_apply)
+{
+    this->PrepareTranslation();
+    ASSERT_TRUE(open_st::SetStringSetting("ui.language", "ja-JP"));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->AddTranslation();
+    this->Click("settings.apply");
+    ASSERT_EQ(open_st::GetJsonSetting("translation.interfaces")->size(), 3U);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces")->size(), 3U);
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces")->size(), 2U);
+    EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+    EXPECT_EQ(this->translationApplied_, 2U);
+}
+
+// 错误对象形状使用可编辑的默认列表，用户明确应用后才修复原配置并通知宿主。
+// 入参：无。
+// 返回：断言恢复默认和应用按钮都能完成真实窗口修复。
+TEST_F(SettingsWindowTest, translation_object_shape_can_be_restored_and_explicitly_repaired)
+{
+    this->PrepareTranslation();
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"translation.interfaces":{}}})");
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    ASSERT_TRUE(open_st::GetJsonSetting("translation.interfaces").has_value());
+    EXPECT_TRUE(open_st::GetJsonSetting("translation.interfaces")->is_object());
+    EXPECT_TRUE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))));
+    this->Click("settings.restore_page_defaults");
+    EXPECT_TRUE(open_st::GetJsonSetting("translation.interfaces")->is_object());
+    EXPECT_EQ(this->translationApplied_, 0U);
+    this->Click("settings.apply");
+    const auto repaired = open_st::GetJsonSetting("translation.interfaces");
+    ASSERT_TRUE(repaired.has_value());
+    ASSERT_TRUE(repaired->is_array());
+    EXPECT_EQ(repaired->size(), 2U);
+    EXPECT_EQ(this->translationApplied_, 1U);
+}
+
+// 领域规则拒绝时保留窗口和配置，禁用确认/应用，不由 Settings 自行绕开。
+// 入参：无。返回：无。
+TEST_F(SettingsWindowTest, invalid_translation_configuration_disables_commit_without_rewriting_json)
+{
+    this->PrepareTranslation();
+    this->translationValid_ = false;
+    const auto before = open_st::GetJsonSetting("translation.interfaces");
+    ASSERT_NE(this->Open(), nullptr);
+    EXPECT_FALSE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))));
+    EXPECT_FALSE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))));
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces"), before);
+    EXPECT_EQ(this->translationApplied_, 0U);
+}
+
+// 空列表是可保存配置，运行是否能翻译属于领域提交准入；删除不迫使用户填写密钥。
+// 入参：无。返回：无；空数组按原类型持久化。
+TEST_F(SettingsWindowTest, empty_translation_list_remains_saveable)
+{
+    this->PrepareTranslation();
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->Click("settings.translation.delete");
+    this->Click("settings.translation.delete");
+    this->Click("settings.apply");
+    ASSERT_TRUE(open_st::GetJsonSetting("translation.interfaces").has_value());
+    EXPECT_TRUE(open_st::GetJsonSetting("translation.interfaces")->is_array());
+    EXPECT_TRUE(open_st::GetJsonSetting("translation.interfaces")->empty());
+    EXPECT_EQ(this->translationApplied_, 1U);
+}
+
+// 启用条目没有密钥仍可保存草稿；实际调用时才由领域判定未配置并跳过。
+// 入参：无。返回：无；不发起网络校验。
+TEST_F(SettingsWindowTest, enabled_translation_profile_with_empty_key_can_be_saved)
+{
+    this->PrepareTranslation();
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    this->AddTranslation(true);
+    this->Click("settings.apply");
+    const auto list = *open_st::GetJsonSetting("translation.interfaces");
+    ASSERT_EQ(list.size(), 3U);
+    EXPECT_TRUE(list.back()["enabled"].get<bool>());
+    EXPECT_EQ(list.back()["secrets"]["api_key"], "");
+    EXPECT_EQ(this->translationApplied_, 1U);
 }
 } // namespace

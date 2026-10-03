@@ -7,6 +7,21 @@
 
 namespace open_st
 {
+// 复用 CNG 单次散列与系统伪句柄，不复制增量资源管理或手写算法。
+// 入参：bytes 为原始字节；digest 为输出摘要。
+// 返回：完成成功时 true，超长输入或系统失败为 false。
+bool ComputeMd5(std::span<const std::byte> bytes, std::array<std::byte, 16>& digest) noexcept
+{
+    if (bytes.size() > std::numeric_limits<ULONG>::max())
+        return false;
+    std::array<std::byte, 16> candidate{};
+    if (BCryptHash(BCRYPT_MD5_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<std::byte*>(bytes.data())),
+                   static_cast<ULONG>(bytes.size()), reinterpret_cast<PUCHAR>(candidate.data()),
+                   static_cast<ULONG>(candidate.size())) < 0)
+        return false;
+    digest = candidate;
+    return true;
+}
 struct Sha256::Impl
 {
     BCRYPT_ALG_HANDLE algorithm{};

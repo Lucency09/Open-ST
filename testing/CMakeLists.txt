@@ -1,6 +1,110 @@
 # 组织测试与 mock 构建入口，产品构建关闭测试时不加载此目录。
-
-# testing 是测试基础设施的唯一入口。
 # Mock 必须先于测试加载，使测试目标能够链接对应的 gMock target。
 add_subdirectory(mock)
 add_subdirectory(test)
+
+# 模块名与 CTest TEST_PREFIX 一致；这是脚本构建范围的唯一目标清单。
+# 不依据测试二进制是否已构建，也不通过源码文本推测目标。
+set(OPEN_ST_TEST_MODULES "{}")
+set(OPEN_ST_MAPPED_TEST_TARGETS "")
+
+# 登记模块的全部测试可执行目标，确认不存在拼错、非EXE或重复归属。
+# 入参：module为CTest模块前缀，后续参数为实际CMake目标。
+# 返回：在父作用域累计模块JSON与已登记目标列表；不完整清单立即停止配置。
+function(open_st_register_test_module module)
+    if(NOT module MATCHES "^[a-z][a-z0-9_]*$" OR ARGC LESS 2)
+        message(FATAL_ERROR "Invalid or empty test module mapping: ${module}")
+    endif()
+    set(module_targets "[]")
+    set(index 0)
+    foreach(target IN LISTS ARGN)
+        if(NOT TARGET "${target}" OR NOT target MATCHES "^[A-Za-z_][A-Za-z0-9_.+-]*$")
+            message(FATAL_ERROR "Unknown test target in module ${module}: ${target}")
+        endif()
+        get_target_property(target_type "${target}" TYPE)
+        if(NOT target_type STREQUAL "EXECUTABLE" OR target IN_LIST OPEN_ST_MAPPED_TEST_TARGETS)
+            message(FATAL_ERROR "Test target is not an EXE or has duplicate module ownership: ${target}")
+        endif()
+        list(APPEND OPEN_ST_MAPPED_TEST_TARGETS "${target}")
+        string(JSON module_targets SET "${module_targets}" ${index} "\"${target}\"")
+        math(EXPR index "${index} + 1")
+    endforeach()
+    string(JSON OPEN_ST_TEST_MODULES SET "${OPEN_ST_TEST_MODULES}" "${module}" "${module_targets}")
+    set(OPEN_ST_TEST_MODULES "${OPEN_ST_TEST_MODULES}" PARENT_SCOPE)
+    set(OPEN_ST_MAPPED_TEST_TARGETS "${OPEN_ST_MAPPED_TEST_TARGETS}" PARENT_SCOPE)
+endfunction()
+
+open_st_register_test_module(common open_st_common_tests)
+open_st_register_test_module(http open_st_http_tests)
+open_st_register_test_module(window_renderer open_st_window_renderer_tests open_st_window_renderer_manual_tests)
+open_st_register_test_module(launcher open_st_launcher_tests)
+set(application_targets
+    open_st_application_tests open_st_window_selection_tests open_st_pin_export_integration_tests
+    open_st_annotation_properties_tests open_st_annotation_text_integration_tests
+    open_st_about_update_integration_tests open_st_ocr_interaction_tests)
+if(OPEN_ST_ENABLE_TRANSLATION)
+    list(APPEND application_targets open_st_text_translation_interaction_tests)
+endif()
+open_st_register_test_module(application ${application_targets})
+open_st_register_test_module(capture_toolbar open_st_capture_toolbar_tests open_st_capture_toolbar_manual_tests)
+open_st_register_test_module(localization open_st_localization_tests)
+open_st_register_test_module(pin_window open_st_pin_window_tests open_st_pin_window_gate_tests open_st_pin_window_manual_tests)
+open_st_register_test_module(export open_st_export_tests)
+open_st_register_test_module(selection open_st_selection_tests)
+open_st_register_test_module(graphics open_st_graphics_tests open_st_overlay_renderer_tests
+    open_st_annotation_geometry_pressure_tests open_st_pixel_copy_benchmarks)
+open_st_register_test_module(capture open_st_capture_model_tests open_st_capture_tests)
+open_st_register_test_module(hdr open_st_hdr_color_tests open_st_hdr_native_tests)
+open_st_register_test_module(annotation open_st_annotation_tests)
+open_st_register_test_module(hotkeys open_st_hotkeys_tests)
+open_st_register_test_module(settings open_st_settings_tests open_st_settings_manual_tests)
+open_st_register_test_module(system_integration open_st_system_integration_tests)
+open_st_register_test_module(update open_st_update_tests)
+if(OPEN_ST_ENABLE_OCR)
+    open_st_register_test_module(ocr open_st_ocr_tests)
+endif()
+if(OPEN_ST_ENABLE_TRANSLATION)
+    open_st_register_test_module(translation open_st_translation_tests)
+    open_st_register_test_module(translation_local open_st_translation_local_tests)
+endif()
+
+# 进程探针由Common用例调用，不是独立CTest模块；保留既有add_dependencies自动构建。
+set(OPEN_ST_TEST_HELPERS open_st_common_process_probe)
+get_target_property(common_dependencies open_st_common_tests MANUALLY_ADDED_DEPENDENCIES)
+if(NOT TARGET open_st_common_process_probe OR NOT "open_st_common_process_probe" IN_LIST common_dependencies)
+    message(FATAL_ERROR "Common test process probe must remain an explicit test target dependency")
+endif()
+
+# 用CMake原生目录属性枚举真实测试EXE，新增目标未分类时明确失败。
+# 入参：directory为已配置的测试目录，output为输出变量名。
+# 返回：该目录及子目录的EXE列表；不解析CMake源码或gtest运行结果。
+function(open_st_collect_test_executables directory output)
+    get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+    set(executables "")
+    foreach(target IN LISTS targets)
+        get_target_property(target_type "${target}" TYPE)
+        if(target_type STREQUAL "EXECUTABLE")
+            list(APPEND executables "${target}")
+        endif()
+    endforeach()
+    get_property(children DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+    foreach(child IN LISTS children)
+        open_st_collect_test_executables("${child}" child_executables)
+        list(APPEND executables ${child_executables})
+    endforeach()
+    set("${output}" "${executables}" PARENT_SCOPE)
+endfunction()
+open_st_collect_test_executables("${CMAKE_CURRENT_SOURCE_DIR}" actual_executables)
+foreach(target IN LISTS actual_executables)
+    if(NOT target IN_LIST OPEN_ST_MAPPED_TEST_TARGETS AND NOT target IN_LIST OPEN_ST_TEST_HELPERS)
+        message(FATAL_ERROR "Test executable has no module mapping or explicit helper classification: ${target}")
+    endif()
+endforeach()
+foreach(target IN LISTS OPEN_ST_MAPPED_TEST_TARGETS OPEN_ST_TEST_HELPERS)
+    if(NOT target IN_LIST actual_executables)
+        message(FATAL_ERROR "Mapped test executable is outside the testing tree: ${target}")
+    endif()
+endforeach()
+string(JSON module_manifest SET "{\"schemaVersion\":1}" modules "${OPEN_ST_TEST_MODULES}")
+file(MAKE_DIRECTORY "${PROJECT_BINARY_DIR}/generated")
+file(WRITE "${PROJECT_BINARY_DIR}/generated/test-module-targets.json" "${module_manifest}\n")

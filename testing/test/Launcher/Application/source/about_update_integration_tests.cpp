@@ -3,7 +3,7 @@
 #include "about_window.h"
 #include "json_file_test_access.h"
 #include "ui_text_internal.h"
-#include "update_transport.h"
+#include <http_transport.h>
 
 #include <ui_text.h>
 #include <window_renderer.h>
@@ -33,7 +33,7 @@ struct AboutNetworkState
 };
 std::shared_ptr<AboutNetworkState> activeNetwork;
 
-class AboutTransport final : public open_st::update_detail::UpdateTransport
+class AboutTransport final : public open_st::http::Transport
 {
   public:
     // 固定当前用例的隔离网络状态，后台任务只访问此共享对象。
@@ -44,13 +44,11 @@ class AboutTransport final : public open_st::update_detail::UpdateTransport
     // 返回内存发行元数据或 abc 安装包，延后模式在取消后故意返回迟到成功。
     // 入参：request 为真实客户端参数；stop 为真实取消令牌；sink 为真实接收回调。
     // 返回：替身响应；不建立网络连接。
-    open_st::update_detail::UpdateHttpResult Get(const open_st::update_detail::UpdateHttpRequest& request,
-                                                 std::stop_token stop,
-                                                 const open_st::update_detail::UpdateHttpSink& sink) override
+    open_st::http::Result Perform(const open_st::http::Request& request, std::stop_token stop,
+                                  const open_st::http::Sink& sink) override
     {
-        using namespace open_st::update_detail;
         if (!this->state_)
-            return {UpdateHttpError::Network, 0, 0, {}, {}};
+            return {open_st::http::Error::Network, 0, 0, {}, {}};
         std::string bytes;
         if (request.url.ends_with(L"/releases/latest"))
         {
@@ -91,7 +89,7 @@ class AboutTransport final : public open_st::update_detail::UpdateTransport
             bytes = "abc";
         }
         const bool accepted = sink({reinterpret_cast<const std::byte*>(bytes.data()), bytes.size()});
-        return {accepted ? UpdateHttpError::None : UpdateHttpError::SinkRejected, 0, 200, bytes.size(), {}};
+        return {accepted ? open_st::http::Error::None : open_st::http::Error::SinkRejected, 0, 200, bytes.size(), {}};
     }
 
   private:
@@ -406,16 +404,16 @@ class AboutUpdateIntegrationTest : public testing::Test
 };
 } // namespace
 
-namespace open_st::update_detail
+namespace open_st::http
 {
 // 独立测试目标在链接时替代唯一生产工厂，避免 WinHTTP 实现目标被静态库抽入。
 // 入参：无。
 // 返回：仅消费内存响应的替身，产品接口保持不变。
-std::unique_ptr<UpdateTransport> MakeWinHttpUpdateTransport()
+std::unique_ptr<Transport> MakeWinHttpTransport()
 {
     return std::make_unique<AboutTransport>(activeNetwork);
 }
-} // namespace open_st::update_detail
+} // namespace open_st::http
 
 // 安装版只有确认新版后才请求资产，并在校验成功后把受保护文件交给宿主。
 // 入参：无。

@@ -49,7 +49,7 @@ App 又直接复制文档并持有第二份属性预览。功能回归通过未�
 
 - Application/OCR 唯一拥有引擎、模型验证、自有CPU输入、单工作线程和任务状态；只依赖Common及私有第三方库，不依赖兄弟Graphics/Settings/Export。
 - 图像准备复用正式标注输出，App只做适配；预处理留在OCR，不在Graphics复制识别逻辑。
-- OcrSession拥有截图与结果窗关联；OcrResultWindow只持编辑草稿，复用WindowRenderer多行表单及Export文本复制。识别状态刷新不重写用户草稿或原生撤销历史。
+- CaptureTextSession拥有截图、OCR与翻译结果窗关联；TextResultWindow只持唯一原文草稿和当前显示译文，复用WindowRenderer多行表单及Export文本复制。状态刷新不重写用户草稿或原生撤销历史。
 - 取消立即失效，后台真正结束前不接收新任务；关窗不join。普通退出和退出清理都先等待后台释放，再关闭日志。
 - 独立非模态结果窗必须参与统一模态输入门禁；全局注册的编辑热键也必须校验真实前台、焦点、IME和禁用状态。
 - 模型构建、生成的编译期白名单和ZIP/Setup共用固定清单；运行期只加载验证过的同一份字节，不借运行时可改JSON重新定义信任值。
@@ -250,6 +250,29 @@ Export 接收自有 `ImageEncodingOptions`，不读取设置。正常复制不�
 立即恢复全部默认只覆盖当前六项可设置字段，以固定默认候选一次条件提交；不重置欢迎状态、保存目录或未知字段。
 文件已保存后的语言/自启/旧快捷键释放失败必须显示部分完成状态，不能伪称文件未保存。
 
+### 文本翻译职责与配置快照
+
+Translation 拥有统一提供方协议、有序列表校验及单工作线程调度；在线适配器消费 Common/Http，
+本地适配器消费其 Local 子模块。Local 拥有固定模型验证、分词、CPU INT8 推理和单方向缓存，
+不反向依赖父级提供方，不读取设置或连接网络。空闲维护由既有工作线程驱动。
+
+截图工具栏只提取文字；OCR成功、重复激活结果窗不提交翻译，翻译仅由结果窗按钮明确请求。
+CaptureTextSession 固定会话、原文、语言及配置修订，OCR 成功只首次填充 TextResultWindow；
+该窗口唯一拥有原文及显示译文，编辑只取消旧轮次并标记过期。关窗立即失去准入，后台对象跨窗口存活，
+旧任务实际结束前不接受新提交，退出须异步等待 OCR 与翻译释放后关闭日志。
+设置通过 ReadSettingsSnapshot 一次读取所需领域键；读取失败整轮停止，不能逐键回退导致代理路径改变。
+
+接口主表、参数键值表统一复用 WindowRenderer 的 table；原生消息、稳定选择、DPI和显隐布局归公共层。
+Settings 拥有新增／编辑的临时草稿和模式切换保留值；只将活动模式序列化，Common不解释业务模式。
+Settings 经 App 窄回调消费领域配置，结构化列表和已有字段通过同一事务原子保存；
+源目标、接口、凭据或代理应用后取消在途请求。固定模型和分词资源复用公共校验及构建缓存，
+运行时不下载模型。自动化在线测试使用 fake 或本机回环服务，不读取用户密钥。
+
+App 唯一拥有 TranslationClient，文字会话只借用；接口测试与正式翻译互斥，取消与结果发布必须核对请求身份。
+连接测试由用户点击触发，冻结编辑器未保存条目及父页代理；不保存或改变启用状态。诊断只保留限长脱敏的服务错误字段及响应摘要，不记录凭据或响应日志。
+接口编辑子模态与真正保存忙状态分开，允许截图；主循环与子模态调用同一消息分派和截图尾处理，保留控件归属检查。
+本地自动语言检测使用系统 ELS 的离线服务，只映射首选语言；NFC 仅用于检测副本，实际逐行翻译继续保留原文。
+
 ### 安装、共享数据与更新职责
 
 按已批准的 [安装与发布方案](design/install-release-v0.3.md)，Common FileLease 封装跨进程共享／独占的立即尝试，JSON Write 锁住刷新、编辑、提交；Read 资源不创建锁文件。Logger 独占活跃文件，并与轮转／清理复用同一协调与保留规则。Common 只返回错误，不创建产品窗口。
@@ -297,11 +320,28 @@ Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode�
 - `build.ps1` 只构建产品，永远不加载 `testing/test` 或 `testing/mock`，也不提供开启测试的参数。
 - 不指定配置时为 Debug；Debug 保留完整增量构建树。Release 在临时工作目录完成构建后，只把 EXE、运行时 DLL、资源和许可证整理到 `build/Release/`，随后删除 CMake/Ninja 中间产物。
 - `-Clean` 是终止型操作：Debug 只清理自身构建树；Release 同时清理运行目录与可能残留的临时工作/整理目录，随后立即返回，不重新配置或构建。
-- OCR 由 `build.ps1`／`test.ps1` 顶部固定变量 `$EnableOcr = $true` 控制，Debug/Release 默认包含 OCR；需要基础构建时直接改为 `$false`，不再使用 OCR 命令行开关。`-EnableTranslation` 仍按需启用翻译 feature。
+- OCR 与翻译分别由 `build.ps1`／`test.ps1` 顶部固定变量 `$EnableOcr = $true`、`$EnableTranslation = $true` 控制，Debug/Release 默认包含两者；需要关闭时直接改为 `$false`，不再使用 OCR／翻译命令行开关。
 - `-Package` 只允许用于 Release，并把已经修剪过的 `build/Release/` 复制到版本化 `artifacts/` 目录；复制前会清理同名旧包，避免残留过期 DLL 或资源。
 - 产品脚本通过 vswhere 或 -VisualStudioPath 定位 Visual Studio 并使用其 CMake／Ninja／MSVC；测试脚本同样通过 vswhere 发现 Visual Studio。安装包编译器须预先准备并通过 -InnoSetupCompiler 指定或由脚本发现；脚本不自动安装工具。
+- 两个入口经 `build_environment.ps1` 将 vcpkg 下载、二进制包和注册表缓存固定在工作区 `.cache/vcpkg/`，
+  vcpkg 自管辅助工具使用当前清单固定版本，AppLocal 明确使用工作区 PowerShell。不得借宿主 AppData 默认缓存或 PATH 差异让普通终端重复下载；
+  变量仅在原生构建期间生效，并在成功、失败时恢复。初次统一或工具链升级引起的合法 ABI 重建须如实说明。
+
+- 本地翻译模型准备是显式步骤：`python packaging/translation/convert_models.py --root .`。普通配置只验证固定清单及已发布缓存；缺失时停止并提示准备，不自动创建 Python 环境、安装 wheel 或转换模型。已有有效模型可直接复用。
+- Windows PowerShell 5.1 支持范围内的入口与被点源脚本保存为 UTF-8 BOM，避免中文脚本内容被按系统代码页解读。
 
 ### 5.2 测试构建
+
+#### 测试范围选择（2026-10-03）
+
+- 默认只运行变动涉及的目标用例／模块，以及有明确调用或依赖影响的必要调用方；不得每轮例行全量测试。
+- 先说明本轮覆盖范围与变动的对应关系，优先使用模块／case筛选，构建目标也尽量限于所需测试目标及依赖。
+- 公共组件变更可以扩大到确受影响的调用方，但“改了Common”不能自动等同全部业务测试都必须重跑。
+- 仅在定向覆盖确实不足、已说明具体原因并得到用户明确同意后，才运行全量；保留全量入口不代表允许默认调用。
+- 修复后复跑对应失败及受影响用例。其余已通过验证只有新变更、失败或未解决风险才重复。
+- 仅文档／规范修改执行文本和diff检查；仅构建脚本修改优先静态校验及对应构建／缓存验证，不自动附带业务全量回归。
+- 指定模块时，脚本读取 CMake 生成的模块目标清单，仅构建该模块测试目标及依赖，再按 CTest 名称筛选执行；未知或未启用模块直接报错，不退回全量。指定 case 仍构建所属模块的测试目标。功能与 vcpkg feature 配置不随模块筛选缩减。
+
 
 `test.ps1` 接受最多两个位置参数，不使用交互菜单：
 
@@ -312,10 +352,10 @@ Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode�
 .\scripts\test.ps1 capture GeometryTest.union_rectangles
 ```
 
-- 第一个参数是模块名，第二个参数是 case 名；为空即扩大到全部范围。
+- 第一个参数是模块名，第二个参数是 case 名；只提供模块时覆盖该模块，不提供任何参数才是显式全量入口。
 - 模块按测试名称前缀筛选，不按目录递归或 label 扩大范围；`graphics`、`selection`、`hdr` 分别选择各自前缀。
 - 测试脚本独立配置、构建并运行 CTest，不调用 `build.ps1`。
-- 默认 OCR 测试写入 `testing/testoutput/Debug-OCR/`，关闭 OCR 时写入 `testing/testoutput/Debug/`；依赖缓存仍在 `.cache/`。
+- 默认测试写入 `testing/testoutput/Debug-OCR-Translation/`，关闭相应功能时分别省略目录名的 `-OCR` 或 `-Translation` 后缀；依赖缓存仍在 `.cache/`。
 - 性能基准可在该目录的 `benchmark-release/` 子目录独立配置 Release；不改变脚本默认 Debug 行为。
   4K 内存基准用 `OPEN_ST_PIXEL_COPY_BENCHMARKS=1`、`OPEN_ST_EXPORT_BENCHMARKS=1` 分别启用，默认跳过，
   不访问真实剪贴板、不设置机器相关耗时通过阈值；实际数值与测量范围记录在整改报告中。
@@ -410,7 +450,7 @@ Git 跟踪源码、测试、CMake、清单、脚本、配置、文档和许可�
 每个阶段结束前至少完成：
 
 1. Debug `/W4 /WX` 构建。
-2. 与改动范围相称的模块测试或全量测试。
+2. 与改动范围相称的目标用例、模块及必要受影响调用方；全量必须遵守第5.2节的范围说明与明确批准要求。
 3. 检查生成物只出现在约定输出目录。
 4. 同步实现进度、依赖说明和新增决策。
 5. 向用户说明完成内容、验证结果、已知限制，并等待阶段审核。

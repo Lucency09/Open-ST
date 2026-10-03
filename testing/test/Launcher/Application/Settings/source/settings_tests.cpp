@@ -10,10 +10,12 @@
 #include <nlohmann/json.hpp>
 #include <windows.h>
 
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <string>
 
 namespace
@@ -476,4 +478,110 @@ TEST_F(SettingsTest, initialization_and_direct_writes_report_busy_without_changi
     EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
 }
 
+// 快照保留显式空值及结构化内容，只对缺失字段使用默认，返回后不随磁盘变化。
+// 入参：无。
+// 返回：断言完整字段集合、默认来源和独立快照寿命。
+TEST_F(SettingsTest, snapshot_merges_missing_fields_without_replacing_explicit_values)
+{
+    SettingsTest::WriteRaw(
+        this->root_ / "resources/default_settings.json",
+        R"({"schemaVersion":1,"settings":{"profiles":[],"mode":"system","address":"default-address","nullable":"default"}})");
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    SettingsTest::WriteRaw(
+        userPath,
+        R"({"schemaVersion":1,"settings":{"profiles":[{"id":"local"}],"mode":"custom","nullable":null,"unrelated":7}})");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::array<std::string_view, 4> keys{"profiles", "mode", "address", "nullable"};
+    const std::optional<nlohmann::json> snapshot = open_st::ReadSettingsSnapshot(keys);
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->size(), keys.size());
+    EXPECT_EQ(snapshot->at("profiles"), nlohmann::json::array({{{"id", "local"}}}));
+    EXPECT_EQ(snapshot->at("mode"), "custom");
+    EXPECT_EQ(snapshot->at("address"), "default-address");
+    EXPECT_TRUE(snapshot->at("nullable").is_null());
+    EXPECT_FALSE(snapshot->contains("unrelated"));
+    SettingsTest::WriteRaw(
+        userPath, R"({"schemaVersion":1,"settings":{"profiles":[],"mode":"system","address":"changed","nullable":5}})");
+    const std::optional<nlohmann::json> changed = open_st::ReadSettingsSnapshot(keys);
+    ASSERT_TRUE(changed.has_value());
+    EXPECT_EQ(changed->at("mode"), "system");
+    EXPECT_EQ(changed->at("address"), "changed");
+    EXPECT_EQ(snapshot->at("mode"), "custom");
+    EXPECT_EQ(snapshot->at("address"), "default-address");
+}
+
+// 用户文件损坏、结构错误或缺失时不能用默认网络配置拼出可执行快照。
+// 入参：无。
+// 返回：断言故障整组失败，恢复后取得新配置，不使用旧快照或默认模式。
+TEST_F(SettingsTest, snapshot_rejects_user_file_failures_without_default_fallback)
+{
+    SettingsTest::WriteRaw(this->root_ / "resources/default_settings.json",
+                           R"({"schemaVersion":1,"settings":{"mode":"system","address":""}})");
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"mode":"custom","address":"private"}})");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::array<std::string_view, 2> keys{"mode", "address"};
+    ASSERT_TRUE(open_st::ReadSettingsSnapshot(keys).has_value());
+    for (const std::string_view broken : {"{broken", R"({"schemaVersion":1,"settings":[]})"})
+    {
+        SettingsTest::WriteRaw(userPath, broken);
+        EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+        EXPECT_EQ(SettingsTest::ReadRaw(userPath), broken);
+    }
+    ASSERT_TRUE(std::filesystem::remove(userPath));
+    EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+    SettingsTest::WriteRaw(userPath, R"({"schemaVersion":1,"settings":{"mode":"custom","address":"restored"}})");
+    const std::optional<nlohmann::json> restored = open_st::ReadSettingsSnapshot(keys);
+    ASSERT_TRUE(restored.has_value());
+    EXPECT_EQ(restored->at("mode"), "custom");
+    EXPECT_EQ(restored->at("address"), "restored");
+}
+
+// 真实独占句柄令快照立即失败，已读缓存和默认值不能掩盖不可访问的用户配置。
+// 入参：无。
+// 返回：断言占用期间无快照，句柄释放后可显式重新读取。
+TEST_F(SettingsTest, snapshot_rejects_exclusive_file_access_even_after_successful_read)
+{
+    this->WriteDefault("en-US");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::array<std::string_view, 1> keys{"ui.language"};
+    ASSERT_TRUE(open_st::ReadSettingsSnapshot(keys).has_value());
+    SettingsTest::WriteRaw(this->root_ / "data/settings.json",
+                           R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP","external":1}})");
+    // 只释放测试持有的文件句柄，失败句柄不交给系统关闭。
+    // 入参：handle 为独占读取句柄或失败值。
+    // 返回：无。
+    const auto closeHandle = [](void* handle)
+    {
+        if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
+            CloseHandle(handle);
+    };
+    std::unique_ptr<void, decltype(closeHandle)> held(CreateFileW((this->root_ / "data/settings.json").c_str(),
+                                                                  GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+                                                                  FILE_ATTRIBUTE_NORMAL, nullptr),
+                                                      closeHandle);
+    ASSERT_NE(held.get(), INVALID_HANDLE_VALUE);
+    EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+    held.reset();
+    EXPECT_TRUE(open_st::ReadSettingsSnapshot(keys).has_value());
+}
+
+// 默认文件只在补齐时读取，缺少任一所需值或默认文档损坏都不能发布部分配置。
+// 入参：无。
+// 返回：断言完整性失败及用户已完整配置时不受无关默认故障影响。
+TEST_F(SettingsTest, snapshot_requires_complete_fields_and_reads_defaults_only_for_missing_values)
+{
+    this->WriteDefault("en-US");
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::array<std::string_view, 2> keys{"ui.language", "mode"};
+    EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+    SettingsTest::WriteRaw(this->root_ / "resources/default_settings.json", "{broken");
+    EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+    SettingsTest::WriteRaw(this->root_ / "data/settings.json",
+                           R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP","mode":"custom"}})");
+    const std::optional<nlohmann::json> complete = open_st::ReadSettingsSnapshot(keys);
+    ASSERT_TRUE(complete.has_value());
+    EXPECT_EQ(complete->at("ui.language"), "ja-JP");
+    EXPECT_EQ(complete->at("mode"), "custom");
+}
 } // namespace

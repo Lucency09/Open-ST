@@ -13,6 +13,9 @@ add_subdirectory(Update)
 if(OPEN_ST_ENABLE_OCR)
     add_subdirectory(OCR)
 endif()
+if(OPEN_ST_ENABLE_TRANSLATION)
+    add_subdirectory(Translation)
+endif()
 
 add_library(open_st_application STATIC)
 add_library(OpenST::Application ALIAS open_st_application)
@@ -20,16 +23,20 @@ if(OPEN_ST_ENABLE_OCR)
     target_link_libraries(open_st_application PRIVATE OpenST::OCR)
     target_compile_definitions(open_st_application PRIVATE OPEN_ST_HAS_OCR=1)
 endif()
+if(OPEN_ST_ENABLE_TRANSLATION)
+    target_link_libraries(open_st_application PRIVATE OpenST::Translation)
+    target_compile_definitions(open_st_application PRIVATE OPEN_ST_HAS_TRANSLATION=1)
+endif()
 
 target_sources(open_st_application
     PRIVATE
         source/app.cpp
         source/about_window.cpp
-        source/app_ocr.cpp
-        source/ocr_session.cpp
-        source/ocr_result_window.cpp
-        private/ocr_session.h
-        private/ocr_result_window.h
+        source/app_text.cpp
+        source/capture_text_session.cpp
+        source/text_result_window.cpp
+        private/capture_text_session.h
+        private/text_result_window.h
         private/about_window.h
         source/app_overlay_render.cpp
         source/app_annotation.cpp

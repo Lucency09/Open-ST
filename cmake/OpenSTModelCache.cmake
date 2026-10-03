@@ -1,0 +1,63 @@
+# OCR 与显式本地翻译准备共用固定资产缓存；同一资产跨进程单写者，完整校验后才发布。
+include_guard(GLOBAL)
+
+# 校验单个已发布文件，不修改缓存或恢复下载。
+# 入参：固定路径、摘要、长度和输出变量名。返回：匹配时输出 TRUE。
+function(open_st_model_file_matches path sha256 size result)
+    set(valid FALSE)
+    if(EXISTS "${path}" AND NOT IS_DIRECTORY "${path}" AND NOT IS_SYMLINK "${path}")
+        file(SIZE "${path}" actual_size)
+        if(actual_size EQUAL size)
+            file(SHA256 "${path}" actual_hash)
+            if(actual_hash STREQUAL sha256)
+                set(valid TRUE)
+            endif()
+        endif()
+    endif()
+    set(${result} "${valid}" PARENT_SCOPE)
+endfunction()
+
+# 持有同一资产锁后重检，唯一临时文件只在下载、长度和摘要全部通过后替换目标。
+# 入参：固定文件路径/URL/SHA-256/长度。返回：有效已发布文件；失败保留原文件并终止。
+function(open_st_cached_model_file path url sha256 size)
+    get_filename_component(parent "${path}" DIRECTORY)
+    file(MAKE_DIRECTORY "${parent}")
+    file(LOCK "${path}.lock" GUARD FUNCTION TIMEOUT 600 RESULT_VARIABLE lock_result)
+    if(NOT lock_result STREQUAL "0")
+        message(FATAL_ERROR "固定模型资产正被其他准备进程占用：${path} (${lock_result})")
+    endif()
+    open_st_model_file_matches("${path}" "${sha256}" "${size}" valid)
+    if(valid)
+        return()
+    endif()
+    string(RANDOM LENGTH 24 ALPHABET 0123456789abcdef nonce)
+    set(partial "${path}.${nonce}.part")
+    # 不使用会直接触发 CMake fatal 的 EXPECTED_HASH，先收集错误并清理本次临时文件。
+    file(DOWNLOAD "${url}" "${partial}" TLS_VERIFY ON TIMEOUT 600 STATUS status)
+    list(GET status 0 code)
+    if(NOT code EQUAL 0)
+        file(REMOVE "${partial}")
+        message(FATAL_ERROR "固定模型资产下载失败，原缓存保留：${status}")
+    endif()
+    open_st_model_file_matches("${partial}" "${sha256}" "${size}" valid)
+    if(NOT valid)
+        file(REMOVE "${partial}")
+        message(FATAL_ERROR "固定模型资产长度或摘要不符，原缓存保留：${path}")
+    endif()
+    file(RENAME "${partial}" "${path}" RESULT publish_result)
+    if(NOT publish_result STREQUAL "0")
+        file(REMOVE "${partial}")
+        message(FATAL_ERROR "固定模型资产发布失败，原缓存保留：${path} (${publish_result})")
+    endif()
+endfunction()
+
+# 显式转换入口通过本脚本复用同一下载器；被 OCR/configure include 时不执行此入口。
+if(CMAKE_SCRIPT_MODE_FILE STREQUAL CMAKE_CURRENT_LIST_FILE)
+    foreach(argument OPEN_ST_ASSET_PATH OPEN_ST_ASSET_URL OPEN_ST_ASSET_SHA256 OPEN_ST_ASSET_SIZE)
+        if(NOT DEFINED ${argument} OR "${${argument}}" STREQUAL "")
+            message(FATAL_ERROR "显式固定资产准备缺少参数：${argument}")
+        endif()
+    endforeach()
+    open_st_cached_model_file("${OPEN_ST_ASSET_PATH}" "${OPEN_ST_ASSET_URL}"
+        "${OPEN_ST_ASSET_SHA256}" "${OPEN_ST_ASSET_SIZE}")
+endif()

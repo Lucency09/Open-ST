@@ -37,7 +37,7 @@ bool ReadVerified(const char* filename, std::vector<char>* data) noexcept
         {
             if (name == model.language + ".traineddata")
             {
-                *data = model.bytes;
+                data->assign(model.bytes.begin(), model.bytes.end());
                 return true;
             }
         }

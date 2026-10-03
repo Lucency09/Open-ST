@@ -37,4 +37,26 @@ std::string WideToUtf8(std::wstring_view value) noexcept
         return {};
     }
 }
+// 将有效UTF-8适配到原生界面和剪贴板，所有调用共用同一编码边界。
+// 入参：value为借用文字。返回：UTF-16副本，失败为空。
+std::wstring Utf8ToWide(std::string_view value) noexcept
+{
+    try
+    {
+        if (value.empty() || value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            return {};
+        const int length = static_cast<int>(value.size());
+        const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), length, nullptr, 0);
+        if (count <= 0)
+            return {};
+        std::wstring result(static_cast<std::size_t>(count), L'\0');
+        return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), length, result.data(), count) == count
+                   ? result
+                   : std::wstring{};
+    }
+    catch (...)
+    {
+        return {};
+    }
+}
 } // namespace open_st

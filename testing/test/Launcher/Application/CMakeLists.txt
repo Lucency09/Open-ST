@@ -13,6 +13,9 @@ add_subdirectory(Update)
 if(OPEN_ST_ENABLE_OCR)
     add_subdirectory(OCR)
 endif()
+if(OPEN_ST_ENABLE_TRANSLATION)
+    add_subdirectory(Translation)
+endif()
 
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp
     source/diagnostic_text_tests.cpp)
@@ -30,7 +33,11 @@ target_sources(open_st_application_tests PRIVATE source/save_image_dialog_tests.
 target_sources(open_st_application_tests PRIVATE source/log_maintenance_task_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/capture_selection_input_tests.cpp
     source/window_selection_integration_tests.cpp)
-target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export OpenST::Common)
+target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export OpenST::Common OpenST::Settings)
+if(OPEN_ST_ENABLE_TRANSLATION)
+    target_link_libraries(open_st_application_tests PRIVATE OpenST::Translation)
+    target_compile_definitions(open_st_application_tests PRIVATE OPEN_ST_TEST_TRANSLATION=1)
+endif()
 target_include_directories(open_st_application_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Hotkeys/private")
 target_link_libraries(open_st_application_tests PRIVATE OpenST::PinWindow)
@@ -86,7 +93,7 @@ gtest_discover_tests(open_st_annotation_text_integration_tests TEST_PREFIX "appl
 
 # 真实关于窗口和确认交互；独立工厂替身确保没有网络、浏览器或安装器执行。
 add_executable(open_st_about_update_integration_tests source/about_update_integration_tests.cpp)
-target_link_libraries(open_st_about_update_integration_tests PRIVATE OpenST::Application OpenST::Update
+target_link_libraries(open_st_about_update_integration_tests PRIVATE OpenST::Application OpenST::Update OpenST::Http
     OpenST::Localization OpenST::WindowRenderer OpenST::Common GTest::gtest_main)
 target_include_directories(open_st_about_update_integration_tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
@@ -100,8 +107,8 @@ gtest_discover_tests(open_st_about_update_integration_tests TEST_PREFIX "applica
 
 # 单独编译真实 OCR 窗口/会话，链接可控识别和剪贴板替身；基础测试不引入引擎或模型。
 add_executable(open_st_ocr_interaction_tests source/ocr_interaction_tests.cpp
-    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/ocr_result_window.cpp"
-    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/ocr_session.cpp"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/text_result_window.cpp"
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/capture_text_session.cpp"
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/diagnostic_text.cpp")
 target_compile_definitions(open_st_ocr_interaction_tests PRIVATE OPEN_ST_HAS_OCR=1)
 target_link_libraries(open_st_ocr_interaction_tests PRIVATE
@@ -115,3 +122,24 @@ target_link_options(open_st_ocr_interaction_tests PRIVATE
     "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
 gtest_discover_tests(open_st_ocr_interaction_tests TEST_PREFIX "application."
     PROPERTIES LABELS "application;integration;ocr" TIMEOUT 30 RUN_SERIAL TRUE)
+
+# 真实双栏窗口与会话配合可控任务边界，禁止网络及剪贴板副作用。
+if(OPEN_ST_ENABLE_TRANSLATION)
+    add_executable(open_st_text_translation_interaction_tests source/text_translation_interaction_tests.cpp
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/text_result_window.cpp"
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/capture_text_session.cpp"
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/diagnostic_text.cpp")
+    target_compile_definitions(open_st_text_translation_interaction_tests PRIVATE
+        OPEN_ST_HAS_OCR=1 OPEN_ST_HAS_TRANSLATION=1)
+    target_link_libraries(open_st_text_translation_interaction_tests PRIVATE
+        OpenST::Graphics OpenST::WindowRenderer OpenST::Common OpenST::Translation GTest::gtest_main)
+    target_include_directories(open_st_text_translation_interaction_tests PRIVATE
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/private"
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/OCR/include"
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Export/include"
+        "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Localization/include")
+    target_link_options(open_st_text_translation_interaction_tests PRIVATE
+        "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'")
+    gtest_discover_tests(open_st_text_translation_interaction_tests TEST_PREFIX "application."
+        PROPERTIES LABELS "application;integration;translation" TIMEOUT 30 RUN_SERIAL TRUE)
+endif()

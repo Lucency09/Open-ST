@@ -50,9 +50,9 @@ struct UpdateSnapshot
     std::wstring releasePage;
     std::uint64_t received{}, total{};
 };
-namespace update_detail
+namespace http
 {
-class UpdateTransport;
+class Transport;
 }
 struct UpdateClientTestAccess;
 // 生命周期和控制命令限构造线程；Snapshot 允许跨线程读取，notify 在工作线程调用。
@@ -95,7 +95,7 @@ class UpdateClient final
     // 测试用传输注入，生产构造仍建立 WinHTTP 实现。
     // 入参：cacheRoot、notify 同生产接口；transport 为独占边界替身。返回：任务实例。
     UpdateClient(std::filesystem::path cacheRoot, std::function<void()> notify,
-                 std::unique_ptr<update_detail::UpdateTransport> transport);
+                 std::unique_ptr<http::Transport> transport);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

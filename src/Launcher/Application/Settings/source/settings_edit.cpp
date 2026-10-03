@@ -30,6 +30,38 @@ std::optional<nlohmann::json> RawField(const nlohmann::json& document, std::stri
     return value == settings.end() ? std::nullopt : std::optional<nlohmann::json>(*value);
 }
 
+// 递归比较结构和标量类型，防止嵌套整数/浮点变化掩盖外部修改。
+// 入参：left/right 为完整设置值。返回：类型及内容一致为 true。
+bool SameValue(const nlohmann::json& left, const nlohmann::json& right)
+{
+    if (left.is_number_integer() && right.is_number_integer())
+    {
+        const auto a = IntegerValue(left);
+        const auto b = IntegerValue(right);
+        if (a && b)
+            return *a == *b;
+    }
+    if (left.type() != right.type() || left.size() != right.size())
+        return false;
+    if (left.is_object())
+    {
+        for (auto item = left.begin(); item != left.end(); ++item)
+        {
+            const auto other = right.find(item.key());
+            if (other == right.end() || !SameValue(item.value(), *other))
+                return false;
+        }
+        return true;
+    }
+    if (left.is_array())
+    {
+        for (std::size_t index = 0; index < left.size(); ++index)
+            if (!SameValue(left[index], right[index]))
+                return false;
+        return true;
+    }
+    return left == right;
+}
 // 比较存在性与原始 JSON 类型，避免数值跨类型相等掩盖外部修改。
 // 入参：left、right 为待比较的原始字段 optional，空值表示字段缺失。
 // 返回：存在性、JSON 类型和内容均一致为 true，否则为 false。
@@ -42,8 +74,7 @@ bool SameRaw(const std::optional<nlohmann::json>& left, const std::optional<nloh
         if (leftInteger && rightInteger)
             return *leftInteger == *rightInteger;
     }
-    return left.has_value() == right.has_value() &&
-           (!left.has_value() || (left->type() == right->type() && *left == *right));
+    return left.has_value() == right.has_value() && (!left.has_value() || SameValue(*left, *right));
 }
 } // namespace
 
@@ -53,7 +84,8 @@ namespace open_st
 // 入参：keys 为字符串列表；boolKeys 为布尔列表；integerKeys 为整数列表。
 // 返回：全部基线和有效草稿准备成功时为 true；文件、字段或类型不满足时为 false，保留原会话。
 bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::vector<std::string>& boolKeys,
-                               const std::vector<std::string>& integerKeys) noexcept
+                               const std::vector<std::string>& integerKeys,
+                               const std::vector<std::string>& jsonKeys) noexcept
 {
     try
     {
@@ -72,16 +104,29 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::
         std::vector<std::string> allKeys = keys;
         allKeys.insert(allKeys.end(), boolKeys.begin(), boolKeys.end());
         allKeys.insert(allKeys.end(), integerKeys.begin(), integerKeys.end());
+        allKeys.insert(allKeys.end(), jsonKeys.begin(), jsonKeys.end());
         for (const std::string& key : allKeys)
         {
             const bool boolean = std::find(boolKeys.begin(), boolKeys.end(), key) != boolKeys.end();
             const bool integer = std::find(integerKeys.begin(), integerKeys.end(), key) != integerKeys.end();
+            const bool structured = std::find(jsonKeys.begin(), jsonKeys.end(), key) != jsonKeys.end();
+            const std::optional<nlohmann::json> defaultValue = defaultsValid ? RawField(defaults, key) : std::nullopt;
+            // 结构字段以可用默认资源声明对象或数组类型，原始错误形状只保留为冲突基线。
+            const nlohmann::json::value_t structuredType =
+                structured && defaultValue && (defaultValue->is_array() || defaultValue->is_object())
+                    ? defaultValue->type()
+                    : nlohmann::json::value_t::null;
             // 依据本字段登记类型检查原始值，不混同浮点和整数。
             // 入参：value 为待验证 JSON 字段。
             // 返回：类型和可表示范围正确时为 true。
-            const auto valid = [boolean, integer](const nlohmann::json& value)
+            const auto valid = [boolean, integer, structured, structuredType](const nlohmann::json& value)
             {
-                return integer ? IntegerValue(value).has_value() : boolean ? value.is_boolean() : value.is_string();
+                return structured
+                           ? ((value.is_array() || value.is_object()) &&
+                              (structuredType == nlohmann::json::value_t::null || value.type() == structuredType))
+                       : integer ? IntegerValue(value).has_value()
+                       : boolean ? value.is_boolean()
+                                 : value.is_string();
             };
             if (key.empty() || candidate.fields_.contains(key))
             {
@@ -89,12 +134,13 @@ bool SettingsEditSession::Open(const std::vector<std::string>& keys, const std::
             }
             Field field;
             field.integer = integer;
+            field.structured = structured;
             field.raw = RawField(user, key);
             field.requiresRepair = field.raw && !valid(*field.raw);
             std::optional<nlohmann::json> effective = field.raw;
             if (!effective || !valid(*effective))
             {
-                effective = defaultsValid ? RawField(defaults, key) : std::nullopt;
+                effective = defaultValue;
             }
             if (!effective || !valid(*effective))
             {
@@ -195,7 +241,7 @@ bool SettingsEditSession::IsDirty() const noexcept
 {
     for (const auto& [key, field] : this->fields_)
     {
-        if (field.draft != field.baseline)
+        if (!SameValue(field.draft, field.baseline))
         {
             return true;
         }
@@ -232,7 +278,7 @@ SettingsCommitResult SettingsEditSession::Commit(const std::vector<std::string>&
         {
             return std::find(explicitlyEditedKeys.begin(), explicitlyEditedKeys.end(), key) !=
                        explicitlyEditedKeys.end() ||
-                   field.draft != field.baseline ||
+                   !SameValue(field.draft, field.baseline) ||
                    (std::find(requiredKeys.begin(), requiredKeys.end(), key) != requiredKeys.end() &&
                     !SameRaw(field.raw, std::optional<nlohmann::json>(field.draft)));
         };
@@ -385,7 +431,7 @@ SettingsCommitResult SettingsEditSession::VerifySavedBool(std::string_view key, 
 bool SettingsEditSession::IsDirty(std::string_view key) const noexcept
 {
     const auto field = this->fields_.find(key);
-    return field != this->fields_.end() && field->second.draft != field->second.baseline;
+    return field != this->fields_.end() && !SameValue(field->second.draft, field->second.baseline);
 }
 // 核验有效目标同时保留存在性和原始类型冲突检查，不创建缺失字段。
 // 入参：key 为已登记字符串字段；value 为期望目标。
@@ -451,5 +497,40 @@ bool SettingsEditSession::RequiresRepair(std::string_view key) const noexcept
 {
     const auto field = this->fields_.find(key);
     return field != this->fields_.end() && field->second.requiresRepair;
+}
+// 读取结构化字段的独立草稿，原有标量接口保持严格类型。
+// 入参：key 为已登记结构化字段。返回：JSON 副本或空。
+std::optional<nlohmann::json> SettingsEditSession::ReadJson(std::string_view key) const noexcept
+{
+    try
+    {
+        const auto field = this->fields_.find(key);
+        if (field == this->fields_.end() || !field->second.structured)
+            return std::nullopt;
+        return std::optional<nlohmann::json>(field->second.draft);
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+// 完整准备候选后交换结构化草稿，不产生部分列表修改。
+// 入参：key 为字段；value 为同类型数组或对象。返回：成功为 true。
+bool SettingsEditSession::ChangeJson(std::string_view key, const nlohmann::json& value) noexcept
+{
+    try
+    {
+        const auto field = this->fields_.find(key);
+        if (!this->ready_ || field == this->fields_.end() || !field->second.structured ||
+            value.type() != field->second.baseline.type())
+            return false;
+        auto candidate = value;
+        field->second.draft.swap(candidate);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 } // namespace open_st

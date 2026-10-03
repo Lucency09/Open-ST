@@ -40,3 +40,36 @@ Full, unmodified upstream copyright/license notices are provided in licenses/ocr
 using the corresponding vcpkg package name (openssl.txt, tiff.txt, etc.).
 These notices are retained in base builds for source-distribution completeness;
 base builds do not include the OCR runtime DLLs or models.
+
+Local translation feature (enabled by the build script setting)
+CTranslate2 4.6.0: https://github.com/OpenNMT/CTranslate2 (MIT)
+Fixed commit: 617405f4b050e994e829d527da6caa0e0030afe7.
+Open-ST changes check oneDNN error status and qualify one bit_cast call for C++20.
+CPU oneDNN/OpenMP backend only; no CUDA, cuDNN, MKL or Python runtime is bundled.
+SentencePiece 0.2.0: https://github.com/google/sentencepiece (Apache-2.0)
+oneDNN 3.7: https://github.com/oneapi-src/oneDNN (Apache-2.0)
+Abseil 20250127.1: https://github.com/abseil/abseil-cpp (Apache-2.0)
+Protobuf 5.29.5 and utf8-range 5.29.5: https://github.com/protocolbuffers/protobuf
+(BSD-3-Clause and MIT, respectively).
+Full upstream notices: licenses/translation/, including oneDNN THIRD-PARTY-PROGRAMS.
+CTranslate2 embeds cpu_features (8a494eb1e158ec2050e5f699a504fbc9b896a43b),
+spdlog (76fb40d95455f249bd70824ecfcae7a8f0930fa3), its bundled fmt 8.1.1,
+half 2.2.0, AVX mathfun and SIMD_Utils 0.2.5. Their original notices are retained
+in ctranslate2.txt, fmt.txt, half.txt, avx-mathfun.txt and simd-utils.txt.
+SIMD_Utils license source: https://github.com/JishinMaster/simd_utils/blob/master/LICENSE
+
+Local OPUS-MT / Tatoeba model pack opus-mt-2020-07-17-int8-v1
+Authors: Language Technology Research Group, University of Helsinki.
+English to Chinese and Chinese to English original archives (CC-BY-4.0):
+https://object.pouta.csc.fi/Tatoeba-MT-models/eng-zho/opus-2020-07-17.zip
+https://object.pouta.csc.fi/Tatoeba-MT-models/zho-eng/opus-2020-07-17.zip
+Converted by Open-ST using CTranslate2 4.6.0 OpusMTConverter, INT8 quantization.
+Original SentencePiece models and vocabulary ordering are preserved.
+Attribution: Jorg Tiedemann and Santhosh Thottingal, OPUS-MT -- Building open
+translation services for the World, EAMT 2020. No endorsement is implied.
+Exact source revisions, archive hashes, conversion recipe and output hashes:
+resources/translation/models.json in translation builds (source: packaging/translation).
+Each model directory includes the unmodified upstream LICENSE and README.md;
+resources/translation/NOTICE.txt records source, attribution and changes.
+Translation-disabled builds omit these models and the translation runtime DLLs;
+license notices remain included for source-distribution completeness.

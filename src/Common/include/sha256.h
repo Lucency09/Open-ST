@@ -7,6 +7,10 @@
 
 namespace open_st
 {
+// 使用系统 MD5 完成遗留协议摘要；不用于文件完整性或安全签名。
+// 入参：bytes 为有界原始字节；digest 接收 16 字节摘要。
+// 返回：系统完成成功时 true，失败不修改输出。
+bool ComputeMd5(std::span<const std::byte> bytes, std::array<std::byte, 16>& digest) noexcept;
 class Sha256 final
 {
   public:

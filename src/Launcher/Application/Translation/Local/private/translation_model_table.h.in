@@ -1,0 +1,22 @@
+// 从版本控制的固定清单生成白名单，运行时不读取可改 JSON 来改变信任值。
+#pragma once
+#include <array>
+#include <cstdint>
+#include <string_view>
+namespace open_st::translation_local
+{
+struct ModelFileRecord
+{
+    std::string_view direction, name, file, sha256;
+    std::uint64_t size;
+};
+struct ModelRecord
+{
+    std::string_view direction, source, target, sourcePrefix;
+    std::size_t maxSourceTokens, maxOutputTokens;
+};
+inline constexpr std::array<ModelFileRecord, @OPEN_ST_TRANSLATION_FILE_COUNT@> MODEL_FILES{{
+@OPEN_ST_TRANSLATION_FILE_RECORDS@}};
+inline constexpr std::array<ModelRecord, 2> MODELS{{
+@OPEN_ST_TRANSLATION_MODEL_RECORDS@}};
+} // namespace open_st::translation_local

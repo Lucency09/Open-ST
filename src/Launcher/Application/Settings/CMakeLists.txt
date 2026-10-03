@@ -12,6 +12,15 @@ target_sources(open_st_settings_window
         source/settings_window.cpp
         source/welcome_window.cpp
         source/settings_edit.cpp
+        source/translation_settings.cpp
+        source/translation_profile_dialog.cpp
+        source/translation_custom_draft.cpp
+        source/translation_custom_editor.cpp
+        source/translation_key_value_editor.cpp
+        private/translation_custom_draft.h
+        private/translation_custom_editor.h
+        private/translation_key_value_editor.h
+        private/translation_settings.h
         private/settings_internal.h
         private/settings_messages.h
         private/settings_edit.h
@@ -30,6 +39,7 @@ target_include_directories(open_st_settings_window PRIVATE private)
 target_link_libraries(open_st_settings_window
     PUBLIC
         open_st_project_options
+        nlohmann_json::nlohmann_json
     PRIVATE
         OpenST::Common
         OpenST::WindowRenderer

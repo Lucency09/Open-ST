@@ -10,6 +10,79 @@
     "export.default_format": "jpeg",
     "export.jpeg_quality": 95,
     "ocr.model": "fast",
-    "ocr.language": "chi_sim+eng+jpn"
+    "ocr.language": "chi_sim+eng+jpn",
+    "translation.interfaces": [
+      {
+        "id": "default-baidu",
+        "name": "baidu",
+        "enabled": true,
+        "kind": "baidu",
+        "configuration": {
+          "app_id": ""
+        },
+        "secrets": {
+          "api_key": ""
+        }
+      },
+      {
+        "id": "default-google",
+        "name": "google",
+        "enabled": false,
+        "kind": "google",
+        "configuration": {},
+        "secrets": {}
+      },
+      {
+        "id": "default-openai",
+        "name": "openai",
+        "enabled": false,
+        "kind": "openai",
+        "configuration": {
+          "base_url": "https://api.openai.com/v1",
+          "model": ""
+        },
+        "secrets": {
+          "api_key": ""
+        }
+      },
+      {
+        "id": "default-deepl",
+        "name": "deepl",
+        "enabled": false,
+        "kind": "deepl",
+        "configuration": {
+          "service": "free"
+        },
+        "secrets": {
+          "api_key": ""
+        }
+      },
+      {
+        "id": "default-microsoft",
+        "name": "microsoft",
+        "enabled": false,
+        "kind": "microsoft",
+        "configuration": {
+          "region": ""
+        },
+        "secrets": {
+          "api_key": ""
+        }
+      },
+      {
+        "id": "default-ctranslate2_local",
+        "name": "ctranslate2_local",
+        "enabled": false,
+        "kind": "ctranslate2_local",
+        "configuration": {
+          "pack_id": "opus-mt-2020-07-17-int8-v1"
+        },
+        "secrets": {}
+      }
+    ],
+    "translation.source_language": "auto",
+    "translation.target_language": "zh-CN",
+    "translation.network.proxy_mode": "system",
+    "translation.network.proxy_address": ""
   }
 }

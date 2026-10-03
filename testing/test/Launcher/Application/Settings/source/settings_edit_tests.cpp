@@ -404,4 +404,152 @@ TEST_F(SettingsEditTest, busy_commit_preserves_draft_and_baseline_for_explicit_r
     EXPECT_EQ(this->ReadUser()["settings"]["ui.language"], "ja-JP");
 }
 
+// 验证结构化列表和普通字段同批提交，未触及的外部字段保留。
+// 入参：无。返回：无；检查真实文件中的数组类型和原子结果。
+TEST_F(SettingsEditTest, structured_array_and_scalar_commit_share_one_transaction)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","profiles":[]}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {}, {}, {"profiles"}));
+    const nlohmann::json list = {{{"id", "a"}, {"secrets", {{"key", "private-test-value"}}}}};
+    ASSERT_TRUE(session.ChangeJson("profiles", list));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    EXPECT_FALSE(this->ReadUser()["settings"].contains("profiles"));
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"unrelated":7}})");
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+    const auto stored = this->ReadUser()["settings"];
+    EXPECT_TRUE(stored["profiles"].is_array());
+    EXPECT_EQ(stored["profiles"], list);
+    EXPECT_EQ(stored["ui.language"], "zh-CN");
+    EXPECT_EQ(stored["unrelated"], 7);
+    EXPECT_EQ(open_st::GetJsonSetting("profiles"), std::optional<nlohmann::json>(list));
+    EXPECT_EQ(open_st::GetJsonSetting("ui.language"), std::optional<nlohmann::json>("zh-CN"));
+    EXPECT_FALSE(session.IsDirty());
+}
+
+// 验证嵌套数值类型变化不会被 JSON 宽松相等隐藏，任意字段冲突都不提交另一字段。
+// 入参：无。返回：无；原草稿保持可继续修改。
+TEST_F(SettingsEditTest, nested_json_type_conflict_preserves_entire_batch)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","profiles":[]}})");
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":[{"id":"a","code":1}]}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {}, {}, {"profiles"}));
+    auto list = *session.ReadJson("profiles");
+    list[0]["id"] = "edited";
+    ASSERT_TRUE(session.ChangeJson("profiles", list));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":[{"id":"a","code":1.0}]}})");
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Conflict);
+    EXPECT_FALSE(this->ReadUser()["settings"].contains("ui.language"));
+    EXPECT_TRUE(this->ReadUser()["settings"]["profiles"][0]["code"].is_number_float());
+    EXPECT_EQ(session.ReadJson("profiles"), std::optional<nlohmann::json>(list));
+}
+
+// 验证结构化默认恢复不立即写盘，拒绝跨类型替换，非法旧类型需显式提交修复。
+// 入参：无。返回：无。
+TEST_F(SettingsEditTest, structured_defaults_and_invalid_raw_type_require_explicit_commit)
+{
+    this->Write("resources/default_settings.json", R"({"schemaVersion":1,"settings":{"profiles":[{"id":"default"}]}})");
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":"invalid"}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({}, {}, {}, {"profiles"}));
+    EXPECT_TRUE(session.RequiresRepair("profiles"));
+    EXPECT_FALSE(session.ChangeJson("profiles", nlohmann::json::object()));
+    ASSERT_TRUE(session.ChangeJson("profiles", nlohmann::json::array()));
+    ASSERT_TRUE(session.RestoreDefaults({"profiles"}));
+    EXPECT_EQ(this->ReadUser()["settings"]["profiles"], "invalid");
+    EXPECT_EQ(session.Commit({"profiles"}), open_st::SettingsCommitResult::Saved);
+    EXPECT_TRUE(this->ReadUser()["settings"]["profiles"].is_array());
+    EXPECT_FALSE(session.RequiresRepair("profiles"));
+}
+
+// 验证对象和数组形状错误沿用默认草稿修复，默认恢复与普通编辑都不提前写盘。
+// 入参：无。
+// 返回：断言双向形状修复、显式提交及修复状态清除。
+TEST_F(SettingsEditTest, structured_shape_mismatch_uses_default_type_until_explicit_commit)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"profiles":[{"id":"default"}],"options":{"mode":"auto"}}})");
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":{},"options":[]}})");
+    const auto original = this->ReadUser();
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({}, {}, {}, {"profiles", "options"}));
+    EXPECT_TRUE(session.RequiresRepair("profiles"));
+    EXPECT_TRUE(session.RequiresRepair("options"));
+    ASSERT_TRUE(session.ReadJson("profiles").has_value());
+    ASSERT_TRUE(session.ReadJson("options").has_value());
+    EXPECT_TRUE(session.ReadJson("profiles")->is_array());
+    EXPECT_TRUE(session.ReadJson("options")->is_object());
+    EXPECT_FALSE(session.ChangeJson("profiles", nlohmann::json::object()));
+    EXPECT_FALSE(session.ChangeJson("options", nlohmann::json::array()));
+    ASSERT_TRUE(session.ChangeJson("profiles", nlohmann::json::array()));
+    ASSERT_TRUE(session.ChangeJson("options", nlohmann::json::object()));
+    ASSERT_TRUE(session.RestoreDefaults({"profiles", "options"}));
+    EXPECT_EQ(this->ReadUser(), original);
+    EXPECT_EQ(session.Commit({"profiles", "options"}), open_st::SettingsCommitResult::Saved);
+    EXPECT_EQ(this->ReadUser()["settings"]["profiles"], nlohmann::json::array({{{"id", "default"}}}));
+    EXPECT_EQ(this->ReadUser()["settings"]["options"], nlohmann::json({{"mode", "auto"}}));
+    EXPECT_FALSE(session.RequiresRepair("profiles"));
+    EXPECT_FALSE(session.RequiresRepair("options"));
+}
+
+// 验证形状修复仍以原始错误值检查冲突，不用显示默认值覆盖其他进程的新配置。
+// 入参：无。
+// 返回：断言整批拒绝、原草稿保留和未触及字段不写入。
+TEST_F(SettingsEditTest, structured_shape_repair_keeps_original_conflict_baseline)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"profiles":[],"ui.language":"en-US"}})");
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":{}}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {}, {}, {"profiles"}));
+    ASSERT_TRUE(session.RequiresRepair("profiles"));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":{"external":1}}})");
+    const auto external = this->ReadUser();
+    EXPECT_EQ(session.Commit({"profiles"}), open_st::SettingsCommitResult::Conflict);
+    EXPECT_EQ(this->ReadUser(), external);
+    EXPECT_EQ(session.ReadJson("profiles"), std::optional<nlohmann::json>(nlohmann::json::array()));
+    EXPECT_EQ(session.ReadString("ui.language"), "zh-CN");
+    EXPECT_TRUE(session.RequiresRepair("profiles"));
+}
+
+// 结构化列表遇到真实协调锁时立即失败，释放后仅显式再次提交才写盘。
+// 入参：无。返回：无；草稿和标量字段在占用失败后完整保留。
+TEST_F(SettingsEditTest, structured_busy_commit_keeps_draft_until_explicit_retry)
+{
+    this->Write("resources/default_settings.json",
+                R"({"schemaVersion":1,"settings":{"ui.language":"en-US","profiles":[]}})");
+    open_st::SettingsEditSession session;
+    ASSERT_TRUE(session.Open({"ui.language"}, {}, {}, {"profiles"}));
+    const nlohmann::json list = {{{"id", "a"}}};
+    ASSERT_TRUE(session.ChangeJson("profiles", list));
+    ASSERT_TRUE(session.ChangeString("ui.language", "zh-CN"));
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(this->root_ / "data/settings.json.lock", open_st::FileLeaseMode::Exclusive));
+    const auto before = this->ReadUser();
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Busy);
+    EXPECT_EQ(session.ReadJson("profiles"), std::optional<nlohmann::json>(list));
+    EXPECT_EQ(session.ReadString("ui.language"), "zh-CN");
+    EXPECT_EQ(this->ReadUser(), before);
+    lease.Reset();
+    EXPECT_EQ(this->ReadUser(), before);
+    EXPECT_EQ(session.Commit(), open_st::SettingsCommitResult::Saved);
+    EXPECT_EQ(this->ReadUser()["settings"]["profiles"], list);
+}
+
+// 任意 JSON 读取必须保留显式 null，缺字段才使用默认值。
+// 入参：无。返回：无；不能将非法领域类型悄悄重置为默认配置。
+TEST_F(SettingsEditTest, json_getter_distinguishes_explicit_null_from_missing)
+{
+    this->Write("resources/default_settings.json", R"({"schemaVersion":1,"settings":{"profiles":[],"language":"en"}})");
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"profiles":null}})");
+    ASSERT_TRUE(open_st::GetJsonSetting("profiles").has_value());
+    EXPECT_TRUE(open_st::GetJsonSetting("profiles")->is_null());
+    EXPECT_EQ(open_st::GetJsonSetting("language"), std::optional<nlohmann::json>("en"));
+    EXPECT_EQ(open_st::GetDefaultJsonSetting("profiles"), std::optional<nlohmann::json>(nlohmann::json::array()));
+}
 } // namespace

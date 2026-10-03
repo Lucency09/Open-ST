@@ -1,12 +1,12 @@
 // 验证更新响应校验与真实任务编排；网络完全由私有传输替身提供，不启动安装器。
 
 #include "update_model.h"
-#include "update_transport.h"
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <http_transport.h>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -23,7 +23,7 @@ struct UpdateClientTestAccess
     // 入参：path：隔离缓存；notify：通知；transport：独占替身。
     // 返回：未启动的真实任务。
     static std::unique_ptr<UpdateClient> Create(std::filesystem::path path, std::function<void()> notify,
-                                                std::unique_ptr<update_detail::UpdateTransport> transport)
+                                                std::unique_ptr<http::Transport> transport)
     {
         return std::unique_ptr<UpdateClient>(
             new UpdateClient(std::move(path), std::move(notify), std::move(transport)));
@@ -201,7 +201,7 @@ struct Reply
 {
     std::string body;
     unsigned status{200};
-    UpdateHttpError error{UpdateHttpError::None};
+    http::Error error{http::Error::None};
     std::optional<std::uint64_t> declared;
     std::wstring redirect;
     bool block{};
@@ -211,11 +211,11 @@ struct FakeState
     std::mutex mutex;
     std::condition_variable changed;
     std::deque<Reply> replies;
-    std::vector<UpdateHttpRequest> requests;
+    std::vector<http::Request> requests;
     bool release{};
     std::size_t completed{};
 };
-class FakeTransport final : public UpdateTransport
+class FakeTransport final : public http::Transport
 {
   public:
     // 接收线程安全的测试响应队列。
@@ -225,14 +225,14 @@ class FakeTransport final : public UpdateTransport
     // 返回脚本指定响应，可故意在取消后发送迟到字节验证任务自身保护。
     // 入参：request：真实任务请求；忽略的 stop 用于模拟不合作的迟到传输；sink：真实任务消费者。
     // 返回：脚本状态或明确替身失败，不访问网络。
-    UpdateHttpResult Get(const UpdateHttpRequest& request, std::stop_token, const UpdateHttpSink& sink) override
+    http::Result Perform(const http::Request& request, std::stop_token, const http::Sink& sink) override
     {
         Reply reply;
         {
             std::unique_lock lock(this->state_->mutex);
             this->state_->requests.push_back(request);
             if (this->state_->replies.empty())
-                reply.error = UpdateHttpError::Network;
+                reply.error = http::Error::Network;
             else
             {
                 reply = std::move(this->state_->replies.front());
@@ -246,9 +246,9 @@ class FakeTransport final : public UpdateTransport
                                                // 返回：允许返回迟到响应时 true。
                                                [this]() { return this->state_->release; });
         }
-        if (reply.error == UpdateHttpError::None && reply.status == 200 &&
+        if (reply.error == http::Error::None && reply.status == 200 &&
             !sink(std::as_bytes(std::span(reply.body.data(), reply.body.size()))))
-            reply.error = UpdateHttpError::SinkRejected;
+            reply.error = http::Error::SinkRejected;
         {
             const std::scoped_lock lock(this->state_->mutex);
             ++this->state_->completed;
@@ -339,7 +339,7 @@ class UpdateClientTest : public testing::Test
     // 复制请求集合供断言，不借用工作线程仍可能修改的容器。
     // 入参：无。
     // 返回：独立请求副本。
-    std::vector<UpdateHttpRequest> Requests()
+    std::vector<http::Request> Requests()
     {
         const std::scoped_lock lock(this->state_->mutex);
         return this->state_->requests;
@@ -378,7 +378,7 @@ TEST_F(UpdateClientTest, installed_query_waits_for_confirmation_before_requestin
     requests = this->Requests();
     ASSERT_EQ(requests.size(), 2U);
     EXPECT_EQ(requests[1].url, SUMS_URL);
-    EXPECT_EQ(requests[1].accept, L"application/octet-stream");
+    EXPECT_EQ(requests[1].headers[0].value, L"application/octet-stream");
 }
 
 // 验证便携版只返回页面信息，下载确认入口始终拒绝。
@@ -445,8 +445,8 @@ TEST_F(UpdateClientTest, request_failures_are_classified_without_asset_requests)
     const std::vector<std::pair<Reply, UpdateError>> cases{{{"", 404}, UpdateError::NotFound},
                                                            {{"", 429}, UpdateError::RateLimited},
                                                            {{"", 403}, UpdateError::RateLimited},
-                                                           {{"", 0, UpdateHttpError::Timeout}, UpdateError::Timeout},
-                                                           {{"", 0, UpdateHttpError::Network}, UpdateError::Network}};
+                                                           {{"", 0, http::Error::Timeout}, UpdateError::Timeout},
+                                                           {{"", 0, http::Error::Network}, UpdateError::Network}};
     for (const auto& [reply, expected] : cases)
     {
         this->Push(reply);
@@ -465,7 +465,7 @@ TEST_F(UpdateClientTest, request_failures_are_classified_without_asset_requests)
 TEST_F(UpdateClientTest, metadata_length_mismatch_and_oversized_body_cannot_be_available)
 {
     const std::string body = ReleaseDocument().dump();
-    this->Push({body, 200, UpdateHttpError::None, body.size() + 1U});
+    this->Push({body, 200, http::Error::None, body.size() + 1U});
     ASSERT_TRUE(this->client_->Check("0.9.0", UpdateDistribution::Installed));
     EXPECT_EQ(this->WaitResult().error, UpdateError::InvalidRelease);
     this->Push({std::string(MAX_METADATA_BYTES + 1U, 'x')});
@@ -483,7 +483,7 @@ TEST_F(UpdateClientTest, checksum_length_mismatch_blocks_binary_download)
     ASSERT_TRUE(this->client_->Check("0.9.0", UpdateDistribution::Installed));
     ASSERT_EQ(this->WaitResult().phase, UpdatePhase::Available);
     const std::string sums = std::string(HASH_ABC) + "  " + std::string(SETUP) + "\n";
-    this->Push({sums, 200, UpdateHttpError::None, sums.size() + 1U});
+    this->Push({sums, 200, http::Error::None, sums.size() + 1U});
     ASSERT_TRUE(this->client_->DownloadConfirmed());
     const auto result = this->WaitResult();
     EXPECT_EQ(result.phase, UpdatePhase::Failed);
@@ -545,7 +545,7 @@ TEST_F(UpdateClientTest, cancellation_rejects_late_query_and_download_responses)
 // 返回：GoogleTest 断言结果。
 TEST_F(UpdateClientTest, untrusted_redirect_is_rejected_before_transport)
 {
-    this->Push({{}, 302, UpdateHttpError::None, {}, L"https://api.github.com.evil.example/releases/latest"});
+    this->Push({{}, 302, http::Error::None, {}, L"https://api.github.com.evil.example/releases/latest"});
     ASSERT_TRUE(this->client_->Check("0.9.0", UpdateDistribution::Installed));
     EXPECT_EQ(this->WaitResult().phase, UpdatePhase::Failed);
     EXPECT_EQ(this->Requests().size(), 1U);

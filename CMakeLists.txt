@@ -13,6 +13,15 @@ else()
     list(REMOVE_ITEM VCPKG_MANIFEST_FEATURES ocr)
 endif()
 
+# 翻译包含在线适配与本地引擎，依赖档位在工具链启动前固定。
+option(OPEN_ST_ENABLE_TRANSLATION "构建翻译服务模块" ON)
+if(OPEN_ST_ENABLE_TRANSLATION)
+    list(APPEND VCPKG_MANIFEST_FEATURES translation)
+    list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+else()
+    list(REMOVE_ITEM VCPKG_MANIFEST_FEATURES translation)
+endif()
+
 # 声明项目名称、当前版本和使用的编程语言。
 # VERSION 会提供 PROJECT_VERSION 等变量，并用于生成程序内显示的版本号。
 project(OpenST VERSION 0.4.1 LANGUAGES CXX)
@@ -33,9 +42,6 @@ option(OPEN_ST_ALLOW_WARNINGS "允许项目代码带警告通过编译" OFF)
 # 是否构建自动化测试与 Mock。普通产品构建关闭，仅允许 test.ps1 开启。
 option(OPEN_ST_BUILD_TESTS "构建 Open-ST 自动化测试与 Mock" OFF)
 
-# 翻译尚未实现，继续保留显式功能边界。
-option(OPEN_ST_ENABLE_TRANSLATION "构建翻译服务模块" OFF)
-
 # 把仓库内的 cmake/ 加入模块搜索路径，随后可按文件名 include 公共构建脚本。
 # 这里保存的是需要提交到仓库的构建逻辑，不是 CMake 自动生成的 build/ 目录。
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -47,6 +53,9 @@ open_st_create_project_options()
 open_st_resolve_dependencies()
 if(OPEN_ST_ENABLE_OCR)
     include(OpenSTOcrModels)
+endif()
+if(OPEN_ST_ENABLE_TRANSLATION)
+    include(OpenSTTranslationModels)
 endif()
 
 # 根据模板生成版本头文件。@ONLY 表示只替换 @变量@，不会误处理源文件里的 ${变量}。

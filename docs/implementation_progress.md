@@ -1,8 +1,91 @@
 # Open-ST 实现进度
 
-更新时间：2026-09-25
+更新时间：2026-10-03
 当前开发版本：`0.4.1`；已发布版本：[v0.4.1](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.1)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
+
+## 2026-10-03 接口编辑截图、连接诊断与本地自动识别
+
+- [x] 用户确认底部测试按钮／只读可复制结果布局、编辑窗口保持打开可截图，并批准三项合并施工；子Agent复核设计、实现与范围。
+- [x] 编辑子模态与保存忙状态分开，主设置仍冻结；子模态复用App主循环的消息分派及截图输入／失效尾处理，嵌套键值编辑同样转发。
+- [x] App唯一拥有TranslationClient，文字会话借用；编辑器测试单个未保存接口及父页代理，固定en→zh-CN样本，不改变原启用状态。正常翻译与测试互斥，取消／发布按请求编号隔离，App统一等待后台退出。
+- [x] 结果区展示耗时、HTTP／系统错误、服务业务错误码／消息及译文；百度HTTP200错误不当作成功。显式诊断限长并脱敏，未知／自定义响应正文保守省略；普通请求不保留诊断，内容不落日志或配置。修改草稿会标识上次测试结果。
+- [x] Local auto使用Windows ELS离线检测全文NFC副本，只映射首选中英文到现有模型；中性zh兼容中文源，明确zh-Hant不强制映射。翻译使用原文，换行、空行、缩进不变；未知、方向不支持或服务不可用继续后续接口。短词和混合文本识别有局限，未提高或追认原模型翻译质量。
+- [x] 正式test.ps1完成Local26项、Translation44项、Settings126项（125通过／1人工跳过）；App经正式脚本构建并运行新增取消隔离单例，随后仅选截图热键／工具栏／OCR／文字翻译会话25项，全部通过。合计222项，221通过／1人工跳过；未运行全量。
+- [x] 正式build.ps1 Debug产品 /W4 /WX 构建通过，产物为 build/Debug/src/Launcher/Open-ST.exe；未发布。未使用用户百度凭据发出在线请求，自动化使用传输替身／无凭据拒绝路径。
+- 日志：testing/testoutput/connection-auto-local.log、connection-diagnostics-protocol.log、connection-settings.log、connection-application-final.log、connection-application-targeted.log、connection-product-build.log。
+- [ ] 用户实际编辑截图及使用已配置百度接口点击测试连接后的体验验收。
+
+## 2026-10-03 构建与模型准备审计整改
+
+- [x] 按用户“都修吧”落实五项：CTranslate2 显式 JSON 依赖；普通配置不准备翻译模型；模型准备并发保护；PowerShell 5.1 BOM；测试模块限制构建目标。
+- [x] CTranslate2 overlay 提升 port-version，配置前移除自带 JSON 头，公开 target 与 Config 声明 nlohmann-json；ABI 记录已包含依赖。安装仅排除 nlohmann，保留 half_float 等公共头。首次定向编译暴露的 half_float 漏装已修复并复验。
+- [x] 显式 Python 准备复用唯一 CMake 校验／下载器，采用进程锁、唯一临时目录、整包校验、不可变版本目录及原子 active 指针；旧有效模型直接复用，未重新转换真实模型。普通配置只校验，缓存缺失时提示显式命令。
+- [x] 两个入口和被点源的 helper 使用 UTF-8 BOM；Windows PowerShell 5.1 四脚本解析、环境恢复专项及测试入口14项轻量验证通过。
+- [x] CMake 导出并校验模块→测试目标清单，模块／case 构建仅选择对应模块目标和依赖；未知模块不回退全量。case 执行保留原精确筛选规则，功能依赖配置不随模块缩减。
+- [x] 正式 `scripts/test.ps1 translation_local` 验证19项全过，构建日志仅包含 Local 测试目标及依赖；未执行全量测试。
+- [x] 正式 `scripts/build.ps1 -Configuration Debug` 通过，产品从工作区二进制缓存恢复修复后的 CT2（1包，1.1秒），没有再次编译该依赖；部署14份模型文件长度／SHA-256全部匹配固定清单。运行中 Debug 程序锁定输出时，核对路径后按规范结束进程并完成构建。
+- [x] `testing/test/packaging/translation/test_model_preparation.py` 的12项合成资产验证通过，覆盖配置零准备、并发单写、重解析目录拒绝、错误Python环境、下载／转换／发布失败保留。未下载或转换真实模型。
+- 一次合成并发验证出现 Windows 目录重命名拒绝（WinError5），具体占用原因未定位；保留原失败日志，复查通过不视为根因解决。补充重命名拒绝故障注入确认旧 active／旧包保持不变，未增加无界重试。
+- 日志：`testing/testoutput/audit-fixes-local-recheck.log`、`audit-fixes-product-recheck.log`、`audit-fixes-ps51.log`、`model-preparation-regression-20261003-final.log`；脚本专项见 `test-module-map-checks/script-fixture.log`。此前失败日志保留供追查。
+
+## 2026-10-03 翻译列表、排布与入口修订
+
+- [x] 用户逐项确认后明确“施工吧”，按[批准方案](design/text-translation-ui-format-revision.md)实施。
+- [x] 通用Renderer新增原生表格、稳定ID选择／激活及控件／分组显隐；Settings复用公共布局、模态与唯一保存事务，没有自建原生窗口框架。
+- [x] 接口主表为名称／类型／启用状态三列，右侧新增、编辑、删除、上移、下移，双击编辑；启用仅在编辑窗修改。
+  自定义HTTP改为单页分组表单和键值表，保留JSON正文模板、模式草稿、原生标量、空Pointer及密钥遮罩。
+- [x] 本地按原文已有硬换行翻译内容行，原样保留混合换行、空白行及Unicode缩进；整文512 token前检、
+  全部行共享deadline／取消及整体1MiB输出预算不变，失败不发布部分结果，不增加在线拆分请求。
+- [x] 移除工具栏翻译命令／图标／分派及OCR后自动翻译意图；OCR完成或激活已有窗口都零翻译提交，
+  只有结果窗按钮显式启动。新增旧命令编号拒绝回归。
+- [x] Debug产品 /W4 /WX 构建通过：开发运行目录为 build/Debug/src/Launcher/，未发布。
+- [x] 本轮相关331项：327通过、3人工跳过、1既有真实前台归属断言失败。
+  Renderer 108通过／1人工跳过／1前台失败（含新增表格与显隐11项全过）；
+  Settings 123通过／1人工跳过；Local 19通过；Translation协议38通过；
+  文字窗口／工具栏39通过／1人工跳过。未为全绿改动前台准入或后置PinWindow策略。
+- [x] 主表最小尺寸不重叠、自定义单页滚动末端可达、类型／模式切换及稳定ID已做真实控件几何／消息测试；
+  多行JSON测试使用EM_REPLACESEL模拟用户编辑，不把WM_SETTEXT当成用户EN_CHANGE。
+- [ ] 人工视觉／实际使用验收仍待用户确认；原模型质量问题不因格式修复追认通过。
+- 日志：testing/testoutput/ui-format-product-build.log、ui-format-renderer-tests.log、ui-format-settings-tests.log、
+  ui-format-local-tests.log、ui-format-protocol-tests.log、ui-format-entry-tests.log。
+
+## 2026-10-02 构建缓存统一到工作区
+
+- [x] 用户要求修复普通终端重复下载：产品／测试共用 `scripts/build_environment.ps1`，源码归档、工具、二进制包和注册表固定到 `.cache/vcpkg/`，原 installed profiles 保留。
+- [x] 迁入已有下载归档和二进制包；注册表经临时副本及两侧 Git 连通性检查后发布到工作区。保留原缓存，不迁移 `.part`，不修改用户／系统环境。
+- [x] vcpkg 自管 CMake／PowerShell／Git 使用其工具清单，当前依赖 ABI 为 CMake 3.30.1／PowerShell 7.2.24。AppLocal 显式指向工作区 PowerShell；VS 项目工具及端口自有探测范围见依赖说明。
+- [x] 用户暂停后已按“继续吧”恢复并完成首次 ABI 统一重建；oneDNN 从工作区命中归档，未重复下载该源码。
+- [x] PowerShell 7.6.5 与 7.2.24 的环境成功／失败恢复、缺失值及特殊路径验证通过。产品重复构建两次均成功，下载和依赖重建计数均为0。
+- [x] 测试入口从同一工作区二进制缓存恢复26个包（4.1秒），只首次构建测试专用gtest，下载计数为0；翻译37项全过。未重跑不相关的全量桌面回归，其既有验收状态保持不变。
+- 日志：`testing/testoutput/workspace-cache-build-resume.log`、`workspace-cache-build-repeat.log`、`workspace-cache-build-final.log`、`workspace-cache-tests.log`。配置说明见 [.cache/README.md](../.cache/README.md)。
+
+## 2026-10-02 本地／在线翻译统一接入施工
+
+- [x] 用户明确CTranslate2与在线翻译做成同类组件，首版本地只做中英双向，同样进入接口顺序列表设置；已同步需求和修订方案。
+- [x] 子Agent独立复核统一接口/父子模块方向、token截断、模型缓存、合作取消与后续在线项衔接，相关约束已补入方案。
+- [x] 用户明确同意修订并开始施工；继承会话12的已批准范围继续完成，不重复设计审批。初版本地仅明确中文／英文才执行，已被2026-10-03的自动识别修订替代。
+- [x] 接入统一提供方、有序调度、内置与自定义HTTP、CTranslate2子模块及有界模型缓存；默认六项仅百度启用，稳定ID支持同类多实例与排序。
+- [x] Settings结构化草稿与原有字段原子保存；结果窗口演进为唯一可编辑原文和只读译文，修改／配置应用／关窗立即撤销旧任务资格，后台对象跨窗口保留。
+- [x] 固定模型转换配方、14份运行文件清单与校验、CTranslate2 overlay及三方许可已接入；Debug产品与额外三种功能开关组合编译通过。
+- [x] 完成本机Release诊断探针的中英冷／热耗时、释放及OCR叠加内存实测，详见[本地翻译评估](local-translation-evaluation-2026-10-02.md)。14份模型文件共163.48 MiB，质量存在明确短句误译，不视为验收通过。
+- [x] Debug／Release产品 `/W4 /WX` 构建及Release staging通过，开发候选目录为 `build/Release/`；未生成ZIP／Setup、未公开发布。版本仍为0.4.1的dirty开发树，不冒充新的正式发行。
+- [x] 正常权限下全量915项：900通过、12按原条件跳过、3失败；日志 `testing/testoutput/translation-full-regression.log`。翻译核心37、本地模型9、文字窗口10均通过，Settings 117通过／1人工跳过、Http 12通过、OCR 21通过、Update 21通过／1权限跳过。快照读取失败零请求、同类配置／切换、取消与迟到结果、模型元数据／完整验证边界均有覆盖。
+- [ ] 两项桌面输入前提仍失败：只读注册热键无法取得真实前台、贴图真实点击用例的SetCursorPos返回失败，正常权限定向复跑仍失败；保留失败而不改成跳过。另有已后置D-066贴图重复定位请求失败，未越界修改PinWindow。完整回归不宣称全绿；日志 `translation-desktop-recheck.log`、`translation-readonly-recheck.log`。
+- [ ] 本地模型质量、完整实际截图／IME／混合DPI交互及用户配置凭据后的线上验收仍未完成。
+
+## 2026-09-25 文本翻译基础施工与顺序调用修订（2026-10-02 已获批）
+
+- [x] 用户要求继续翻译，按既定顺序先设计OCR后的文本翻译；按后续修订以百度官方通用文本翻译为默认，Google网页、OpenAI兼容、DeepL、Microsoft作为可启用并排序的候选，图片翻译后置。
+- [x] 完成[文本翻译方案](design/text-translation-v0.5.md)及子Agent全文复核，明确文字窗口演进、独立Translation职责、Common/Http提取与Update迁移、明文Key及代理作用域。
+- [x] Google候选用固定无敏感Hello world样例经代理POST返回HTTP200及正确译文；其余供应商核对官方协议，未使用用户Key或付费请求，不据此宣称线上验收。
+- [x] 按用户修订将代理简化为跟随系统和自定义两种；系统无代理时直连，移除独立直连选项，同步需求、架构和D-021。
+- [x] 按用户要求选择国内官方供应商：百度通用文本翻译设为默认；未显式配置HTTP代理的无凭据连通性检查返回HTTP200/52003，仅记录可达，完整翻译需用户自己的AppID和密钥。
+- [x] 用户批准基础方案后开始施工，完成Common/Http提取与Update迁移、password/readOnly公共控件、百度签名的系统MD5辅助及内置供应商纯协议代码。
+- [x] 独立基础验证：Http9项全过；WindowRenderer/Update/About127项中125通过、2原条件跳过；Common65项中61通过、4权限跳过。主工程Debug测试构建通过；日志translation-http-baseline.log、translation-foundation-regression.log、translation-common-regression.log。
+- [x] 施工中用户追加有序接口列表与任意HTTP请求/响应映射，明确网络/超时/鉴权额度限流/服务异常切下一项、取消和输入错误停止；已形成修订方案并经子Agent复核。
+- [x] 顺序调度、结构化接口设置与自定义HTTP模板于2026-10-02获批并接入当前开发树；替代未发布的旧单供应商草案，当前验证见顶部记录，未调用用户凭据。
+- [ ] OCR及此前功能未逐项人工验收的记录继续保留。
 
 ## 2026-09-25 v0.4.1 发布
 
@@ -695,8 +778,8 @@ OCR、翻译、代理、API Key 和图片上传提醒等设置随对应业务实
 - [ ] 补齐保存取消/失败后的焦点专项检查、HDR颜色与4K保存后托盘内存；阶段收尾不替代这些后置专项验证。
 - [ ] 完成 GPU 设备丢失恢复和桌面复制访问丢失重建。
 - [ ] 复用 D3D/DXGI 设备与复制会话、并行或 GPU 转换，将典型启动延迟优化到 `≤150 ms`。
-- [ ] 【下一步】OCR 用户实机验收：已按批准方案完成实现、自动回归及本地候选包，待核验实际文字、IME、跨屏与输出交互；见顶部实施记录。
-- [ ] OCR 后依次推进文本翻译、图片翻译，随业务接入对应工具栏入口与实际需要的设置标签页。
+- [ ] OCR 用户实机验收仍待逐项记录：已完成实现与发布，真实文字、IME、跨屏与输出交互的未验收项保持原状态，不因进入翻译阶段追认通过。
+- [ ] 【当前步骤】文本翻译修订已获批并完成代码接入与构建回归，等待阶段审核；本地模型质量、两项桌面输入前提及实机交互仍待验收，图片翻译后置。
 
 ## 待处理事项
 

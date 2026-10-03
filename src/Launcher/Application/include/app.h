@@ -15,7 +15,9 @@
 
 namespace open_st
 {
-class OcrSession;
+class CaptureTextSession;
+class TranslationClient;
+struct AppTranslationState;
 class FrozenDesktopFrame;
 class CaptureOverlaySession;
 struct CaptureOverlayOutput;
@@ -89,8 +91,21 @@ class App final
   private:
     // 从现有正式合成输出启动本地识别，编辑器继续保留。
     // 入参：无。返回：无，失败保留截图会话。
-    void RecognizeSelection();
-    std::unique_ptr<OcrSession> ocrSession_;
+    void ProcessSelectionText();
+    std::unique_ptr<AppTranslationState> translation_;
+    std::unique_ptr<CaptureTextSession> textSession_;
+    // 取得应用唯一的延迟翻译客户端；文字结果窗只借用它。
+    // 入参：无。返回：支持翻译时的客户端，构造异常由调用方处理。
+    TranslationClient* EnsureTranslationClient();
+    // 应用退出时统一取消翻译并等待异步释放，窗口不拥有线程生命周期。
+    // 入参：无。返回：无。
+    void ShutdownTranslation() noexcept;
+    // 查询应用所拥有的翻译后台是否释放完成。
+    // 入参：无。返回：不存在或已结束为真。
+    bool TranslationShutdownComplete() const noexcept;
+    // 主循环与设置子模态共用完整消息分派及截图尾处理。
+    // 入参：message 为一条原生消息。返回：已消费为真。
+    bool ProcessApplicationMessage(MSG& message);
     friend struct AppToolbarTestAccess; // 测试仅替换截图状态，消息投递与分派使用真实 App。
     friend struct AppPinTestAccess;
     friend struct AppHotkeyTestAccess;

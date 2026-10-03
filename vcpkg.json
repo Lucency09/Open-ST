@@ -17,7 +17,10 @@
     },
     "translation": {
       "description": "启用翻译服务模块",
-      "dependencies": []
+      "dependencies": [
+        "ctranslate2",
+        "sentencepiece"
+      ]
     },
     "tests": {
       "description": "基于 GoogleTest 和 GoogleMock 的自动化测试",

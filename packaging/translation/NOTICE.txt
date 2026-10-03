@@ -1,0 +1,29 @@
+Open-ST local translation model pack: opus-mt-2020-07-17-int8-v1
+
+Original authors: Language Technology Research Group, University of Helsinki.
+Models: OPUS-MT / Tatoeba Challenge eng-zho and zho-eng, opus-2020-07-17.
+Original sources:
+https://object.pouta.csc.fi/Tatoeba-MT-models/eng-zho/opus-2020-07-17.zip
+https://object.pouta.csc.fi/Tatoeba-MT-models/zho-eng/opus-2020-07-17.zip
+
+Both downloaded original archives contain the Creative Commons Attribution 4.0
+International license. A full copy is included in each model directory's LICENSE.
+https://creativecommons.org/licenses/by/4.0/
+Attribution: Jorg Tiedemann and Santhosh Thottingal, OPUS-MT -- Building open
+translation services for the World, EAMT 2020.
+
+Modifications by Open-ST: converted the original Marian NPZ weights with
+CTranslate2 4.6.0 OpusMTConverter and INT8 quantization; retained the original
+source/target SentencePiece files and vocabulary ordering. Converter recipe,
+original archive hashes and exact converted file hashes are in models.json.
+Translation is CPU-only, greedy decoding; no endorsement by original authors.
+
+The Hugging Face en-zh metadata labels its repackaged model Apache-2.0; Open-ST
+uses the original linked OPUS NPZ archive and preserves that archive's CC-BY-4.0
+license instead of assuming the repackaged metadata changes its license.
+
+Runtime normalization uses the fixed SentencePiece embedded nmt_nfkc rules.
+No external Moses/Perl scripts are distributed or executed. The en-zh source
+prefix is >>cmn_Hans<<. Source length is limited to 512 tokens including the
+prefix and EOS. Output is bounded to 512 positions including decoder start/EOS;
+no complete EOS means failure, not a successful partial translation.

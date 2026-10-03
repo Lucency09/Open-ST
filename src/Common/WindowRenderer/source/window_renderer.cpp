@@ -84,6 +84,8 @@ struct WindowRenderer::Impl
         std::wstring error;
         bool enabled{true};
         std::vector<RendererOption> options;
+        std::vector<RendererTableRow> rows;
+        std::function<RendererRowsResult()> queryRows;
         std::function<RendererStringResult()> read;
         std::function<RendererChangeResult(std::string_view)> change;
         std::function<RendererBoolResult()> readBool;
@@ -105,6 +107,8 @@ struct WindowRenderer::Impl
 
     renderer_detail::Layout layout;
     std::map<std::string, Control, std::less<>> controls;
+    std::map<std::string, std::string, std::less<>> parents;
+    std::set<std::string, std::less<>> hidden;
     std::map<std::string, const Node*, std::less<>> nodes;
     std::function<std::wstring(std::string_view)> text;
     std::function<void()> close;
@@ -137,6 +141,7 @@ struct WindowRenderer::Impl
     bool arranging{};
     std::wstring status;
     static constexpr UINT CLOSE_MESSAGE = WM_APP + 91;
+    static constexpr UINT TABLE_SELECTION_MESSAGE = WM_APP + 92;
 
     // 把无法同步返回的控件事件错误交给宿主处理。
     // 入参：result：调用期间借用的结构化错误，不包含用户字段正文。
@@ -201,9 +206,10 @@ struct WindowRenderer::Impl
     // 递归登记布局节点和叶控件，建立后续绑定的查找表。
     // 入参：node：自有布局树内的节点，地址在索引使用期间须稳定；page：所属页面 ID，底部控件为空。
     // 返回：无返回值；保存节点借用指针及叶控件状态，不创建 HWND。
-    void Index(const Node& node, const std::string& page)
+    void Index(const Node& node, const std::string& page, const std::string& parent = {})
     {
         this->nodes.emplace(node.id, &node);
+        this->parents.emplace(node.id, parent);
         if (node.type != NodeType::Column && node.type != NodeType::Row)
         {
             Control control;
@@ -212,9 +218,86 @@ struct WindowRenderer::Impl
             this->controls.emplace(node.id, std::move(control));
         }
         for (const Node& child : node.children)
-            this->Index(child, page);
+            this->Index(child, page, node.id);
     }
 
+    // 合并自身与祖先可见意图，不用控件 HWND 推断布局状态。
+    // 入参：id 为已索引节点身份。
+    // 返回：自身及全部祖先均未隐藏时为 true。
+    bool NodeVisible(std::string_view id) const
+    {
+        while (!id.empty())
+        {
+            if (this->hidden.contains(id))
+                return false;
+            const auto parent = this->parents.find(id);
+            if (parent == this->parents.end())
+                return false;
+            id = parent->second;
+        }
+        return true;
+    }
+    // 将节点可见意图和当前页面合并为原生输入门禁。
+    // 入参：control 为已索引叶控件。
+    // 返回：控件在当前页可见时为 true。
+    bool ControlVisible(const Control& control) const
+    {
+        return this->NodeVisible(control.node->id) &&
+               (control.page.empty() || control.page == this->layout.pages[this->pageIndex].id);
+    }
+    // 判断事件是否仍可进入宿主，不让隐藏或被宿主禁用的窗口接收延后通知。
+    // 入参：control 为事件来源控件。
+    // 返回：控件与窗口均允许交互时为 true。
+    bool Interactive(const Control& control) const
+    {
+        return !this->busy && control.enabled && this->ControlVisible(control) && this->window != nullptr &&
+               IsWindowEnabled(this->window) && control.window != nullptr && IsWindowEnabled(control.window);
+    }
+    // 刷新表格列标题与 DIP 宽度，不改变行选择或宿主数据。
+    // 入参：control 为表格；width 为可用物理像素宽度。
+    // 返回：无。
+    void TableColumns(Control& control, int width)
+    {
+        int fixed = 0, flexible = 0;
+        for (const renderer_detail::TableColumn& column : control.node->columns)
+            if (column.width > 0)
+                fixed += this->Scale(column.width);
+            else
+                ++flexible;
+        int remaining = std::max(0, width - this->Scale(4) - GetSystemMetricsForDpi(SM_CXVSCROLL, this->dpi) - fixed);
+        for (std::size_t index = 0; index < control.node->columns.size(); ++index)
+        {
+            const renderer_detail::TableColumn& column = control.node->columns[index];
+            std::wstring title = this->text(column.textKey);
+            LVCOLUMNW native{};
+            native.mask = LVCF_TEXT | LVCF_WIDTH;
+            native.pszText = title.data();
+            native.cx = column.width > 0 ? this->Scale(column.width)
+                                         : std::max(this->Scale(24), remaining / std::max(1, flexible));
+            if (column.width <= 0)
+            {
+                remaining -= native.cx;
+                --flexible;
+            }
+            SendMessageW(control.window, LVM_SETCOLUMNW, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&native));
+        }
+    }
+    // 刷新完整表格快照，失败不发布半份宿主行数据。
+    // 入参：control 为已创建的表格。
+    // 返回：更新结果。
+    RendererResult RefreshTable(Control& control);
+    // 将表格最终选中身份交给宿主，程序刷新不产生选择事件。
+    // 入参：control 为表格。
+    // 返回：无；异常交由窗口过程收敛。
+    void TableSelection(Control& control);
+    // 激活前再次核验事件目标身份，选择被拒绝或回调切换目标时不误操作其他行。
+    // 入参：control 为表格；value 为事件开始时复制的稳定行身份。
+    // 返回：无，失败资格直接丢弃。
+    void ActivateTable(Control& control, const std::string& value);
+    // 分派表格选择和激活通知，宿主只接收稳定身份。
+    // 入参：notification 为原生控件通知。
+    // 返回：识别为表格通知时 true。
+    bool TableNotify(const NMHDR& notification);
     // 查找可进行绑定的指定类型控件。
     // 入参：id：目标布局控件 ID；type：要求的节点类型；output：输出参数，成功时接收内部控件借用指针。
     // 返回：线程、窗口状态及类型均满足时返回空错误码；失败返回结构化错误且不修改 output。
@@ -246,11 +329,13 @@ struct WindowRenderer::Impl
             return {"window_binding_missing", {}, {}};
         for (const auto& [id, control] : this->controls)
         {
+            if (control.node->type == NodeType::Table && (!control.read || !control.change || !control.queryRows))
+                return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Select && (!control.read || !control.change || !control.query))
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Checkbox && (!control.readBool || !control.changeBool))
                 return {"field_binding_missing", {}, id};
-            if (control.node->type == NodeType::Edit && (!control.read || !control.change))
+            if (control.node->type == NodeType::Edit && (!control.read || (!control.node->readOnly && !control.change)))
                 return {"field_binding_missing", {}, id};
             if (control.node->type == NodeType::Integer && (!control.readInteger || !control.changeInteger))
                 return {"field_binding_missing", {}, id};
@@ -404,13 +489,22 @@ int WindowRenderer::Impl::ArrangeRow(const Node& node, int x, int y, int width, 
 {
     const int padding = std::min(this->Scale(node.padding), width / 2);
     const int available = std::max(0, width - 2 * padding);
-    const int count = static_cast<int>(node.children.size());
+    const int count =
+        static_cast<int>(std::count_if(node.children.begin(), node.children.end(),
+                                       // 只为仍可见的直接子节点分配列和间隙。
+                                       // 入参：child 为子节点。
+                                       // 返回：可见时 true。
+                                       [this](const Node& child) { return this->NodeVisible(child.id); }));
+    if (count == 0)
+        return 0;
     const int gap = count > 1 ? std::min(this->Scale(node.gap), available / (count - 1)) : 0;
     const int content = available - gap * std::max(0, count - 1);
     std::int64_t fixed = 0;
     int flexible = 0;
     for (const Node& child : node.children)
     {
+        if (!this->NodeVisible(child.id))
+            continue;
         if (child.width > 0)
             fixed += this->Scale(child.width);
         else
@@ -423,6 +517,8 @@ int WindowRenderer::Impl::ArrangeRow(const Node& node, int x, int y, int width, 
     int height = 0;
     for (const Node& child : node.children)
     {
+        if (!this->NodeVisible(child.id))
+            continue;
         int childWidth = 0;
         if (child.width > 0)
         {
@@ -451,6 +547,8 @@ int WindowRenderer::Impl::ArrangeRow(const Node& node, int x, int y, int width, 
 // 返回：整棵节点占用的物理像素高度；放置时将 y 减去当前滚动偏移。
 int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width, bool place)
 {
+    if (!this->NodeVisible(node.id))
+        return 0;
     int actualWidth = width;
     if (node.width > 0)
         actualWidth = std::min(width, this->Scale(node.width));
@@ -460,19 +558,40 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     {
         const int padding = std::min(this->Scale(node.padding), actualWidth / 2);
         int cursor = padding;
+        bool hasChild = false;
         for (std::size_t index = 0; index < node.children.size(); ++index)
         {
-            if (index != 0)
+            if (!this->NodeVisible(node.children[index].id))
+                continue;
+            if (hasChild)
                 cursor += this->Scale(node.gap);
+            hasChild = true;
             cursor += this->ArrangeNode(node.children[index], x + padding, y + cursor,
                                         std::max(0, actualWidth - 2 * padding), place);
         }
-        return cursor + padding;
+        return hasChild ? cursor + padding : 0;
     }
     Control& control = this->controls.at(node.id);
     if (node.width == 0)
         actualWidth = std::min(width, std::max(this->Scale(80), this->TextWidth(control.text) + this->Scale(24)));
     int height = this->TextHeight(control.text, actualWidth);
+    if (node.type == NodeType::Table)
+    {
+        const int labelHeight = control.label != nullptr ? height + this->Scale(4) : 0;
+        const int tableHeight =
+            this->Scale(28) + (this->TextHeight(L"M", actualWidth) + this->Scale(6)) * node.visibleRows;
+        const int errorHeight = this->TextHeight(control.error, actualWidth);
+        height = labelHeight + tableHeight + (errorHeight > 0 ? errorHeight + this->Scale(4) : 0);
+        if (place)
+        {
+            if (control.label)
+                MoveWindow(control.label, x, y - this->scroll, actualWidth, labelHeight, TRUE);
+            MoveWindow(control.window, x, y + labelHeight - this->scroll, actualWidth, tableHeight, TRUE);
+            MoveWindow(control.errorWindow, x, y + height - errorHeight - this->scroll, actualWidth, errorHeight, TRUE);
+            this->TableColumns(control, actualWidth);
+        }
+        return height;
+    }
     if (node.type == NodeType::Edit || node.type == NodeType::Integer)
     {
         const int labelHeight = control.label != nullptr ? height + this->Scale(4) : 0;
@@ -567,9 +686,11 @@ void WindowRenderer::Impl::Arrange()
         const std::vector<Node>& buttons = group == 0 ? this->layout.leading : this->layout.trailing;
         int groupWidth = 0;
         for (const Node& node : buttons)
-            groupWidth += std::min(width, std::max(this->Scale(76), this->TextWidth(this->controls.at(node.id).text) +
-                                                                        this->Scale(24))) +
-                          gap;
+            if (this->NodeVisible(node.id))
+                groupWidth +=
+                    std::min(width, std::max(this->Scale(76),
+                                             this->TextWidth(this->controls.at(node.id).text) + this->Scale(24))) +
+                    gap;
         if (group == 1 && !buttons.empty())
         {
             if (x != 0 && x + groupWidth - gap > width)
@@ -583,6 +704,8 @@ void WindowRenderer::Impl::Arrange()
         }
         for (const Node& node : buttons)
         {
+            if (!this->NodeVisible(node.id))
+                continue;
             Control& control = this->controls.at(node.id);
             const int buttonWidth =
                 std::min(width, std::max(this->Scale(76), this->TextWidth(control.text) + this->Scale(24)));
@@ -630,7 +753,7 @@ void WindowRenderer::Impl::Arrange()
     this->ArrangeNode(page.content, 0, 0, contentWidth, true);
     for (const auto& [id, control] : this->controls)
     {
-        const bool visible = control.page.empty() || control.page == page.id;
+        const bool visible = this->ControlVisible(control);
         for (HWND child : {control.window, control.slider, control.label, control.errorWindow})
             if (child != nullptr)
                 ShowWindow(child, visible ? SW_SHOWNA : SW_HIDE);
@@ -704,8 +827,10 @@ bool WindowRenderer::Impl::CreateControls()
                 node.multiline ? ES_MULTILINE | ES_WANTRETURN | ES_AUTOVSCROLL | (node.verticalScroll ? WS_VSCROLL : 0U)
                                : ES_AUTOHSCROLL;
             control.window =
-                CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | editStyle, 0, 0, 1,
-                                1, parent, id, instance, nullptr);
+                CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | editStyle | (node.password ? ES_PASSWORD : 0U) |
+                                    (node.readOnly ? ES_READONLY : 0U),
+                                0, 0, 1, 1, parent, id, instance, nullptr);
             if (!renderer_detail::AttachFormEditSupport(control.window, control.editState))
                 return false;
             if (node.multiline || node.maxLength > 0)
@@ -713,6 +838,34 @@ bool WindowRenderer::Impl::CreateControls()
             control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
                                                   parent, nullptr, instance, nullptr);
             if ((!node.textKey.empty() && control.label == nullptr) || control.errorWindow == nullptr)
+                return false;
+        }
+        else if (node.type == NodeType::Table)
+        {
+            if (!node.textKey.empty())
+                control.label = CreateWindowExW(0, L"STATIC", control.text.c_str(), WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
+                                                0, 0, 1, 1, parent, nullptr, instance, nullptr);
+            control.window = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+                                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL |
+                                                 LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
+                                             0, 0, 1, 1, parent, id, instance, nullptr);
+            if (!control.window)
+                return false;
+            ListView_SetExtendedListViewStyle(control.window, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            for (std::size_t column = 0; column < node.columns.size(); ++column)
+            {
+                std::wstring title = this->text(node.columns[column].textKey);
+                LVCOLUMNW native{};
+                native.mask = LVCF_TEXT | LVCF_WIDTH;
+                native.pszText = title.data();
+                native.cx = this->Scale(100);
+                if (SendMessageW(control.window, LVM_INSERTCOLUMNW, static_cast<WPARAM>(column),
+                                 reinterpret_cast<LPARAM>(&native)) < 0)
+                    return false;
+            }
+            control.errorWindow = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_NOPREFIX, 0, 0, 1, 1,
+                                                  parent, nullptr, instance, nullptr);
+            if ((!node.textKey.empty() && !control.label) || !control.errorWindow)
                 return false;
         }
         else if (node.type == NodeType::Select || node.type == NodeType::KeyChord)
@@ -784,7 +937,8 @@ bool WindowRenderer::Impl::CreateControls()
     {
         if (control.node->type == NodeType::Select || control.node->type == NodeType::Checkbox ||
             control.node->type == NodeType::KeyChord || control.node->type == NodeType::Edit ||
-            control.node->type == NodeType::Integer || control.node->type == NodeType::Swatch)
+            control.node->type == NodeType::Integer || control.node->type == NodeType::Swatch ||
+            control.node->type == NodeType::Table)
         {
             const RendererResult result = this->RefreshControl(control);
             if (!result)
@@ -843,6 +997,8 @@ bool WindowRenderer::Impl::DrawSwatch(const DRAWITEMSTRUCT& draw) const noexcept
 // 返回：刷新流程完成返回空错误码；回调异常、重复选项或控件更新失败返回结构化错误；业务读取失败显示宿主错误，不调用变更回调。
 RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
 {
+    if (control.node->type == NodeType::Table)
+        return this->RefreshTable(control);
     if (control.node->type == NodeType::Swatch)
     {
         try
@@ -989,13 +1145,172 @@ RendererResult WindowRenderer::Impl::RefreshControl(Control& control)
     return {};
 }
 
+// 原子准备表格显示快照，只有结构验证通过才替换原生行。
+// 入参：control 为已创建并绑定的表格控件。
+// 返回：刷新结果，非法快照保持此前显示及选择。
+RendererResult WindowRenderer::Impl::RefreshTable(Control& control)
+{
+    try
+    {
+        RendererRowsResult rows = control.queryRows();
+        const RendererStringResult selected = control.read();
+        if (!rows.success || !selected.success)
+        {
+            control.error = !rows.success ? rows.error : selected.error;
+            SetWindowTextW(control.errorWindow, control.error.c_str());
+            return {};
+        }
+        if (rows.rows.size() > 4096)
+            return {"table_budget", {}, control.node->id};
+        std::set<std::string> identities;
+        std::size_t characters = 0;
+        for (const RendererTableRow& row : rows.rows)
+        {
+            if (row.value.empty() || row.value.size() > 4096 || row.value.find('\0') != std::string::npos ||
+                row.cells.size() != control.node->columns.size())
+                return {"invalid_row", {}, control.node->id};
+            (void)EditWide(row.value, false);
+            if (!identities.insert(row.value).second)
+                return {"duplicate_row", {}, control.node->id};
+            for (const std::wstring& cell : row.cells)
+            {
+                characters += cell.size();
+                if (cell.size() > 65536 || characters > 1048576 || cell.find(L'\0') != std::wstring::npos)
+                    return {"table_budget", {}, control.node->id};
+                (void)EditUtf8(cell);
+            }
+        }
+        const EditRefreshGuard guard(this->refreshing);
+        ListView_DeleteAllItems(control.window);
+        control.rows = std::move(rows.rows);
+        int selection = -1;
+        for (std::size_t index = 0; index < control.rows.size(); ++index)
+        {
+            RendererTableRow& row = control.rows[index];
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = static_cast<int>(index);
+            item.pszText = row.cells.front().data();
+            if (SendMessageW(control.window, LVM_INSERTITEMW, 0, reinterpret_cast<LPARAM>(&item)) < 0)
+            {
+                ListView_DeleteAllItems(control.window);
+                control.rows.clear();
+                return {"control_update_failed", {}, control.node->id};
+            }
+            for (std::size_t column = 1; column < row.cells.size(); ++column)
+            {
+                item.iSubItem = static_cast<int>(column);
+                item.pszText = row.cells[column].data();
+                SendMessageW(control.window, LVM_SETITEMTEXTW, index, reinterpret_cast<LPARAM>(&item));
+            }
+            if (row.value == selected.value)
+                selection = static_cast<int>(index);
+        }
+        if (selection >= 0)
+        {
+            ListView_SetItemState(control.window, selection, LVIS_SELECTED | LVIS_FOCUSED,
+                                  LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(control.window, selection, FALSE);
+        }
+        control.error = rows.error;
+        SetWindowTextW(control.errorWindow, control.error.c_str());
+        return {};
+    }
+    catch (...)
+    {
+        this->Report({"callback_failed", {}, control.node->id});
+        return {"callback_failed", {}, control.node->id};
+    }
+}
+// 在原生选择稳定后复制身份再调用宿主，允许宿主同步刷新或重排表格。
+// 入参：control 为选择变化的表格。
+// 返回：无，拒绝选择时恢复宿主的当前稳定身份。
+void WindowRenderer::Impl::TableSelection(Control& control)
+{
+    if (this->refreshing || !this->Interactive(control))
+        return;
+    const int selected = ListView_GetNextItem(control.window, -1, LVNI_SELECTED);
+    const std::string value = selected >= 0 && static_cast<std::size_t>(selected) < control.rows.size()
+                                  ? control.rows[static_cast<std::size_t>(selected)].value
+                                  : std::string{};
+    const RendererStringResult previous = control.read();
+    if (previous.success && previous.value == value)
+        return;
+    RendererChangeResult changed;
+    try
+    {
+        changed = control.change(value);
+    }
+    catch (...)
+    {
+        changed.accepted = false;
+        this->Report({"callback_failed", {}, control.node->id});
+    }
+    if (!changed.accepted)
+        (void)this->RefreshTable(control);
+    control.error = changed.error;
+    SetWindowTextW(control.errorWindow, control.error.c_str());
+    this->Arrange();
+}
+// 将一次激活限定到事件原始行，宿主选择回调可以刷新或重排但不能悄悄换目标。
+// 入参：control 为表格；value 为复制的事件目标身份。
+// 返回：无；宿主和原生选择均仍匹配时才调用动作。
+void WindowRenderer::Impl::ActivateTable(Control& control, const std::string& value)
+{
+    if (value.empty() || !this->Interactive(control))
+        return;
+    this->TableSelection(control);
+    const RendererStringResult current = control.read();
+    const int selected = ListView_GetNextItem(control.window, -1, LVNI_SELECTED);
+    if (current.success && current.value == value && selected >= 0 &&
+        static_cast<std::size_t>(selected) < control.rows.size() &&
+        control.rows[static_cast<std::size_t>(selected)].value == value)
+        this->Invoke(control.node->id);
+}
+// 处理单选表格的原生通知，刷新期间和隐藏期间均不会调用宿主。
+// 入参：notification 为仍在系统调用栈中的借用通知。
+// 返回：来源为本组件表格时 true，其余为 false。
+bool WindowRenderer::Impl::TableNotify(const NMHDR& notification)
+{
+    for (auto& [id, control] : this->controls)
+    {
+        if (control.node->type != NodeType::Table || control.window != notification.hwndFrom)
+            continue;
+        if (this->refreshing || !this->Interactive(control))
+            return true;
+        if (notification.code == LVN_ITEMCHANGED)
+        {
+            const NMLISTVIEW& changed = reinterpret_cast<const NMLISTVIEW&>(notification);
+            if ((changed.uChanged & LVIF_STATE) != 0 && ((changed.uOldState ^ changed.uNewState) & LVIS_SELECTED) != 0)
+            {
+                if ((changed.uNewState & LVIS_SELECTED) != 0)
+                    this->TableSelection(control);
+                else
+                    (void)PostMessageW(GetParent(control.window), TABLE_SELECTION_MESSAGE,
+                                       reinterpret_cast<WPARAM>(control.window), 0);
+            }
+        }
+        else if (notification.code == NM_DBLCLK)
+        {
+            const NMITEMACTIVATE& activated = reinterpret_cast<const NMITEMACTIVATE&>(notification);
+            if (activated.iItem >= 0 && static_cast<std::size_t>(activated.iItem) < control.rows.size())
+            {
+                const std::string value = control.rows[static_cast<std::size_t>(activated.iItem)].value;
+                this->ActivateTable(control, value);
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
 // 按稳定控件 ID 执行可用按钮的业务动作。
 // 入参：id：拟触发按钮的布局 ID。
 // 返回：无返回值；忙、禁用、未知 ID 或无动作时忽略；动作异常由外层消息边界处理。
 void WindowRenderer::Impl::Invoke(std::string_view id)
 {
     const auto found = this->controls.find(id);
-    if (this->busy || found == this->controls.end() || !found->second.enabled || !found->second.action)
+    if (found == this->controls.end() || !this->Interactive(found->second) || !found->second.action)
         return;
     found->second.action();
 }
@@ -1010,11 +1325,13 @@ void WindowRenderer::Impl::Command(WPARAM wParam, LPARAM lParam)
     const HWND source = reinterpret_cast<HWND>(lParam);
     for (auto& [id, control] : this->controls)
     {
-        if (control.window != source || !control.enabled)
+        if (control.window != source || !this->Interactive(control))
             continue;
         if ((control.node->type == NodeType::Edit || control.node->type == NodeType::Integer) &&
             HIWORD(wParam) == EN_CHANGE)
         {
+            if (control.node->readOnly)
+                return;
             const std::wstring original = ReadEditText(control.window);
             RendererChangeResult result;
             if (control.node->type == NodeType::Edit)
@@ -1120,7 +1437,7 @@ void WindowRenderer::Impl::SliderCommand(WPARAM wParam, HWND source)
         return;
     for (auto& [id, control] : this->controls)
     {
-        if (control.slider != source || !control.enabled || control.node->type != NodeType::Integer)
+        if (control.slider != source || !this->Interactive(control) || control.node->type != NodeType::Integer)
             continue;
         const std::int64_t value = static_cast<int>(SendMessageW(source, TBM_GETPOS, 0, 0));
         if (value < control.node->minimum || value > control.node->maximum)
@@ -1146,7 +1463,7 @@ void WindowRenderer::Impl::SliderCommand(WPARAM wParam, HWND source)
 // 返回：无返回值；忙、禁用或重复开始时忽略。
 void WindowRenderer::Impl::BeginRecording(Control& control)
 {
-    if (this->busy || !control.enabled || this->recording == &control)
+    if (!this->Interactive(control) || this->recording == &control)
         return;
     this->EndRecording(true);
     this->recording = &control;
@@ -1391,6 +1708,20 @@ LRESULT CALLBACK WindowRenderer::Impl::PageProc(HWND window, UINT message, WPARA
             impl->Command(wParam, lParam);
             return 0;
         }
+        if (impl != nullptr && message == WM_NOTIFY && lParam != 0)
+            return impl->TableNotify(*reinterpret_cast<const NMHDR*>(lParam))
+                       ? 0
+                       : DefWindowProcW(window, message, wParam, lParam);
+        if (impl != nullptr && message == TABLE_SELECTION_MESSAGE)
+        {
+            for (auto& [id, control] : impl->controls)
+                if (control.window == reinterpret_cast<HWND>(wParam) && control.node->type == NodeType::Table)
+                {
+                    impl->TableSelection(control);
+                    break;
+                }
+            return 0;
+        }
         if (impl != nullptr && message == WM_DRAWITEM)
         {
             return impl->DrawSwatch(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam)) ? TRUE : FALSE;
@@ -1495,6 +1826,8 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
     case WM_MOUSEWHEEL:
         return SendMessageW(this->viewport, message, wParam, lParam);
     case WM_NOTIFY:
+        if (lParam != 0 && this->TableNotify(*reinterpret_cast<const NMHDR*>(lParam)))
+            return 0;
         if (reinterpret_cast<NMHDR*>(lParam)->hwndFrom == this->tabs &&
             reinterpret_cast<NMHDR*>(lParam)->code == TCN_SELCHANGE)
         {
@@ -1623,13 +1956,14 @@ RendererResult WindowRenderer::BindString(std::string_view id, std::function<Ren
         return checked;
     Impl::Control* control{};
     const auto existing = this->impl_->controls.find(id);
-    const NodeType type = existing != this->impl_->controls.end() && existing->second.node->type == NodeType::Edit
-                              ? NodeType::Edit
-                              : NodeType::Select;
+    const NodeType type =
+        existing != this->impl_->controls.end() && existing->second.node->type == NodeType::Edit    ? NodeType::Edit
+        : existing != this->impl_->controls.end() && existing->second.node->type == NodeType::Table ? NodeType::Table
+                                                                                                    : NodeType::Select;
     const RendererResult found = this->impl_->Find(id, type, control);
     if (!found)
         return found;
-    if (!read || !change)
+    if (!read || (!change && !control->node->readOnly))
         return {"empty_callback", {}, std::string(id)};
     if (control->read || control->change)
         return {"duplicate_binding", {}, std::string(id)};
@@ -1768,6 +2102,23 @@ RendererResult WindowRenderer::BindOptions(std::string_view id, std::function<Re
     return {};
 }
 
+// 绑定独立表格行快照；选择与激活继续使用通用字符串及动作接口。
+// 入参：id 为 table 控件；query 为完整显示行查询。
+// 返回：绑定结果，错误不替换已有回调。
+RendererResult WindowRenderer::BindRows(std::string_view id, std::function<RendererRowsResult()> query)
+{
+    Impl::Control* control{};
+    const RendererResult found = this->impl_->Find(id, NodeType::Table, control);
+    if (!found)
+        return found;
+    if (!query)
+        return {"empty_callback", {}, std::string(id)};
+    if (control->queryRows)
+        return {"duplicate_binding", {}, std::string(id)};
+    control->queryRows = std::move(query);
+    return {};
+}
+
 // 绑定数值 RGB 色块读取及可选动作，不解析颜色字符串或持有业务样式。
 // 入参：id 为 swatch 控件；read 读取 24 位 RGB 与字段错误；action 为空表示只读色样。
 // 返回：绑定成功返回空错误码；类型、空读取回调或重复绑定错误返回结构化结果。
@@ -1794,7 +2145,11 @@ RendererResult WindowRenderer::BindColor(std::string_view id, std::function<Rend
 RendererResult WindowRenderer::BindAction(std::string_view id, std::function<void()> callback)
 {
     Impl::Control* control{};
-    const RendererResult found = this->impl_->Find(id, NodeType::Button, control);
+    const auto existing = this->impl_->controls.find(id);
+    const NodeType type = existing != this->impl_->controls.end() && existing->second.node->type == NodeType::Table
+                              ? NodeType::Table
+                              : NodeType::Button;
+    const RendererResult found = this->impl_->Find(id, type, control);
     if (!found)
         return found;
     if (!callback)
@@ -1875,7 +2230,7 @@ RendererResult WindowRenderer::Show(const RendererWindowOptions& options)
         return {"window_active", {}, {}};
     try
     {
-        INITCOMMONCONTROLSEX common{sizeof(common), ICC_TAB_CLASSES | ICC_BAR_CLASSES};
+        INITCOMMONCONTROLSEX common{sizeof(common), ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES};
         if (!InitCommonControlsEx(&common))
             return {"control_initialization_failed", {}, {}};
         const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -2055,7 +2410,8 @@ RendererResult WindowRenderer::RefreshValues()
         {
             if (control.node->type != NodeType::Select && control.node->type != NodeType::Checkbox &&
                 control.node->type != NodeType::KeyChord && control.node->type != NodeType::Edit &&
-                control.node->type != NodeType::Integer && control.node->type != NodeType::Swatch)
+                control.node->type != NodeType::Integer && control.node->type != NodeType::Swatch &&
+                control.node->type != NodeType::Table)
                 continue;
             const RendererResult result = this->impl_->RefreshControl(control);
             if (!result)
@@ -2086,7 +2442,7 @@ RendererResult WindowRenderer::RefreshValue(std::string_view id)
         return {"unknown_id", {}, std::string(id)};
     const NodeType type = found->second.node->type;
     if (type != NodeType::Select && type != NodeType::Checkbox && type != NodeType::KeyChord &&
-        type != NodeType::Edit && type != NodeType::Integer && type != NodeType::Swatch)
+        type != NodeType::Edit && type != NodeType::Integer && type != NodeType::Swatch && type != NodeType::Table)
         return {"wrong_control_type", {}, std::string(id)};
     try
     {
@@ -2167,6 +2523,34 @@ RendererResult WindowRenderer::SetEnabled(std::string_view id, bool enabled)
     return {};
 }
 
+// 隐藏整棵布局子树并撤销其输入资格，草稿及原生编辑撤销历史不变。
+// 入参：id 为叶或容器；visible 为自身可见意图。
+// 返回：操作结果，未知 ID 或错误线程时不改变状态。
+RendererResult WindowRenderer::SetVisible(std::string_view id, bool visible)
+{
+    const RendererResult checked = this->impl_->Check();
+    if (!checked)
+        return checked;
+    if (!this->impl_->nodes.contains(id))
+        return {"unknown_id", {}, std::string(id)};
+    if (visible)
+        this->impl_->hidden.erase(std::string(id));
+    else
+        this->impl_->hidden.emplace(id);
+    if (this->impl_->recording && !this->impl_->ControlVisible(*this->impl_->recording))
+        this->impl_->EndRecording(false);
+    const HWND focused = GetFocus();
+    this->impl_->Arrange();
+    for (const auto& [key, control] : this->impl_->controls)
+        if ((control.window == focused || control.slider == focused) && !this->impl_->ControlVisible(control))
+        {
+            const HWND next = GetNextDlgTabItem(this->impl_->window, focused, FALSE);
+            SetFocus(next != nullptr && IsWindowVisible(next) ? next : this->impl_->window);
+            break;
+        }
+    return {};
+}
+
 // 临时禁止窗口交互和关闭请求，结束后恢复各控件状态。
 // 入参：busy：true 进入忙状态，false 恢复交互。
 // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
@@ -2191,7 +2575,7 @@ RendererResult WindowRenderer::SetBusy(bool busy)
     if (this->impl_->tabs != nullptr)
         EnableWindow(this->impl_->tabs, !busy);
     if (!busy && this->impl_->savedFocus != nullptr && IsChild(this->impl_->window, this->impl_->savedFocus) &&
-        IsWindowEnabled(this->impl_->savedFocus))
+        IsWindowEnabled(this->impl_->savedFocus) && IsWindowVisible(this->impl_->savedFocus))
     {
         SetFocus(this->impl_->savedFocus);
         this->impl_->savedFocus = nullptr;
@@ -2230,7 +2614,8 @@ RendererResult WindowRenderer::SetFieldError(std::string_view id, std::wstring t
         return {"unknown_id", {}, std::string(id)};
     if (found->second.node->type != NodeType::Select && found->second.node->type != NodeType::Checkbox &&
         found->second.node->type != NodeType::KeyChord && found->second.node->type != NodeType::Edit &&
-        found->second.node->type != NodeType::Integer && found->second.node->type != NodeType::Swatch)
+        found->second.node->type != NodeType::Integer && found->second.node->type != NodeType::Swatch &&
+        found->second.node->type != NodeType::Table)
         return {"wrong_control_type", {}, std::string(id)};
     found->second.error = std::move(text);
     if (found->second.errorWindow != nullptr)
@@ -2279,6 +2664,17 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
         return false;
     if (message.hwnd != this->impl_->window && !IsChild(this->impl_->window, message.hwnd))
         return false;
+    // 隐藏或禁用前已经排队的键盘消息不能落入窗口默认 Enter/Esc 动作。
+    if (message.message >= WM_KEYFIRST && message.message <= WM_KEYLAST)
+    {
+        if (this->impl_->busy || !IsWindowEnabled(this->impl_->window))
+            return true;
+        for (const auto& [id, control] : this->impl_->controls)
+            if ((message.hwnd == control.window || message.hwnd == control.slider ||
+                 IsChild(control.window, message.hwnd)) &&
+                !this->impl_->Interactive(control))
+                return true;
+    }
     try
     {
         if (this->impl_->RecordMessage(message.message, message.wParam, message.lParam, message.time))
@@ -2301,6 +2697,28 @@ bool WindowRenderer::ProcessDialogMessage(MSG& message)
         this->impl_->Report({"callback_failed", {}, {}});
         return true;
     }
+    if (message.message == WM_KEYDOWN && message.wParam == VK_RETURN)
+        for (auto& [id, control] : this->impl_->controls)
+            if (control.node->type == NodeType::Table && control.window == GetFocus())
+            {
+                try
+                {
+                    if (this->impl_->Interactive(control))
+                    {
+                        const int selected = ListView_GetNextItem(control.window, -1, LVNI_SELECTED);
+                        if (selected >= 0 && static_cast<std::size_t>(selected) < control.rows.size())
+                        {
+                            const std::string value = control.rows[static_cast<std::size_t>(selected)].value;
+                            this->impl_->ActivateTable(control, value);
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    this->impl_->Report({"callback_failed", {}, id});
+                }
+                return true;
+            }
     if (message.message == WM_KEYDOWN && (message.wParam == VK_RETURN || message.wParam == VK_ESCAPE))
     {
         for (const auto& [id, control] : this->impl_->controls)
@@ -2339,8 +2757,10 @@ bool WindowRenderer::ProcessRegisteredEditHotkey(UINT modifiers, UINT key) noexc
     for (const auto& [id, control] : this->impl_->controls)
     {
         if (control.node->type != NodeType::Edit || !control.node->multiline || control.window != GetFocus() ||
-            !control.enabled || !IsWindowEnabled(control.window))
+            !this->impl_->Interactive(control))
             continue;
+        if (control.node->readOnly && key != 'A' && key != 'C')
+            return true;
         if (!control.editState.composing)
         {
             if (key == 'A')

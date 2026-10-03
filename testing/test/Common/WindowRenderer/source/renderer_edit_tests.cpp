@@ -398,4 +398,137 @@ TEST_F(RendererMultilineTest, registered_edit_hotkeys_reject_background_and_unre
     EXPECT_FALSE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, 'A'));
     EXPECT_EQ(this->Value(false), L"valid");
 }
+class RendererPasswordTest : public RendererEditTest
+{
+  protected:
+    // 为普通单行编辑启用原生遮罩，不改变宿主字符串语义。
+    // 入参：无。
+    // 返回：包含密码样式的通用布局。
+    nlohmann::json Document() override
+    {
+        auto document = EditDocument();
+        document["content"]["children"][0]["password"] = true;
+        return document;
+    }
+};
+
+// 验证原生密码字符已启用，宿主依然接收真实输入而不是掩码。
+// 入参：无；仅使用固定测试字符串，不涉及用户密钥。
+// 返回：无；显示遮罩不被冒称为存储加密。
+TEST_F(RendererPasswordTest, masks_display_without_replacing_the_bound_text)
+{
+    EXPECT_NE(GetWindowLongPtrW(this->Edit(false), GWL_STYLE) & ES_PASSWORD, 0);
+    EXPECT_NE(SendMessageW(this->Edit(false), EM_GETPASSWORDCHAR, 0, 0), 0);
+    ASSERT_TRUE(SetWindowTextW(this->Edit(false), L"test-key"));
+    EXPECT_EQ(this->text_, "test-key");
+    EXPECT_EQ(this->Value(false), L"test-key");
+    EXPECT_EQ(this->textChanges_, 1);
+}
+
+class RendererReadOnlyTest : public RendererMultilineTest
+{
+  protected:
+    // 使用同一多行布局，只将结果框设为只读。
+    // 入参：无。
+    // 返回：可选中而不可修改的结果布局。
+    nlohmann::json Document() override
+    {
+        auto document = RendererMultilineTest::Document();
+        document["content"]["children"][0]["readOnly"] = true;
+        return document;
+    }
+};
+
+// 验证只读控件仍可全选，编辑、粘贴、撤销和IME消息均不能写入或触发草稿回调。
+// 入参：无；只读防线在访问剪贴板前消费写入消息。
+// 返回：无；宿主 RefreshValue 仍可更新正式结果。
+TEST_F(RendererReadOnlyTest, readonly_blocks_user_mutation_and_ime_but_allows_selection_and_host_refresh)
+{
+    EXPECT_TRUE(IsWindowEnabled(this->Edit(false)));
+    EXPECT_NE(GetWindowLongPtrW(this->Edit(false), GWL_STYLE) & ES_READONLY, 0);
+    SendMessageW(this->Edit(false), WM_CHAR, 1, 0);
+    DWORD first{}, last{};
+    SendMessageW(this->Edit(false), EM_GETSEL, reinterpret_cast<WPARAM>(&first), reinterpret_cast<LPARAM>(&last));
+    EXPECT_EQ(first, 0U);
+    EXPECT_EQ(last, 5U);
+    for (const UINT message : {WM_PASTE, WM_CUT, WM_CLEAR, WM_UNDO, EM_UNDO})
+        SendMessageW(this->Edit(false), message, 0, 0);
+    SendMessageW(this->Edit(false), EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"blocked"));
+    SendMessageW(this->Edit(false), WM_CHAR, 'x', 0);
+    SendMessageW(this->Edit(false), WM_CHAR, VK_RETURN, 0);
+    SendMessageW(this->Edit(false), WM_IME_STARTCOMPOSITION, 0, 0);
+    SendMessageW(this->Edit(false), WM_IME_CHAR, L'字', 0);
+    SendMessageW(this->Edit(false), WM_IME_ENDCOMPOSITION, 0, 0);
+    EXPECT_EQ(this->Value(false), L"valid");
+    EXPECT_EQ(this->textChanges_, 0);
+    this->text_ = "translated\nline";
+    ASSERT_TRUE(this->renderer_.RefreshValue("text"));
+    EXPECT_EQ(this->Value(false), L"translated\r\nline");
+    EXPECT_EQ(this->textChanges_, 0);
+}
+
+// 验证真实前台只读结果仍接收全选和复制，注册的粘贴、剪切、撤销被消费但不能改正文。
+// 入参：无；复制消息由本控件的测试子类截获，不操作系统剪贴板。
+// 返回：无；明确核验前台和焦点前提，不按窗口创建状态猜测输入归属。
+TEST_F(RendererReadOnlyTest, registered_hotkeys_copy_readonly_selection_but_never_mutate_it)
+{
+    struct CopyProbe
+    {
+        HWND window;
+        unsigned copies{};
+        // 解除只属于本用例控件的消息替身。
+        // 入参：无。
+        // 返回：无；不改变正式表单子类。
+        ~CopyProbe()
+        {
+            RemoveWindowSubclass(this->window, Procedure, 77);
+        }
+        // 截获复制边界，其余消息继续交给真实控件。
+        // 入参：window/message/wParam/lParam 为原生消息；data 为借用计数器。
+        // 返回：复制返回零，其他消息使用默认分派。
+        static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
+                                          DWORD_PTR data)
+        {
+            if (message == WM_COPY)
+            {
+                ++reinterpret_cast<CopyProbe*>(data)->copies;
+                return 0;
+            }
+            return DefSubclassProc(window, message, wParam, lParam);
+        }
+    } probe{this->Edit(false)};
+    ASSERT_TRUE(SetWindowSubclass(probe.window, CopyProbe::Procedure, 77, reinterpret_cast<DWORD_PTR>(&probe)));
+    ShowWindow(this->renderer_.NativeHandle(), SW_SHOWNORMAL);
+    // 激活请求的返回值不代替实际输入归属，以下前台和焦点断言仍为强制前提。
+    (void)SetForegroundWindow(this->renderer_.NativeHandle());
+    SetFocus(this->Edit(false));
+    ASSERT_EQ(GetForegroundWindow(), this->renderer_.NativeHandle());
+    ASSERT_EQ(GetFocus(), this->Edit(false));
+    ASSERT_TRUE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, 'A'));
+    ASSERT_TRUE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, 'C'));
+    EXPECT_EQ(probe.copies, 1U);
+    for (const UINT key : {'V', 'X', 'Z'})
+        EXPECT_TRUE(this->renderer_.ProcessRegisteredEditHotkey(MOD_CONTROL, key));
+    EXPECT_EQ(this->Value(false), L"valid");
+    EXPECT_EQ(this->textChanges_, 0);
+}
+
+// 验证只读字段不要求虚假的写回回调，而普通输入仍必须提供变更回调。
+// 入参：无。
+// 返回：无；只通过公开布局和绑定接口验证。
+TEST(RendererReadOnlyBindingTest, readonly_accepts_missing_change_callback_but_editable_rejects_it)
+{
+    for (const bool readOnly : {true, false})
+    {
+        auto document = EditDocument();
+        document["content"]["children"][0]["readOnly"] = readOnly;
+        open_st::WindowRenderer renderer;
+        ASSERT_TRUE(renderer.LoadLayout(document));
+        // 返回固定宿主结果，控件不拥有另一份业务文档。
+        // 入参：无。
+        // 返回：成功读取值。
+        const auto read = []() { return open_st::RendererStringResult{true, "result", {}}; };
+        EXPECT_EQ(static_cast<bool>(renderer.BindString("text", read, {})), readOnly);
+    }
+}
 } // namespace

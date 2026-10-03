@@ -54,6 +54,36 @@ else()
         VERBATIM)
 endif()
 
+# 本地翻译与编译期白名单共用固定清单，模型、分词器和上游许可一同复制。
+if(OPEN_ST_ENABLE_TRANSLATION)
+    file(READ "${PROJECT_SOURCE_DIR}/packaging/translation/models.json" OPEN_ST_TRANSLATION_MANIFEST)
+    foreach(OPEN_ST_MODEL_INDEX RANGE 0 1)
+        string(JSON OPEN_ST_MODEL_DIRECTION GET "${OPEN_ST_TRANSLATION_MANIFEST}" models ${OPEN_ST_MODEL_INDEX} direction)
+        string(JSON OPEN_ST_MODEL_FILE_COUNT LENGTH "${OPEN_ST_TRANSLATION_MANIFEST}" models ${OPEN_ST_MODEL_INDEX} files)
+        math(EXPR OPEN_ST_MODEL_FILE_LAST "${OPEN_ST_MODEL_FILE_COUNT} - 1")
+        foreach(OPEN_ST_FILE_INDEX RANGE ${OPEN_ST_MODEL_FILE_LAST})
+            string(JSON OPEN_ST_MODEL_FILE GET "${OPEN_ST_TRANSLATION_MANIFEST}" models ${OPEN_ST_MODEL_INDEX} files ${OPEN_ST_FILE_INDEX} file)
+            get_filename_component(OPEN_ST_MODEL_NAME "${OPEN_ST_MODEL_FILE}" NAME)
+            add_custom_command(TARGET open_st POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:open_st>/resources/translation/${OPEN_ST_MODEL_DIRECTION}"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${OPEN_ST_TRANSLATION_MODEL_CACHE}/${OPEN_ST_MODEL_DIRECTION}/${OPEN_ST_MODEL_NAME}"
+                    "$<TARGET_FILE_DIR:open_st>/${OPEN_ST_MODEL_FILE}"
+                VERBATIM)
+        endforeach()
+    endforeach()
+    add_custom_command(TARGET open_st POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PROJECT_SOURCE_DIR}/packaging/translation/NOTICE.txt"
+            "${PROJECT_SOURCE_DIR}/packaging/translation/models.json"
+            "$<TARGET_FILE_DIR:open_st>/resources/translation"
+        VERBATIM)
+else()
+    add_custom_command(TARGET open_st POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:open_st>/resources/translation"
+        VERBATIM)
+endif()
+
 # 在 EXE 激活上下文中启用系统视觉样式；仅链接 comctl32 不会启用 v6 主题。
 target_link_options(open_st PRIVATE
     "/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"

@@ -3,12 +3,24 @@
 #pragma once
 
 #include <cstdint>
+#include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 
 namespace open_st
 {
+// 查询任意 JSON 设置值，缺少用户字段时沿用默认资源；不替领域校验结构。
+// 入参：key 为设置名。返回：独立 JSON，包括显式 null；不可读取时为空。
+[[nodiscard]] std::optional<nlohmann::json> GetJsonSetting(std::string_view key) noexcept;
+// 查询默认 JSON 值，不读取用户设置。
+// 入参：key 为设置名。返回：独立默认值，缺失或失败为空。
+[[nodiscard]] std::optional<nlohmann::json> GetDefaultJsonSetting(std::string_view key) noexcept;
+// 从同一用户文档捕获完整字段集合，仅用户缺失字段可以使用同一份默认文档补齐。
+// 入参：keys 为本次需要的非空设置键；对象保留原始 JSON 类型，由领域继续校验。
+// 返回：独立平坦键值对象；用户读取失败、所需默认读取失败或字段仍缺失时为空。
+[[nodiscard]] std::optional<nlohmann::json> ReadSettingsSnapshot(std::span<const std::string_view> keys) noexcept;
 enum class SettingsWriteError
 {
     None,

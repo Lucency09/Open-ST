@@ -78,6 +78,18 @@ struct RendererOptionsResult
     std::vector<RendererOption> options;
     std::wstring error;
 };
+// 通用表格的一行显示快照，value 是宿主选择身份，不使用行号代替。
+struct RendererTableRow
+{
+    std::string value;
+    std::vector<std::wstring> cells;
+};
+struct RendererRowsResult
+{
+    bool success = true;
+    std::vector<RendererTableRow> rows;
+    std::wstring error;
+};
 struct RendererWindowOptions
 {
     HWND owner = nullptr;
@@ -109,17 +121,17 @@ class WindowRenderer final
     // 返回：成功返回空错误码并清空旧绑定；解析或状态检查失败返回结构化错误，保留之前布局。
     RendererResult LoadLayout(const nlohmann::json& document);
     // edit 布局可选 multiline（默认 false）；多行支持 visibleLines（1 至 100，默认 6）
-    // 和 verticalScroll（默认 true），以字体行高测量并自动折行；maxLength 可限制用户输入的 UTF-16 单元数。
+    // 和 verticalScroll（默认 true）；maxLength 限制 UTF-16 输入；password 仅限单行遮罩，readOnly 保留选中复制。
     // 注册窗口所有文本键使用的本地化查询器。
     // 入参：callback：接收文本键并返回宽字符文本的回调，移入渲染器；其捕获对象须保持存活。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
     // 的结构化结果；须在显示前注册，空回调或重复绑定被拒绝。
     RendererResult SetTextResolver(std::function<std::wstring(std::string_view)> callback);
-    // 把下拉框或普通编辑框连接到宿主字符串草稿的读取和即时变更操作。
-    // 入参：id 为 select 或 edit 控件；read 读取 UTF-8 草稿；change 接收完整原始字符串并返回宿主校验结果。
+    // 将下拉框／表格稳定选择或编辑文字绑定到宿主；表格空字符串表示无选择。
+    // 入参：id 为 select、table 或 edit；read 读取值；change 接收选择或文字，readOnly 编辑框可省略 change。
     // 返回：绑定错误返回结构化结果；下拉框拒绝时恢复已接受值，编辑框拒绝时保留原始文本供继续修改。
     RendererResult BindString(std::string_view id, std::function<RendererStringResult()> read,
-                              std::function<RendererChangeResult(std::string_view)> change);
+                              std::function<RendererChangeResult(std::string_view)> change = {});
     // 绑定整数编辑与可选滑条，原始非法输入保留在编辑框并即时通知宿主。
     // 入参：id 为整数控件；read 读取数值草稿；change 接收合法整数或表示非法、未完成输入的空值。
     // 返回：成功返回空错误码；类型、回调或重复绑定错误返回结构化结果，不接管宿主业务校验。
@@ -161,8 +173,12 @@ class WindowRenderer final
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
     // 的结构化结果；选项值唯一性在实际读取选项时检查。
     RendererResult BindOptions(std::string_view id, std::function<RendererOptionsResult()> query);
-    // 将布局按钮绑定到宿主业务动作。
-    // 入参：id：布局中的按钮 ID；callback：按钮触发时同步调用的无参动作，移入渲染器。
+    // 绑定只读表格完整行：身份非空唯一，列数匹配；最多4096行、单格65536及总计1048576个UTF-16单元。
+    // 入参：id 为 table 控件；query 返回宿主拥有数据的显示快照。
+    // 返回：绑定成功为空错误；失败保留原绑定，实际刷新时校验快照。
+    RendererResult BindRows(std::string_view id, std::function<RendererRowsResult()> query);
+    // 将按钮或表格双击／Enter 激活绑定到宿主动作；表格没有选择时不激活。
+    // 入参：id 为 button 或 table；callback 为同步动作，表格可不绑定激活动作。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
     // 的结构化结果；非按钮、空回调或重复绑定被拒绝。
     RendererResult BindAction(std::string_view id, std::function<void()> callback);
@@ -213,6 +229,10 @@ class WindowRenderer final
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID
     // 的结构化结果；窗口忙时控件仍禁用，解除忙状态后恢复该值。
     RendererResult SetEnabled(std::string_view id, bool enabled);
+    // 设置控件或容器的可见性，隐藏的后代不占布局、不接收输入，也不修改宿主草稿。
+    // 入参：id 为叶控件或 row/column 容器；visible 为自身可见意图，祖先隐藏仍保持隐藏。
+    // 返回：成功为空错误；未知 ID 或线程错误不改变状态，显示前也可设置。
+    RendererResult SetVisible(std::string_view id, bool visible);
     // 临时禁止窗口交互和关闭请求，结束后恢复各控件状态。
     // 入参：busy：true 进入忙状态，false 恢复交互。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID

@@ -7,10 +7,11 @@
 #include "capture_completion.h"
 #include "capture_selection_input.h"
 #include "capture_storage_options.h"
+#include "capture_text_session.h"
+#include "app_translation_state.h"
 #include "capture_toolbar_monitor.h"
 #include "diagnostic_text.h"
 #include "log_maintenance_task.h"
-#include "ocr_session.h"
 #include "overlay_input_queue.h"
 #include "save_directory.h"
 #include "save_image_dialog.h"
@@ -273,11 +274,13 @@ App::App(HINSTANCE instance)
 App::~App()
 {
     this->shuttingDown_ = true;
-    if (this->ocrSession_)
+    if (this->textSession_)
     {
-        this->ocrSession_->Shutdown();
-        this->ocrSession_.reset();
+        this->textSession_->Shutdown();
+        this->textSession_.reset();
     }
+    this->ShutdownTranslation();
+    this->translation_.reset();
     this->StopLogMaintenance();
     this->pendingPinId_ = 0;
     if (this->singleInstance_ != nullptr)
@@ -321,6 +324,33 @@ App::~App()
         CoUninitialize();
     }
     ShutdownLogging();
+}
+
+// 主循环与子模态复用同一分派，确保截图输入队列和失效清理不会停在嵌套循环外。
+// 入参：message 为非 WM_QUIT 消息。返回：处理完成为真。
+bool App::ProcessApplicationMessage(MSG& message)
+{
+    if (this->textSession_)
+    {
+        if (this->textSession_->Process(message))
+            return true;
+    }
+    if (this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(message))
+    {
+        this->DrainLogMaintenance();
+        this->ReportDataReadWarnings();
+        return true;
+    }
+    TranslateMessage(&message);
+    DispatchMessageW(&message);
+    this->DrainOverlayPointers();
+    this->DrainAnnotationText();
+    if (this->overlayInvalidated_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy())
+        this->CloseOverlay();
+    this->ReportAnnotationFailure();
+    this->DrainLogMaintenance();
+    this->ReportDataReadWarnings();
+    return true;
 }
 
 // 初始化应用服务并运行主消息循环直到退出。
@@ -513,28 +543,7 @@ int App::Run(int)
     BOOL messageResult = 0;
     while ((messageResult = GetMessageW(&message, nullptr, 0, 0)) > 0)
     {
-        if (this->ocrSession_)
-        {
-            this->ocrSession_->Poll();
-            if (this->ocrSession_->Process(message))
-                continue;
-        }
-        if (this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(message))
-        {
-            this->DrainLogMaintenance();
-            this->ReportDataReadWarnings();
-            continue;
-        }
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-        this->DrainOverlayPointers();
-        this->DrainAnnotationText();
-        if (this->overlayInvalidated_ && !this->overlayRendering_ && !this->annotationPreparing_ &&
-            !this->CompletionBusy())
-            this->CloseOverlay();
-        this->ReportAnnotationFailure();
-        this->DrainLogMaintenance();
-        this->ReportDataReadWarnings();
+        (void)this->ProcessApplicationMessage(message);
     }
     if (messageResult == -1)
     {
@@ -697,8 +706,9 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
     if (message == WM_CLOSE)
     {
         this->shuttingDown_ = true;
-        if (this->ocrSession_)
-            this->ocrSession_->Shutdown();
+        if (this->textSession_)
+            this->textSession_->Shutdown();
+        this->ShutdownTranslation();
         this->StopLogMaintenance();
         this->pendingPinId_ = 0;
         if (this->pinManager_)
@@ -707,10 +717,13 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         this->UpdateCaptureGate();
         return 0;
     }
-    if (message == OcrWakeMessage || (message == WM_TIMER && wParam == OcrPollTimer))
+    if (message == TextWakeMessage ||
+        (message == WM_TIMER && (wParam == TextPollTimer || wParam == TranslationPollTimer)))
     {
-        if (this->ocrSession_)
-            this->ocrSession_->Poll();
+        if (this->textSession_)
+            this->textSession_->Poll();
+        if (this->TranslationShutdownComplete())
+            KillTimer(this->messageWindow_, TranslationPollTimer);
         if (this->shuttingDown_)
             this->UpdateCaptureGate();
         return 0;
@@ -1066,8 +1079,8 @@ void App::UpdateCaptureGate() noexcept
 {
     const bool paused = this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
                         this->settingsBusy_ || this->hotkeyRecording_;
-    if (this->ocrSession_)
-        this->ocrSession_->Pause(paused);
+    if (this->textSession_)
+        this->textSession_->Pause(paused);
     this->hotkeyBoundary_ = GetTickCount();
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
@@ -1085,7 +1098,7 @@ void App::UpdateCaptureGate() noexcept
     if (this->shuttingDown_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy() &&
         !this->dialogActive_ && !this->settingsBusy_ && !this->welcoming_ &&
         (!this->pinManager_ || !this->pinManager_->IsBusy()) &&
-        (!this->ocrSession_ || this->ocrSession_->ShutdownComplete()))
+        (!this->textSession_ || this->textSession_->ShutdownComplete()) && this->TranslationShutdownComplete())
         PostQuitMessage(0);
 }
 
@@ -1157,7 +1170,7 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
         this->PinSelection();
         break;
     case CaptureToolbarCommand::Ocr:
-        this->RecognizeSelection();
+        this->ProcessSelectionText();
         break;
     default:
         this->HandleAnnotationCommand(command);
@@ -1948,8 +1961,8 @@ void App::CancelSelectionOrClose() noexcept
 // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
-    if (this->ocrSession_)
-        this->ocrSession_->EndCapture();
+    if (this->textSession_)
+        this->textSession_->EndCapture();
     this->CancelAnnotationPropertyRequest();
     if (!this->annotationInteraction_->CanClose() || this->annotationPreparing_ || this->overlayRendering_)
     {
@@ -2192,7 +2205,7 @@ void App::ShowCleanup()
     bool deleteLogs = false;
     bool stopped = false;
     bool exitRequested = false;
-    bool waitingForOcr = false;
+    bool waitingForText = false;
     std::function<void()> performCleanup;
     std::string statusKey;
     // 按当前语言刷新清理窗口的操作状态文字。
@@ -2247,7 +2260,7 @@ void App::ShowCleanup()
         // 返回：无返回值；请求延迟关闭，业务已经停止时同时记录退出意图。
         const auto cancel = [&]()
         {
-            waitingForOcr = false;
+            waitingForText = false;
             exitRequested = stopped;
             (void)renderer.RequestClose();
         };
@@ -2296,10 +2309,12 @@ void App::ShowCleanup()
                 (void)renderer.SetEnabled("deleteLogs", false);
                 (void)renderer.RefreshTexts();
             }
-            if (this->ocrSession_ && !this->ocrSession_->ShutdownComplete())
+            if ((this->textSession_ && !this->textSession_->ShutdownComplete()) || !this->TranslationShutdownComplete())
             {
-                this->ocrSession_->Shutdown();
-                waitingForOcr = true;
+                if (this->textSession_)
+                    this->textSession_->Shutdown();
+                this->ShutdownTranslation();
+                waitingForText = true;
                 statusKey = "ocr.stopping";
                 (void)renderer.SetStatus(GetUiText(statusKey));
                 (void)renderer.SetEnabled("cleanupConfirm", false);
@@ -2354,9 +2369,11 @@ void App::ShowCleanup()
                                    [&](MSG& message)
                                    {
                                        (void)message;
-                                       if (waitingForOcr && !exitRequested && this->ocrSession_->ShutdownComplete())
+                                       if (waitingForText && !exitRequested &&
+                                           (!this->textSession_ || this->textSession_->ShutdownComplete()) &&
+                                           this->TranslationShutdownComplete())
                                        {
-                                           waitingForOcr = false;
+                                           waitingForText = false;
                                            (void)renderer.SetEnabled("cleanupConfirm", true);
                                            performCleanup();
                                        }

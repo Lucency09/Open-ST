@@ -1,0 +1,21 @@
+{
+  "name": "ctranslate2",
+  "version": "4.6.0",
+  "description": "CTranslate2 CPU INT8 inference with oneDNN; fixed Open-ST overlay",
+  "homepage": "https://github.com/OpenNMT/CTranslate2",
+  "license": "MIT",
+  "supports": "x64 & windows & !uwp & !static",
+  "dependencies": [
+    "nlohmann-json",
+    "onednn",
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ],
+  "port-version": 1
+}

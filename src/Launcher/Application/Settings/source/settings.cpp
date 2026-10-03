@@ -195,6 +195,80 @@ class SettingsState final
         return this->initialized_ && this->persistenceAvailable_;
     }
 
+    // 按原有资源顺序读取任意 JSON；领域无效值不在这里被默默替换。
+    // 入参：key 为设置键。返回：独立字段值或空。
+    std::optional<nlohmann::json> Json(std::string_view key) noexcept
+    {
+        // 任意原始 JSON 均交给领域层校验，不把显式 null 当成缺字段。
+        // 入参：值。返回：始终允许原始类型。
+        return this->ReadValue<nlohmann::json>(key, [](const nlohmann::json&) { return true; });
+    }
+    // 一次读取用户文档和必要默认文档，避免逐字段读取混合两个配置版本。
+    // 入参：keys 为本次完整字段集合，不读取字段的领域含义。
+    // 返回：所有字段组成的独立快照；任何读取或补齐失败都不发布部分配置。
+    std::optional<nlohmann::json> Snapshot(std::span<const std::string_view> keys) noexcept
+    {
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            if (!this->initialized_)
+                return std::nullopt;
+            for (const std::string_view key : keys)
+                if (key.empty())
+                    return std::nullopt;
+            nlohmann::json userDocument;
+            if (!this->ReadDocument(this->userFile_, userDocument, this->userReadFailed_))
+                return std::nullopt;
+            const nlohmann::json& user = userDocument.at("settings");
+            nlohmann::json result = nlohmann::json::object();
+            nlohmann::json defaultDocument;
+            bool defaultLoaded = false;
+            for (const std::string_view key : keys)
+            {
+                const auto userValue = user.find(key);
+                if (userValue != user.end())
+                {
+                    result[std::string(key)] = *userValue;
+                    continue;
+                }
+                if (!defaultLoaded)
+                {
+                    if (!this->ReadDocument(this->defaultFile_, defaultDocument, this->defaultReadFailed_))
+                        return std::nullopt;
+                    defaultLoaded = true;
+                }
+                const nlohmann::json& defaults = defaultDocument.at("settings");
+                const auto defaultValue = defaults.find(key);
+                if (defaultValue == defaults.end())
+                    return std::nullopt;
+                result[std::string(key)] = *defaultValue;
+            }
+            return std::optional<nlohmann::json>(std::move(result));
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
+    }
+    // 只从默认资源读取任意 JSON。
+    // 入参：key 为设置键。返回：独立默认值或空。
+    std::optional<nlohmann::json> DefaultJson(std::string_view key) noexcept
+    {
+        try
+        {
+            const std::scoped_lock lock(this->mutex_);
+            nlohmann::json document;
+            if (!this->initialized_ || !this->ReadDocument(this->defaultFile_, document, this->defaultReadFailed_))
+                return std::nullopt;
+            // 缺字段由公共提取逻辑判断，保留值的真实 JSON 类型。
+            // 入参：值。返回：始终允许。
+            return SettingsValue<nlohmann::json>(document, key, [](const nlohmann::json&) { return true; });
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
+    }
     // 按动态属性名读取字符串设置，用户值不可用时回退默认资源。
     // 入参：key 为 settings 对象中的动态设置属性名；invalidUser 可选输出用户字段类型错误。
     // 返回：用户配置或默认资源中的有效字符串值；均不可用或类型错误时为 std::nullopt。
@@ -674,5 +748,24 @@ std::optional<std::string> ReadStartupLanguage() noexcept
     {
         return std::nullopt;
     }
+}
+// 读取任意 JSON 设置，缺字段时沿用默认回退。
+// 入参：key 为设置名。返回：原始字段副本或空。
+std::optional<nlohmann::json> GetJsonSetting(std::string_view key) noexcept
+{
+    return GetSettingsState().Json(key);
+}
+// 读取任意默认 JSON 设置，不消费用户覆盖。
+// 入参：key 为设置名。返回：默认字段副本或空。
+std::optional<nlohmann::json> GetDefaultJsonSetting(std::string_view key) noexcept
+{
+    return GetSettingsState().DefaultJson(key);
+}
+// 捕获一个跨字段一致的独立配置，不把文件故障当成未设置。
+// 入参：keys 为领域声明的完整设置键列表。
+// 返回：完整键值快照；任何失败为空，不返回部分结果或旧缓存。
+std::optional<nlohmann::json> ReadSettingsSnapshot(std::span<const std::string_view> keys) noexcept
+{
+    return GetSettingsState().Snapshot(keys);
 }
 } // namespace open_st

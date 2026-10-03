@@ -1,9 +1,9 @@
 // 编排更新查询和用户确认后的下载；请求、结果与受保护文件只由本模块拥有。
 #include "protected_download.h"
 #include "update_model.h"
-#include "update_transport.h"
 #include <algorithm>
 #include <chrono>
+#include <http_transport.h>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -15,13 +15,13 @@ namespace
 {
 // 将网络边界错误转换为业务结果，取消不伪装成联网失败。
 // 入参：result 为单跳响应。返回：统一错误码。
-UpdateError HttpFailure(const UpdateHttpResult& result) noexcept
+UpdateError HttpFailure(const http::Result& result) noexcept
 {
-    if (result.error == UpdateHttpError::Cancelled)
+    if (result.error == http::Error::Cancelled)
         return UpdateError::Cancelled;
-    if (result.error == UpdateHttpError::Timeout)
+    if (result.error == http::Error::Timeout)
         return UpdateError::Timeout;
-    if (result.error != UpdateHttpError::None)
+    if (result.error != http::Error::None)
         return UpdateError::Network;
     if (result.status == 404)
         return UpdateError::NotFound;
@@ -39,34 +39,48 @@ UpdateError FileFailure(UpdateDownloadError error) noexcept
         return UpdateError::Busy;
     return UpdateError::Storage;
 }
+// 构造 GitHub GET 请求，业务头与仅消费 200 的策略留在更新模块。
+// 入参：url、accept、deadline、idleTimeout 为本次更新参数。返回：公共请求值。
+http::Request UpdateRequest(std::wstring url, std::wstring accept, std::chrono::steady_clock::time_point deadline,
+                            std::chrono::milliseconds idleTimeout)
+{
+    http::Request request;
+    request.url = std::move(url);
+    request.headers = {{L"Accept", std::move(accept)}, {L"X-GitHub-Api-Version", L"2022-11-28"}};
+    request.deadline = deadline;
+    request.idleTimeout = idleTimeout;
+    request.consumeStatus = 200;
+    request.maxResponseBytes = MAX_INSTALLER_BYTES;
+    return request;
+}
 // 每一跳都重新验证域名，保持一次请求的共同截止时间。
 // 入参：transport 为边界；request 为首跳；asset 指定资产域；stop 为取消；sink 为响应消费者。
 // 返回：最后响应或明确错误，最多跟随五次受信跳转。
-UpdateHttpResult Fetch(UpdateTransport& transport, UpdateHttpRequest request, bool asset, std::stop_token stop,
-                       const UpdateHttpSink& sink)
+http::Result Fetch(http::Transport& transport, http::Request request, bool asset, std::stop_token stop,
+                   const http::Sink& sink)
 {
     for (unsigned hop = 0; hop <= 5; ++hop)
     {
         if (stop.stop_requested())
-            return {UpdateHttpError::Cancelled, 0, 0, {}, {}};
+            return {http::Error::Cancelled, 0, 0, {}, {}};
         if (!TrustedUrl(request.url, asset))
-            return {UpdateHttpError::InvalidRequest, 0, 0, {}, {}};
+            return {http::Error::InvalidRequest, 0, 0, {}, {}};
         if (std::chrono::steady_clock::now() >= request.deadline)
-            return {UpdateHttpError::Timeout, 0, 0, {}, {}};
-        UpdateHttpResult result = transport.Get(request, stop, sink);
-        if (result.error != UpdateHttpError::None)
+            return {http::Error::Timeout, 0, 0, {}, {}};
+        http::Result result = transport.Perform(request, stop, sink);
+        if (result.error != http::Error::None)
             return result;
         if (result.status == 301 || result.status == 302 || result.status == 303 || result.status == 307 ||
             result.status == 308)
         {
             if (hop == 5 || result.redirectLocation.empty())
-                return {UpdateHttpError::InvalidRequest, 0, 0, {}, {}};
+                return {http::Error::InvalidRequest, 0, 0, {}, {}};
             request.url = std::move(result.redirectLocation);
             continue;
         }
         return result;
     }
-    return {UpdateHttpError::InvalidRequest, 0, 0, {}, {}};
+    return {http::Error::InvalidRequest, 0, 0, {}, {}};
 }
 // 资产地址从固定仓库和数字ID构造，不执行远端字符串。
 // 入参：asset 为经过校验的资产。返回：GitHub API 二进制入口。
@@ -80,7 +94,7 @@ struct UpdateClient::Impl
     const std::thread::id owner = std::this_thread::get_id();
     std::filesystem::path cacheRoot;
     std::function<void()> notify;
-    std::unique_ptr<UpdateTransport> transport;
+    std::unique_ptr<http::Transport> transport;
     mutable std::mutex mutex;
     UpdateSnapshot snapshot;
     UpdateDistribution distribution{UpdateDistribution::Portable};
@@ -144,20 +158,19 @@ struct UpdateClient::Impl
             return;
         }
         std::string body;
-        const UpdateHttpRequest request{
+        const http::Request request = UpdateRequest(
             L"https://api.github.com/repos/Lucency09/Open-ST/releases/latest", L"application/vnd.github+json",
-            std::chrono::steady_clock::now() + std::chrono::seconds(10), std::chrono::seconds(10)};
-        const UpdateHttpResult response =
-            Fetch(*this->transport, request, false, stop,
-                  // 限制响应，不让远端对象无限扩张内存。
-                  // 入参：bytes 为当前响应块。返回：已接受为 true。
-                  [&body](std::span<const std::byte> bytes)
-                  {
-                      if (bytes.size() > MAX_METADATA_BYTES - body.size())
-                          return false;
-                      body.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-                      return true;
-                  });
+            std::chrono::steady_clock::now() + std::chrono::seconds(10), std::chrono::seconds(10));
+        const http::Result response = Fetch(*this->transport, request, false, stop,
+                                            // 限制响应，不让远端对象无限扩张内存。
+                                            // 入参：bytes 为当前响应块。返回：已接受为 true。
+                                            [&body](std::span<const std::byte> bytes)
+                                            {
+                                                if (bytes.size() > MAX_METADATA_BYTES - body.size())
+                                                    return false;
+                                                body.append(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                                                return true;
+                                            });
         UpdateError error = HttpFailure(response);
         if (error != UpdateError::None)
         {
@@ -213,11 +226,11 @@ struct UpdateClient::Impl
                 return;
             }
             std::string sums;
-            const UpdateHttpRequest request{
-                AssetUrl(*selected.checksums), L"application/octet-stream",
-                std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(10)),
-                std::chrono::seconds(10)};
-            const UpdateHttpResult response =
+            const http::Request request =
+                UpdateRequest(AssetUrl(*selected.checksums), L"application/octet-stream",
+                              std::min(deadline, std::chrono::steady_clock::now() + std::chrono::seconds(10)),
+                              std::chrono::seconds(10));
+            const http::Result response =
                 Fetch(*this->transport, request, true, stop,
                       // 校验清单也有独立上限，不接受截断内容。
                       // 入参：bytes 为数据块。返回：在预算内为 true。
@@ -261,9 +274,9 @@ struct UpdateClient::Impl
         }
         std::uint64_t received{};
         auto lastNotify = std::chrono::steady_clock::now();
-        const UpdateHttpRequest request{AssetUrl(installer), L"application/octet-stream", deadline,
-                                        std::chrono::seconds(30)};
-        const UpdateHttpResult response =
+        const http::Request request =
+            UpdateRequest(AssetUrl(installer), L"application/octet-stream", deadline, std::chrono::seconds(30));
+        const http::Result response =
             Fetch(*this->transport, request, true, stop,
                   // 写入和散列同一块字节，UI 只读取进度副本。
                   // 入参：bytes 为本次响应片段。返回：完整接收为 true。
@@ -327,13 +340,13 @@ struct UpdateClient::Impl
 // 生产实例使用 WinHTTP 边界，不在构造时访问网络。
 // 入参：cacheRoot 为缓存根，notify 为通知。返回：任务实例。
 UpdateClient::UpdateClient(std::filesystem::path cacheRoot, std::function<void()> notify)
-    : UpdateClient(std::move(cacheRoot), std::move(notify), MakeWinHttpUpdateTransport())
+    : UpdateClient(std::move(cacheRoot), std::move(notify), http::MakeWinHttpTransport())
 {
 }
 // 注入边界供真实任务状态机测试。
 // 入参：cacheRoot、notify、transport 为任务资源。返回：未开始实例。
 UpdateClient::UpdateClient(std::filesystem::path cacheRoot, std::function<void()> notify,
-                           std::unique_ptr<UpdateTransport> transport)
+                           std::unique_ptr<http::Transport> transport)
     : impl_(std::make_unique<Impl>())
 {
     this->impl_->cacheRoot = std::move(cacheRoot);

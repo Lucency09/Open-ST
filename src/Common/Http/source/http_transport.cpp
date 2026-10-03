@@ -1,6 +1,6 @@
 // 文件职责：以可取消的异步 WinHTTP 完成单次 HTTPS 传输，不承担 Release、文件或界面业务。
 
-#include "update_transport.h"
+#include <http_transport.h>
 
 #include <algorithm>
 #include <array>
@@ -12,7 +12,7 @@
 #include <windows.h>
 #include <winhttp.h>
 
-namespace open_st::update_detail
+namespace open_st::http
 {
 namespace
 {
@@ -50,8 +50,10 @@ struct CallbackState
     DWORD notification = 0;
     DWORD error = ERROR_SUCCESS;
     DWORD byteCount = 0;
-    // 未完成的 ReadData 可在 Get 返回后仍引用缓冲区，必须与回调上下文一起保活。
+    // 未完成的 ReadData 可在 Perform 返回后仍引用缓冲区，必须与回调上下文一起保活。
     std::array<std::byte, 65536> buffer{};
+    std::string body;
+    std::wstring headers;
 };
 
 // 记录异步操作完成；最终关闭通知回收 WinHTTP 持有的共享上下文引用。
@@ -100,9 +102,9 @@ void CALLBACK HttpCallback(HINTERNET, DWORD_PTR context, DWORD notification, voi
 // 保存 Win32 网络失败，保留此前已取得的 HTTP 响应信息。
 // 入参：result 为本次结果；error 为 Win32 错误码。
 // 返回：false，便于作为失败分支统一返回条件。
-bool NetworkFailure(UpdateHttpResult& result, DWORD error)
+bool NetworkFailure(Result& result, DWORD error)
 {
-    result.error = error == ERROR_WINHTTP_TIMEOUT ? UpdateHttpError::Timeout : UpdateHttpError::Network;
+    result.error = error == ERROR_WINHTTP_TIMEOUT ? Error::Timeout : Error::Network;
     result.systemError = error;
     return false;
 }
@@ -110,17 +112,17 @@ bool NetworkFailure(UpdateHttpResult& result, DWORD error)
 // 检查用户取消和统一截止时间，不自行重试网络调用。
 // 入参：request 提供截止时间；stop 为任务取消令牌；result 接收失败原因。
 // 返回：仍允许执行时 true，否则 false。
-bool CheckRequest(const UpdateHttpRequest& request, std::stop_token stop, UpdateHttpResult& result)
+bool CheckRequest(const Request& request, std::stop_token stop, Result& result)
 {
     if (stop.stop_requested())
     {
-        result.error = UpdateHttpError::Cancelled;
+        result.error = Error::Cancelled;
         result.systemError = ERROR_CANCELLED;
         return false;
     }
     if (std::chrono::steady_clock::now() >= request.deadline)
     {
-        result.error = UpdateHttpError::Timeout;
+        result.error = Error::Timeout;
         result.systemError = ERROR_WINHTTP_TIMEOUT;
         return false;
     }
@@ -142,8 +144,7 @@ void PrepareOperation(CallbackState& state)
 // 等待单次异步操作、取消或期限，结束后只允许调用方顺序启动下一操作。
 // 入参：state 为回调状态；request 为期限；stop 为取消令牌；expected 为完成通知；result 接收错误。
 // 返回：收到预期完成通知时 true；取消、网络错误或超时为 false，不等待关闭回调。
-bool AwaitOperation(CallbackState& state, const UpdateHttpRequest& request, std::stop_token stop, DWORD expected,
-                    UpdateHttpResult& result)
+bool AwaitOperation(CallbackState& state, const Request& request, std::stop_token stop, DWORD expected, Result& result)
 {
     if (!CheckRequest(request, stop, result))
         return false;
@@ -157,7 +158,7 @@ bool AwaitOperation(CallbackState& state, const UpdateHttpRequest& request, std:
         return false;
     if (waited == WAIT_OBJECT_0)
     {
-        result.error = UpdateHttpError::Cancelled;
+        result.error = Error::Cancelled;
         result.systemError = ERROR_CANCELLED;
         return false;
     }
@@ -176,7 +177,7 @@ bool AwaitOperation(CallbackState& state, const UpdateHttpRequest& request, std:
 // 判断异步 API 是否成功启动；立即成功仍须等待完成通知。
 // 入参：started 为 API 返回值；result 接收失败结果。
 // 返回：已启动或报告异步待完成时 true，否则 false。
-bool Started(BOOL started, UpdateHttpResult& result)
+bool Started(BOOL started, Result& result)
 {
     if (started != FALSE)
         return true;
@@ -187,7 +188,7 @@ bool Started(BOOL started, UpdateHttpResult& result)
 // 有界读取单个响应头，缺失返回空值，重复头由上层协议或调用方另行约束。
 // 入参：handle 为已接收响应头的请求；query 为 WinHTTP 查询常量；value 输出头值；result 接收失败。
 // 返回：读取成功或头不存在时 true；头超过 32 KiB 或查询失败时 false。
-bool ReadHeader(HINTERNET handle, DWORD query, std::wstring& value, UpdateHttpResult& result)
+bool ReadHeader(HINTERNET handle, DWORD query, std::wstring& value, Result& result, DWORD maxCharacters = 16383)
 {
     DWORD bytes = 0;
     if (!WinHttpQueryHeaders(handle, query, WINHTTP_HEADER_NAME_BY_INDEX, nullptr, &bytes, WINHTTP_NO_HEADER_INDEX))
@@ -201,20 +202,22 @@ bool ReadHeader(HINTERNET handle, DWORD query, std::wstring& value, UpdateHttpRe
         if (error != ERROR_INSUFFICIENT_BUFFER)
             return NetworkFailure(result, error);
     }
-    if (bytes > 32768 || bytes % sizeof(wchar_t) != 0)
+    if (bytes > (maxCharacters + 1) * sizeof(wchar_t) || bytes % sizeof(wchar_t) != 0)
         return NetworkFailure(result, ERROR_WINHTTP_INVALID_SERVER_RESPONSE);
     std::vector<wchar_t> buffer(bytes / sizeof(wchar_t) + 1, L'\0');
     if (!WinHttpQueryHeaders(handle, query, WINHTTP_HEADER_NAME_BY_INDEX, buffer.data(), &bytes,
                              WINHTTP_NO_HEADER_INDEX))
         return NetworkFailure(result, GetLastError());
     value.assign(buffer.data(), bytes / sizeof(wchar_t));
+    if (value.size() > maxCharacters)
+        return NetworkFailure(result, ERROR_WINHTTP_INVALID_SERVER_RESPONSE);
     return true;
 }
 
 // 读取状态、长度和跳转地址，不判断业务允许的主机或 Release 资产。
 // 入参：handle 为收到响应头的请求；result 输出元信息及错误。
 // 返回：头格式有效时 true；数字溢出、无效长度或读取失败为 false。
-bool ReadResponseHeaders(HINTERNET handle, UpdateHttpResult& result)
+bool ReadResponseHeaders(HINTERNET handle, Result& result)
 {
     DWORD status = 0;
     DWORD bytes = sizeof(status);
@@ -224,7 +227,8 @@ bool ReadResponseHeaders(HINTERNET handle, UpdateHttpResult& result)
     result.status = status;
     std::wstring length;
     if (!ReadHeader(handle, WINHTTP_QUERY_CONTENT_LENGTH, length, result) ||
-        !ReadHeader(handle, WINHTTP_QUERY_LOCATION, result.redirectLocation, result))
+        !ReadHeader(handle, WINHTTP_QUERY_LOCATION, result.redirectLocation, result) ||
+        !ReadHeader(handle, WINHTTP_QUERY_CONTENT_TYPE, result.contentType, result, 256))
         return false;
     if (!length.empty())
     {
@@ -241,22 +245,22 @@ bool ReadResponseHeaders(HINTERNET handle, UpdateHttpResult& result)
     return true;
 }
 
-class WinHttpUpdateTransport final : public UpdateTransport
+class WinHttpTransport final : public Transport
 {
   public:
     // 同步服务任务线程，内部所有可能在途的网络操作均使用异步 WinHTTP 与有界事件等待。
-    // 入参：request 为单次 HTTPS 参数；stop 为取消令牌；sink 同步消费 200 响应体且不得保留 span。
+    // 入参：request 为单次 HTTPS 参数；stop 为取消令牌；sink 同步消费配置允许的有界响应体且不得保留 span。
     // 返回：单次 HTTP 结果，不自动跳转、重试或访问本地文件；异常转为结构化错误。
-    UpdateHttpResult Get(const UpdateHttpRequest& request, std::stop_token stop, const UpdateHttpSink& sink) override
+    Result Perform(const Request& request, std::stop_token stop, const Sink& sink) override
     {
-        UpdateHttpResult result;
+        Result result;
         try
         {
-            this->Perform(request, stop, sink, result);
+            this->Execute(request, stop, sink, result);
         }
         catch (...)
         {
-            result.error = UpdateHttpError::Network;
+            result.error = Error::Network;
             result.systemError = ERROR_NOT_ENOUGH_MEMORY;
         }
         return result;
@@ -264,50 +268,55 @@ class WinHttpUpdateTransport final : public UpdateTransport
 
   private:
     // 创建单次请求并按发送、收头、读块顺序执行，所有句柄和待完成缓冲区具备独立寿命。
-    // 入参：request、stop、sink 为 Get 的借用参数；result 累积结果。
+    // 入参：request、stop、sink 为 Perform 的借用参数；result 累积结果。
     // 返回：无；任何失败立即停止，由 RAII 关闭异步句柄触发取消。
-    void Perform(const UpdateHttpRequest& request, std::stop_token stop, const UpdateHttpSink& sink,
-                 UpdateHttpResult& result)
+    void Execute(const Request& request, std::stop_token stop, const Sink& sink, Result& result)
     {
         if (!CheckRequest(request, stop, result))
             return;
-        if (!sink || request.url.empty() || request.url.size() > 32768 || request.idleTimeout.count() <= 0 ||
-            request.accept.empty() || request.accept.size() > 1024 ||
-            request.accept.find_first_of(L"\r\n") != std::wstring::npos ||
-            request.accept.find(L'\0') != std::wstring::npos || request.url.find(L'\0') != std::wstring::npos ||
-            request.url.find(L'#') != std::wstring::npos)
+        if (!IsValidRequest(request) || !sink)
         {
-            result.error = UpdateHttpError::InvalidRequest;
+            result.error = Error::InvalidRequest;
             return;
         }
         URL_COMPONENTS components{};
         components.dwStructSize = sizeof(components);
-        components.dwHostNameLength = static_cast<DWORD>(-1);
-        components.dwUrlPathLength = static_cast<DWORD>(-1);
-        components.dwExtraInfoLength = static_cast<DWORD>(-1);
-        components.dwUserNameLength = static_cast<DWORD>(-1);
-        components.dwPasswordLength = static_cast<DWORD>(-1);
-        if (!WinHttpCrackUrl(request.url.c_str(), static_cast<DWORD>(request.url.size()), 0, &components) ||
-            components.nScheme != INTERNET_SCHEME_HTTPS || components.dwHostNameLength == 0 ||
-            components.dwUserNameLength != 0 || components.dwPasswordLength != 0)
+        components.dwHostNameLength = components.dwUrlPathLength = components.dwExtraInfoLength =
+            static_cast<DWORD>(-1);
+        if (!WinHttpCrackUrl(request.url.c_str(), static_cast<DWORD>(request.url.size()), 0, &components))
         {
-            result.error = UpdateHttpError::InvalidRequest;
+            result.error = Error::InvalidRequest;
             return;
         }
+        std::wstring headers;
+        for (const auto& header : request.headers)
+            headers += header.name + L": " + header.value + L"\r\n";
+        std::wstring proxyAddress;
+        if (request.proxy.mode == ProxyMode::Custom)
+            proxyAddress = request.proxy.address.find(L"://") == std::wstring::npos ? request.proxy.address
+                                                                                    : request.proxy.address.substr(7);
+        if (!proxyAddress.empty() && proxyAddress.back() == L'/')
+            proxyAddress.pop_back();
         const std::wstring host(components.lpszHostName, components.dwHostNameLength);
         std::wstring path =
             components.dwUrlPathLength == 0 ? L"/" : std::wstring(components.lpszUrlPath, components.dwUrlPathLength);
         if (components.dwExtraInfoLength != 0)
             path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
-        const InternetHandle session(WinHttpOpen(L"Open-ST-Update/1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-                                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
+        const InternetHandle session(WinHttpOpen(L"Open-ST/1",
+                                                 request.proxy.mode == ProxyMode::System
+                                                     ? WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+                                                     : WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                                                 proxyAddress.empty() ? WINHTTP_NO_PROXY_NAME : proxyAddress.c_str(),
+                                                 WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
         if (!session)
         {
             NetworkFailure(result, GetLastError());
             return;
         }
         const int timeout = static_cast<int>(std::min<std::int64_t>(request.idleTimeout.count(), INT_MAX));
-        if (!WinHttpSetTimeouts(session.get(), timeout, timeout, timeout, timeout))
+        if (!WinHttpSetTimeouts(
+                session.get(), static_cast<int>(std::min<std::int64_t>(request.connectTimeout.count(), INT_MAX)),
+                static_cast<int>(std::min<std::int64_t>(request.connectTimeout.count(), INT_MAX)), timeout, timeout))
         {
             NetworkFailure(result, GetLastError());
             return;
@@ -330,10 +339,20 @@ class WinHttpUpdateTransport final : public UpdateTransport
                                         // 入参：无；捕获共享状态以保活事件句柄。
                                         // 返回：无；不在取消线程调用 WinHTTP。
                                         [state]() noexcept { SetEvent(state->cancelled.get()); });
-        const InternetHandle handle(WinHttpOpenRequest(connection.get(), L"GET", path.c_str(), nullptr,
-                                                       WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                                       WINHTTP_FLAG_SECURE));
+        const wchar_t* method = request.method == Method::Post    ? L"POST"
+                                : request.method == Method::Put   ? L"PUT"
+                                : request.method == Method::Patch ? L"PATCH"
+                                                                  : L"GET";
+        const InternetHandle handle(WinHttpOpenRequest(
+            connection.get(), method, path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+            components.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0));
         if (!handle)
+        {
+            NetworkFailure(result, GetLastError());
+            return;
+        }
+        DWORD headerLimit = 32768;
+        if (!WinHttpSetOption(handle.get(), WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE, &headerLimit, sizeof(headerLimit)))
         {
             NetworkFailure(result, GetLastError());
             return;
@@ -354,21 +373,33 @@ class WinHttpUpdateTransport final : public UpdateTransport
             NetworkFailure(result, GetLastError());
             return;
         }
-        // 从此该引用只在 HANDLE_CLOSING 回调中回收；不能因 Get 取消而提前释放。
+        // 从此该引用只在 HANDLE_CLOSING 回调中回收；不能因 Perform 取消而提前释放。
         (void)callbackReference.release();
-        const std::wstring headers = L"Accept: " + request.accept + L"\r\nX-GitHub-Api-Version: 2022-11-28\r\n";
+        state->headers = std::move(headers);
+        state->body = request.body;
         PrepareOperation(*state);
         if (!CheckRequest(request, stop, result) ||
-            !Started(WinHttpSendRequest(handle.get(), headers.c_str(), static_cast<DWORD>(headers.size()),
-                                        WINHTTP_NO_REQUEST_DATA, 0, 0, context),
+            !Started(WinHttpSendRequest(handle.get(), state->headers.c_str(), static_cast<DWORD>(state->headers.size()),
+                                        state->body.empty() ? WINHTTP_NO_REQUEST_DATA : state->body.data(),
+                                        static_cast<DWORD>(state->body.size()), static_cast<DWORD>(state->body.size()),
+                                        context),
                      result) ||
             !AwaitOperation(*state, request, stop, WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE, result))
             return;
         PrepareOperation(*state);
         if (!Started(WinHttpReceiveResponse(handle.get(), nullptr), result) ||
             !AwaitOperation(*state, request, stop, WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE, result) ||
-            !ReadResponseHeaders(handle.get(), result) || result.status != 200)
+            !ReadResponseHeaders(handle.get(), result) ||
+            (request.consumeStatus != 0 && result.status != request.consumeStatus))
             return;
+        const std::uint64_t limit =
+            result.status >= 200 && result.status < 300 ? request.maxResponseBytes : request.maxErrorBytes;
+        if (result.declaredLength && *result.declaredLength > limit)
+        {
+            result.error = Error::ResponseTooLarge;
+            return;
+        }
+        std::uint64_t total = 0;
         for (;;)
         {
             PrepareOperation(*state);
@@ -396,15 +427,27 @@ class WinHttpUpdateTransport final : public UpdateTransport
             }
             if (received == 0)
                 return;
+            if (received > limit - total)
+            {
+                result.error = Error::ResponseTooLarge;
+                return;
+            }
+            total += received;
             try
             {
                 if (received <= state->buffer.size() && sink({state->buffer.data(), received}))
                     continue;
             }
+            catch (const std::bad_alloc&)
+            {
+                result.error = Error::SinkRejected;
+                result.systemError = ERROR_NOT_ENOUGH_MEMORY;
+                return;
+            }
             catch (...)
             {
             }
-            result.error = UpdateHttpError::SinkRejected;
+            result.error = Error::SinkRejected;
             return;
         }
     }
@@ -414,8 +457,8 @@ class WinHttpUpdateTransport final : public UpdateTransport
 // 创建无全局状态的 WinHTTP 获取器；每次请求独立持有系统句柄及取消上下文。
 // 入参：无。
 // 返回：独占传输边界，可由任务测试替换成不访问网络的实现。
-std::unique_ptr<UpdateTransport> MakeWinHttpUpdateTransport()
+std::unique_ptr<Transport> MakeWinHttpTransport()
 {
-    return std::make_unique<WinHttpUpdateTransport>();
+    return std::make_unique<WinHttpTransport>();
 }
-} // namespace open_st::update_detail
+} // namespace open_st::http

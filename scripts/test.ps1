@@ -4,11 +4,12 @@
 
 .DESCRIPTION
     第一个位置参数是模块名，第二个位置参数是该模块下的 case 名。
-    两者都不提供时运行全部测试；只提供模块名时运行该模块全部测试。
+    两者都不提供时显式构建并运行全部测试；指定模块仅构建该模块测试目标及依赖。
+    指定 case 仍构建所属模块全部测试目标，再按原有名称规则精确筛选执行。
     批量测试跳过人工窗口；指定 case 时自动启用，结束后清除环境开关。
 
     本脚本不调用产品构建入口 build.ps1。测试配置和二进制写入
-    testing/testoutput/Debug-OCR（关闭 OCR 时为 Debug）；依赖缓存保存在 .cache/。
+    testing/testoutput/Debug-OCR-Translation（按顶部功能变量分档）；依赖缓存保存在 .cache/。
 
 .EXAMPLE
     .\scripts\test.ps1
@@ -31,13 +32,14 @@ param(
 
 # 任一配置、编译或测试错误都立即终止，防止失败后继续运行并给出假成功结果。
 $ErrorActionPreference = 'Stop'
-# 测试构建配置：默认验证 OCR；需要基础配置回归时直接改为 $false。
+# 测试构建配置：默认验证 OCR 和翻译；关闭对应能力时直接改为 $false。
 $EnableOcr = $true
+$EnableTranslation = $true
 
 # 清除当前进程遗留开关，保证批量回归跳过人工窗口。
 $env:OPEN_ST_INTERACTIVE_UI_TESTS = $null
 
-# OCR 由脚本配置变量控制，命令行保留原有模块、case 两个位置参数。
+# 产品能力由顶部配置变量控制，命令行保留原有模块、case 两个位置参数。
 
 if ([string]::IsNullOrWhiteSpace($moduleName) -and
     -not [string]::IsNullOrWhiteSpace($caseName)) {
@@ -55,15 +57,18 @@ if (-not [string]::IsNullOrWhiteSpace($caseName) -and
 
 # 测试拥有独立 CMake cache 和二进制目录，不复用产品 build/。
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$testBuildDirectory = Join-Path $projectRoot 'testing\testoutput\Debug'
-$vcpkgInstalledDir = Join-Path $projectRoot '.cache\vcpkg_installed\x64-windows\tests'
-if ($EnableOcr) {
-    $testBuildDirectory = Join-Path $projectRoot 'testing/testoutput/Debug-OCR'
-    $vcpkgInstalledDir = Join-Path $projectRoot '.cache/vcpkg_installed/x64-windows/tests-ocr'
-}
+$testProfile = 'Debug'
+$dependencyProfile = 'tests'
+$manifestFeatures = [Collections.Generic.List[string]]::new()
+$manifestFeatures.Add('tests')
+if ($EnableOcr) { $testProfile += '-OCR'; $dependencyProfile += '-ocr'; $manifestFeatures.Add('ocr') }
+if ($EnableTranslation) { $testProfile += '-Translation'; $dependencyProfile += '-translation'; $manifestFeatures.Add('translation') }
+$testBuildDirectory = Join-Path $projectRoot ('testing/testoutput/' + $testProfile)
+$vcpkgInstalledDir = Join-Path $projectRoot ('.cache/vcpkg_installed/x64-windows/' + $dependencyProfile)
 
 # 当前开发机路径与 build.ps1 保持一致；后续支持其他安装位置时应统一改用 vswhere 发现。
 . (Join-Path $PSScriptRoot 'release_helpers.ps1')
+. (Join-Path $PSScriptRoot 'build_environment.ps1')
 $vsRoot = Find-ReleaseVisualStudio
 $cmake = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 $ctest = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe'
@@ -88,7 +93,7 @@ foreach ($requiredFile in @($cmake, $ctest, $vcvars, $vcpkgToolchain)) {
 # installed tree 与生成目录分离，因此重新生成或清理测试产物时可复用第三方依赖。
 New-Item -ItemType Directory -Force -Path $vcpkgInstalledDir | Out-Null
 
-# 测试入口独立配置 CMake，并只启用 vcpkg manifest 中的 tests feature。
+# 测试入口独立配置 CMake，显式启用 tests 及所选产品能力。
 $configureArguments = [Collections.Generic.List[string]]::new()
 $configureArguments.Add('-S "' + $projectRoot + '"')
 $configureArguments.Add('-B "' + $testBuildDirectory + '"')
@@ -98,23 +103,54 @@ $configureArguments.Add('-DCMAKE_TOOLCHAIN_FILE="' + $vcpkgToolchain + '"')
 $configureArguments.Add('-DVCPKG_TARGET_TRIPLET=x64-windows')
 $configureArguments.Add('-DVCPKG_INSTALLED_DIR="' + $vcpkgInstalledDir + '"')
 $configureArguments.Add('-DVCPKG_MANIFEST_INSTALL=ON')
-$features = if ($EnableOcr) { 'tests;ocr' } else { 'tests' }
-$configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + $features + '"')
+$configureArguments.Add('-DVCPKG_MANIFEST_FEATURES="' + ($manifestFeatures -join ';') + '"')
 $configureArguments.Add('-DOPEN_ST_ALLOW_WARNINGS=OFF')              # 测试同样执行 /W4 /WX
 $configureArguments.Add('-DOPEN_ST_BUILD_TESTS=ON')
 $configureArguments.Add('-DOPEN_ST_ENABLE_OCR=' + $(if ($EnableOcr) { 'ON' } else { 'OFF' }))
-$configureArguments.Add('-DOPEN_ST_ENABLE_TRANSLATION=OFF')
+$configureArguments.Add('-DOPEN_ST_ENABLE_TRANSLATION=' + $(if ($EnableTranslation) { 'ON' } else { 'OFF' }))
 
-$configureCommand = '"' + $cmake + '" ' + ($configureArguments -join ' ')
-$buildCommand = '"' + $cmake + '" --build "' + $testBuildDirectory + '"'
-# vcvars、配置和构建必须在同一个 cmd 进程中执行；UTF-8/英文工具输出可避免依赖扫描乱码。
-$nativeCommands =
-    'chcp 65001 >NUL && set VSLANG=1033 && call "' + $vcvars + '" && ' +
-    $configureCommand + ' && ' + $buildCommand
+# 配置与按模块构建共享同一个工作区缓存作用域，分别加载相同vcvars后检查各自退出码。
+Invoke-OpenStBuildEnvironment -Repository $projectRoot -Action {
+    $deploymentPowerShell = Get-OpenStVcpkgPowerShell -VcpkgRoot $vcpkgRoot
+    $configureArguments.Add('-DZ_VCPKG_PWSH_PATH:FILEPATH="' + $deploymentPowerShell + '"')
+    $configureArguments.Add('-DZ_VCPKG_POWERSHELL_PATH:FILEPATH="' + $deploymentPowerShell + '"')
+    $configureCommand = '"' + $cmake + '" ' + ($configureArguments -join ' ')
+    $nativeEnvironment = 'chcp 65001 >NUL && set VSLANG=1033 && call "' + $vcvars + '" && '
+    & cmd.exe /d /s /c ($nativeEnvironment + $configureCommand)
+    if ($LASTEXITCODE -ne 0) {
+        throw "测试配置失败，退出码：$LASTEXITCODE"
+    }
 
-& cmd.exe /d /s /c $nativeCommands
-if ($LASTEXITCODE -ne 0) {
-    throw "测试构建失败，退出码：$LASTEXITCODE"
+    $buildCommand = '"' + $cmake + '" --build "' + $testBuildDirectory + '"'
+    if (-not [string]::IsNullOrWhiteSpace($moduleName)) {
+        # 目标数组由CMake在当前功能组合下生成，未知/未启用模块绝不退化为全量构建。
+        $mappingPath = Join-Path $testBuildDirectory 'generated/test-module-targets.json'
+        $mapping = Get-Content -LiteralPath $mappingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $schemaProperty = $mapping.PSObject.Properties['schemaVersion']
+        $modulesProperty = $mapping.PSObject.Properties['modules']
+        if ($null -eq $schemaProperty -or $schemaProperty.Value -ne 1 -or $null -eq $modulesProperty) {
+            throw '测试模块目标清单格式无效，请重新配置。'
+        }
+        $moduleProperty = $modulesProperty.Value.PSObject.Properties[$moduleName]
+        if ($null -eq $moduleProperty) {
+            throw "未知或当前功能组合未启用的测试模块：$moduleName"
+        }
+        if ($moduleProperty.Value -isnot [Array] -or $moduleProperty.Value.Count -eq 0) {
+            throw "测试模块没有有效目标数组：$moduleName"
+        }
+        $targets = @($moduleProperty.Value)
+        foreach ($target in $targets) {
+            if ($target -isnot [string] -or $target -notmatch '^[A-Za-z_][A-Za-z0-9_.+-]*$') {
+                throw "测试模块目标名称无效：$moduleName"
+            }
+        }
+        $buildCommand += ' --target "' + ($targets -join '" "') + '"'
+        Write-Host "构建测试模块 $moduleName：$($targets -join ', ')"
+    }
+    & cmd.exe /d /s /c ($nativeEnvironment + $buildCommand)
+    if ($LASTEXITCODE -ne 0) {
+        throw "测试构建失败，退出码：$LASTEXITCODE"
+    }
 }
 
 # --output-on-failure 保持成功输出简洁，失败时再展开 gTest 详情；没有发现测试也视为错误。

@@ -1,4 +1,4 @@
-// 验证通用 SHA-256 标准向量、分块边界及单次完成语义；不读写业务文件。
+// 验证通用 SHA-256 与遗留 MD5 标准向量、分块边界及原始字节语义；不读写业务文件。
 #include <gtest/gtest.h>
 #include <sha256.h>
 #include <string>
@@ -8,9 +8,9 @@
 namespace
 {
 // 仅用于断言标准向量，把原始摘要按字节展开为小写十六进制。
-// 入参：digest 为 32 字节结果。
-// 返回：64 字符字符串。
-std::string Hex(const std::array<std::byte, 32>& digest)
+// 入参：digest 为借用摘要字节。
+// 返回：每字节两个字符的小写字符串。
+std::string Hex(std::span<const std::byte> digest)
 {
     constexpr std::string_view HEX = "0123456789abcdef";
     std::string result;
@@ -81,5 +81,27 @@ TEST(Sha256Test, completion_is_single_use_and_failure_preserves_output)
     const std::array<std::byte, 32> original = digest;
     EXPECT_FALSE(hash.Finish(digest));
     EXPECT_EQ(digest, original);
+}
+// 验证 RFC 1321 的空输入和 abc 标准向量，覆盖空 span 及单次散列长度。
+// 入参：无。
+// 返回：无。
+TEST(Md5Test, empty_and_abc_standard_vectors)
+{
+    std::array<std::byte, 16> digest{};
+    ASSERT_TRUE(open_st::ComputeMd5({}, digest));
+    EXPECT_EQ(Hex(digest), "d41d8cd98f00b204e9800998ecf8427e");
+    constexpr std::string_view TEXT = "abc";
+    ASSERT_TRUE(open_st::ComputeMd5(std::as_bytes(std::span(TEXT.data(), TEXT.size())), digest));
+    EXPECT_EQ(Hex(digest), "900150983cd24fb0d6963f7d28e17f72");
+}
+// 验证 UTF-8 原始字节包含中文、表单特殊字符和换行，不进行编码或标准化。
+// 入参：无。
+// 返回：无，固定摘要由独立 hashlib 实现交叉核对。
+TEST(Md5Test, unicode_raw_utf8_bytes)
+{
+    constexpr std::string_view TEXT = "你好&+%\n";
+    std::array<std::byte, 16> digest{};
+    ASSERT_TRUE(open_st::ComputeMd5(std::as_bytes(std::span(TEXT.data(), TEXT.size())), digest));
+    EXPECT_EQ(Hex(digest), "d98ba23d9414f63d0279f5c4a5b09715");
 }
 } // namespace

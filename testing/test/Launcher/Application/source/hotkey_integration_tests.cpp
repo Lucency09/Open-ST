@@ -7,6 +7,11 @@
 #include <capture_toolbar.h>
 #include <gtest/gtest.h>
 #include <selection_model.h>
+#include <settings_window.h>
+#ifdef OPEN_ST_TEST_TRANSLATION
+#include <translation_client.h>
+#endif
+#include <chrono>
 
 namespace open_st
 {
@@ -26,6 +31,24 @@ struct AppHotkeyTestAccess
         (void)app.selectionModel_->Begin({10, 10});
         (void)app.selectionModel_->End({80, 80});
         return true;
+    }
+    // 借用真实设置适配回调，验证子模态消息也执行宿主收尾。
+    // 入参：app 为隔离实例。返回：与产品编辑窗口相同的回调。
+    static SettingsWindowCallbacks Callbacks(App& app)
+    {
+        return app.MakeSettingsCallbacks();
+    }
+    // 模拟显示环境导致的覆盖失效，不创建真实桌面覆盖。
+    // 入参：app 为实例。返回：无。
+    static void InvalidateOverlay(App& app)
+    {
+        app.overlayInvalidated_ = true;
+    }
+    // 读取统一惰性客户端身份，不访问其内部或建立第二个所有者。
+    // 入参：app 为实例。返回：借用客户端地址。
+    static TranslationClient* Client(App& app)
+    {
+        return app.EnsureTranslationClient();
     }
     // 切换录入或设置忙状态并调用产品门禁更新。
     // 入参：app 为实例；recording、busy 为新状态。
@@ -194,6 +217,78 @@ TEST_F(AppHotkeyIntegrationTest, escape_clears_selection_before_closing_session)
     EXPECT_FALSE(AppHotkeyTestAccess::Pending(*this->app_));
     AppHotkeyTestAccess::Key(*this->app_, VK_ESCAPE);
     EXPECT_EQ(AppHotkeyTestAccess::SelectionLevel(*this->app_), 0);
+}
+// 编辑窗口转发无操作消息也必须执行覆盖失效尾处理，正常会话不应误关。
+// 入参：无。返回：无。
+TEST_F(AppHotkeyIntegrationTest, settings_modal_dispatch_preserves_live_overlay_and_closes_invalidated_overlay)
+{
+    const SettingsWindowCallbacks callbacks = AppHotkeyTestAccess::Callbacks(*this->app_);
+    ASSERT_TRUE(callbacks.processThreadMessage);
+    MSG message{};
+    message.message = WM_NULL;
+    EXPECT_TRUE(callbacks.processThreadMessage(message));
+    EXPECT_EQ(AppHotkeyTestAccess::SelectionLevel(*this->app_), 2);
+    AppHotkeyTestAccess::InvalidateOverlay(*this->app_);
+    EXPECT_TRUE(callbacks.processThreadMessage(message));
+    EXPECT_EQ(AppHotkeyTestAccess::SelectionLevel(*this->app_), 0);
+}
+
+// 缺少凭据在构造网络请求前失败；测试窗口共用唯一客户端且旧身份不能撤销新请求。
+// 入参：无。返回：无，不连接任何在线服务。
+TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rejects_stale_cancellation)
+{
+    const SettingsWindowCallbacks callbacks = AppHotkeyTestAccess::Callbacks(*this->app_);
+    if (!callbacks.translationAvailable)
+        GTEST_SKIP() << "Translation disabled in this build";
+    ASSERT_TRUE(callbacks.submitTranslationTest);
+    ASSERT_TRUE(callbacks.translationTestStatus);
+    ASSERT_TRUE(callbacks.cancelTranslationTest);
+    nlohmann::json profile = callbacks.createTranslationProfile("baidu");
+    profile["enabled"] = false;
+    const nlohmann::json original = profile;
+    TranslationClient* client = AppHotkeyTestAccess::Client(*this->app_);
+    ASSERT_NE(client, nullptr);
+    const SettingsTranslationTestStatus first = callbacks.submitTranslationTest(profile, "system", "");
+    ASSERT_NE(first.requestId, 0U);
+    EXPECT_TRUE(first.running);
+    EXPECT_EQ(profile, original);
+    // 轮询真实工作线程，无需等待网络，也不向系统注入用户输入。
+    // 入参：id 为待完成请求。返回：最终快照或超时仍运行的快照。
+    const auto wait = [&](std::uint64_t id)
+    {
+        SettingsTranslationTestStatus status;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        do
+        {
+            status = callbacks.translationTestStatus(id);
+            if (!status.running)
+                break;
+            Sleep(1);
+        } while (std::chrono::steady_clock::now() < deadline);
+        return status;
+    };
+    const SettingsTranslationTestStatus completed = wait(first.requestId);
+    ASSERT_FALSE(completed.running);
+    EXPECT_EQ(completed.requestId, first.requestId);
+#ifdef OPEN_ST_TEST_TRANSLATION
+    EXPECT_EQ(client->Snapshot().error, TranslationError::MissingCredentials);
+#endif
+    const std::wstring error = callbacks.text("translation.error.credentials");
+    EXPECT_FALSE(error.empty());
+    EXPECT_NE(completed.text.find(error), std::wstring::npos);
+    const SettingsTranslationTestStatus second = callbacks.submitTranslationTest(profile, "system", "");
+    ASSERT_GT(second.requestId, first.requestId);
+    callbacks.cancelTranslationTest(first.requestId);
+    const SettingsTranslationTestStatus secondCompleted = wait(second.requestId);
+    EXPECT_FALSE(secondCompleted.running);
+#ifdef OPEN_ST_TEST_TRANSLATION
+    EXPECT_EQ(client->Snapshot().error, TranslationError::MissingCredentials);
+    EXPECT_EQ(client->Snapshot().requestId, second.requestId);
+#endif
+    EXPECT_NE(secondCompleted.text.find(error), std::wstring::npos);
+    EXPECT_EQ(AppHotkeyTestAccess::Client(*this->app_), client);
+    EXPECT_EQ(profile, original);
+    callbacks.cancelTranslationTest(second.requestId);
 }
 } // namespace
 } // namespace open_st

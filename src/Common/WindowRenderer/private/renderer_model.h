@@ -10,12 +10,18 @@ enum class NodeType
     Row,
     Text,
     Select,
+    Table,
     Checkbox,
     KeyChord,
     Edit,
     Integer,
     Swatch,
     Button
+};
+struct TableColumn
+{
+    std::string textKey;
+    int width = -1;
 };
 struct Node
 {
@@ -29,7 +35,11 @@ struct Node
     std::int64_t maximum{};
     bool slider{};
     bool multiline{};
+    bool password{};
+    bool readOnly{};
     int visibleLines{6};
+    int visibleRows{6};
+    std::vector<TableColumn> columns;
     bool verticalScroll{true};
     int maxLength{};
     std::vector<Node> children;

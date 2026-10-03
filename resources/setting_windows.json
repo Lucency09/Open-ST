@@ -271,6 +271,127 @@
       }
     },
     {
+      "id": "translation",
+      "titleKey": "settings.translation.title",
+      "content": {
+        "type": "column",
+        "id": "translationContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "text",
+            "id": "translationPrivacy",
+            "textKey": "settings.translation.privacy"
+          },
+          {
+            "id": "translationList",
+            "type": "row",
+            "gap": 12,
+            "children": [
+              {
+                "id": "translationInterfaces",
+                "width": "fill",
+                "visibleRows": 7,
+                "columns": [
+                  {
+                    "textKey": "settings.translation.profile_name",
+                    "width": "fill"
+                  },
+                  {
+                    "textKey": "settings.translation.profile_type",
+                    "width": 140
+                  },
+                  {
+                    "textKey": "settings.translation.column_enabled",
+                    "width": 80
+                  }
+                ],
+                "labelKey": "settings.translation.interfaces",
+                "type": "table"
+              },
+              {
+                "id": "translationActions",
+                "type": "column",
+                "width": 112,
+                "gap": 8,
+                "children": [
+                  {
+                    "textKey": "settings.translation.add",
+                    "id": "translation.add",
+                    "type": "button"
+                  },
+                  {
+                    "textKey": "settings.translation.edit",
+                    "id": "translation.edit",
+                    "type": "button"
+                  },
+                  {
+                    "textKey": "settings.translation.delete",
+                    "id": "translation.delete",
+                    "type": "button"
+                  },
+                  {
+                    "textKey": "settings.translation.up",
+                    "id": "translation.up",
+                    "type": "button"
+                  },
+                  {
+                    "textKey": "settings.translation.down",
+                    "id": "translation.down",
+                    "type": "button"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "select",
+            "id": "translation.source_language",
+            "labelKey": "settings.translation.source_language"
+          },
+          {
+            "type": "select",
+            "id": "translation.target_language",
+            "labelKey": "settings.translation.target_language"
+          },
+          {
+            "type": "text",
+            "id": "translationCredentials",
+            "textKey": "settings.translation.credentials"
+          }
+        ]
+      }
+    },
+    {
+      "id": "translationNetwork",
+      "titleKey": "settings.translation.network.title",
+      "content": {
+        "type": "column",
+        "id": "translationNetworkContent",
+        "padding": 16,
+        "gap": 12,
+        "children": [
+          {
+            "type": "select",
+            "id": "translation.network.proxy_mode",
+            "labelKey": "settings.translation.network.proxy_mode"
+          },
+          {
+            "type": "edit",
+            "id": "translation.network.proxy_address",
+            "labelKey": "settings.translation.network.proxy_address",
+            "maxLength": 2048
+          },
+          {
+            "type": "text",
+            "id": "translationNetworkHelp",
+            "textKey": "settings.translation.network.help"
+          }
+        ]
+      }
+    },
+    {
       "id": "maintenance",
       "titleKey": "settings.maintenance.title",
       "content": {

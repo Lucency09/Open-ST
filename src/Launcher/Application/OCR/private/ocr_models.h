@@ -9,7 +9,7 @@ namespace open_st::ocr_detail
 struct ModelBytes
 {
     std::string language;
-    std::vector<char> bytes;
+    std::string bytes;
 };
 // 读取本次语言组合，校验编译期固定大小和 SHA-256 后交付同一份字节。
 // 入参：root 为绝对程序根；options 为固定选择；cancel 为取消；models 输出完整候选。
