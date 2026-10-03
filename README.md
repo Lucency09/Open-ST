@@ -2,9 +2,9 @@
 
 [中文说明](docs/README.md)
 
-Open-ST is a Windows screenshot and annotation tool with an installer and a portable ZIP. Offline Chinese, English and Japanese OCR is included, with editable results and fast/best models. Translation remains planned.
+Open-ST is a Windows screenshot and annotation tool with an installer and a portable ZIP. Offline Chinese, English and Japanese OCR is included, with editable results and fast/best models. Text translation supports ordered online providers and local Chinese/English models, with automatic source-language detection, line-layout preservation, and connection diagnostics. Image translation remains planned.
 
-The current version is **0.4.1**, targeting Windows 10 22H2 and Windows 11 x64. See the [release notes](docs/releases/v0.4.1.md) for tested paths and known limitations.
+The current source version is **1.0.0**, targeting Windows 10 22H2 and Windows 11 x64. This version change does not publish a release. Existing downloads below remain v0.4.1; see the [current progress](docs/implementation_progress.md) for remaining work and acceptance limits.
 
 ## Download and use
 
@@ -14,7 +14,7 @@ Download from [v0.4.1 Releases](https://github.com/Lucency09/Open-ST/releases/ta
 - **ZIP**: extract the complete archive into a writable folder and run Open-ST.exe. The [Microsoft VC++ x64 runtime](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) is required separately.
 - **SHA256SUMS.txt**: checksums for both packages. Open-ST and Setup are unsigned; checksums are not publisher signatures.
 
-Version 0.4.1 closes the About window after handing off a verified installer, restoring tray access so users can exit normally. Offline OCR from v0.4.0 remains included. When upgrading from an older build, close its About window and exit the old app before retrying installation.
+The published v0.4.1 release closes the About window after handing off a verified installer, restoring tray access so users can exit normally. Offline OCR from v0.4.0 remains included. When upgrading from an older build, close its About window and exit the old app before retrying installation.
 
 Default keys: Ctrl+Alt+Q captures, Ctrl+C or Enter copies, Ctrl+S saves, and Esc cancels by layer. Right-click edits an annotation's properties; it no longer cancels capture. Text editing uses Enter for a new line and Ctrl+Enter to finish.
 
@@ -44,8 +44,8 @@ Requirements:
 .\scripts\test.ps1 ocr
 ```
 
-OCR is enabled by the fixed `$EnableOcr = $true` setting near the top of the build and test scripts. Edit that variable to disable it; no OCR command-line flag is needed.
+OCR and translation are enabled by `$EnableOcr = $true` and `$EnableTranslation = $true` near the top of the build and test scripts. Edit these variables to disable a feature. When translation models are missing, explicitly prepare them with Windows x64 Python 3.12: `python packaging/translation/convert_models.py --root .`. Ordinary CMake configuration only validates the cache; see [dependencies](docs/dependencies.md).
 
-Debug keeps its incremental build tree. Release produces build/Release/. -Package adds a ZIP and retains the versioned portable directory; -Installer adds Setup. Packages and SHA256SUMS.txt are written to artifacts/<version>/. These commands do not publish a release.
+Debug keeps its incremental build tree. **The current Release build script replaces build/Release/, including any data stored there. Back up data before rebuilding and restore it afterwards.** Release produces build/Release/. -Package adds a ZIP and retains the versioned portable directory; -Installer adds Setup. Packages and SHA256SUMS.txt are written to artifacts/<version>/. These commands do not publish a release.
 
 See `docs/development.md` for the agreed product and engineering specification.

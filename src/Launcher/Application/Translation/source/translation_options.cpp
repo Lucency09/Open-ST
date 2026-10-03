@@ -142,52 +142,41 @@ std::span<const TranslationProfileField> TranslationProfileFields(std::string_vi
         return MICROSOFT;
     return {};
 }
-// 创建完整默认条目，不为新配置开启自动外发。
-// 入参：kind 为支持的类型。
-// 返回：完整 JSON 配置。
-nlohmann::json CreateTranslationProfile(std::string_view kind)
+// 从默认配置资源创建新条目，不复制用户凭据或开启自动外发。
+// 入参：kind 为类型；defaultInterfaces 为宿主读取的默认接口数组。
+// 返回：新身份、停用、空凭据的配置；模板缺失或非法时抛出参数异常。
+nlohmann::json CreateTranslationProfile(std::string_view kind, const nlohmann::json& defaultInterfaces)
 {
-    const std::span<const std::string_view> kinds = TranslationChoices("translation.kind");
-    if (std::find(kinds.begin(), kinds.end(), kind) == kinds.end())
-        throw std::invalid_argument("unknown translation kind");
-    nlohmann::json profile{{"id", NewId()},
-                           {"name", kind},
-                           {"enabled", false},
-                           {"kind", kind},
-                           {"configuration", nlohmann::json::object()},
-                           {"secrets", nlohmann::json::object()}};
-    if (kind == "baidu")
-        profile["configuration"] = {{"app_id", ""}};
-    if (kind == "openai")
-        profile["configuration"] = {{"base_url", "https://api.openai.com/v1"}, {"model", ""}};
-    if (kind == "deepl")
-        profile["configuration"] = {{"service", "free"}};
-    if (kind == "microsoft")
-        profile["configuration"] = {{"region", ""}};
-    if (kind == "ctranslate2_local")
-        profile["configuration"] = {{"pack_id", "opus-mt-2020-07-17-int8-v1"}};
+    nlohmann::json profile;
     if (kind == "custom_http")
-        profile["configuration"] = translation_detail::DefaultCustomConfiguration();
-    if (kind != "google" && kind != "ctranslate2_local")
-        profile["secrets"]["api_key"] = "";
-    return profile;
-}
-// 默认身份固定便于恢复默认和跨进程比较，顺序为领域唯一来源。
-// 入参：无。
-// 返回：六条配置。
-nlohmann::json DefaultTranslationInterfaces()
-{
-    nlohmann::json result = nlohmann::json::array();
-    for (const std::string_view kind : TranslationChoices("translation.kind"))
     {
-        if (kind == "custom_http")
-            continue;
-        nlohmann::json profile = CreateTranslationProfile(kind);
-        profile["id"] = "default-" + std::string(kind);
-        profile["enabled"] = kind == "baidu";
-        result.push_back(std::move(profile));
+        profile = {{"id", NewId()},
+                   {"name", kind},
+                   {"enabled", false},
+                   {"kind", kind},
+                   {"configuration", translation_detail::DefaultCustomConfiguration()},
+                   {"secrets", {{"api_key", ""}}}};
     }
-    return result;
+    else
+    {
+        if (ValidateTranslationInterfaces(defaultInterfaces) != TranslationError::None)
+            throw std::invalid_argument("invalid default translation interfaces");
+        for (const nlohmann::json& candidate : defaultInterfaces)
+        {
+            if (candidate.at("kind").get_ref<const std::string&>() != kind)
+                continue;
+            if (!profile.is_null())
+                throw std::invalid_argument("ambiguous default translation profile");
+            profile = candidate;
+        }
+        if (profile.is_null())
+            throw std::invalid_argument("missing default translation profile");
+        profile["id"] = NewId();
+        profile["enabled"] = false;
+        for (nlohmann::json& secret : profile["secrets"])
+            secret = "";
+    }
+    return profile;
 }
 // 校验唯一字符串设置，代理无值仅在 custom 生效时拒绝。
 // 入参：fieldKey 为字段，value 为候选值。
@@ -306,25 +295,32 @@ catch (...)
 {
     return TranslationError::InvalidConfiguration;
 }
-// 只映射一次设置键；不把非法外部类型覆盖为正常默认值。
-// 入参：read 为窄 JSON 查询函数。
-// 返回：独立不可变快照。
+// 只解释宿主已经合并默认资源的完整快照，不保留另一套代码默认值。
+// 入参：read 为同一快照的窄 JSON 查询函数。
+// 返回：独立配置；缺失、错误类型或非法值均抛出参数异常。
 TranslationSettings ReadTranslationSettings(const std::function<std::optional<nlohmann::json>(std::string_view)>& read)
 {
-    TranslationSettings settings;
-    settings.configuration.interfaces = DefaultTranslationInterfaces();
     if (!read)
-        return settings;
-    if (const std::optional<nlohmann::json> value = read("translation.interfaces"))
-        settings.configuration.interfaces = *value;
+        throw std::invalid_argument("translation settings reader unavailable");
+    TranslationSettings settings;
+    const std::optional<nlohmann::json> interfaces = read("translation.interfaces");
+    if (!interfaces)
+        throw std::invalid_argument("translation interfaces missing");
+    settings.configuration.interfaces = *interfaces;
     const std::array<std::pair<std::string_view, std::string*>, 4> fields{
         {{"translation.source_language", &settings.options.sourceLanguage},
          {"translation.target_language", &settings.options.targetLanguage},
          {"translation.network.proxy_mode", &settings.configuration.proxyMode},
          {"translation.network.proxy_address", &settings.configuration.proxyAddress}}};
     for (const auto& [key, destination] : fields)
-        if (const std::optional<nlohmann::json> value = read(key))
-            *destination = value->is_string() ? value->get<std::string>() : std::string(1, '\0');
+    {
+        const std::optional<nlohmann::json> value = read(key);
+        if (!value || !value->is_string())
+            throw std::invalid_argument("translation settings field missing or invalid");
+        *destination = value->get<std::string>();
+    }
+    if (ValidateTranslationConfiguration(settings.configuration, settings.options) != TranslationError::None)
+        throw std::invalid_argument("invalid translation settings");
     return settings;
 }
 // 运行前检查全局配置；单条凭据不足在顺序调度内处理。

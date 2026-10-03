@@ -125,6 +125,71 @@ class CaptureToolbarWindowTest : public ::testing::Test
     std::uint64_t lastToken_{};
 };
 
+// 验证宿主指定的结果窗始终高于工具栏，工具栏仍高于遮罩且不抢焦点。
+// 入参：无；只创建隔离测试窗口，不读取或截取用户桌面。
+// 返回：通过真实 HWND 链验证显示、定位、DPI、刷新和重开顺序。
+TEST_F(CaptureToolbarWindowTest, upper_window_order_survives_refresh_dpi_and_reopen)
+{
+    ASSERT_TRUE(this->Create().success);
+    HWND upper = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"STATIC", L"Result ordering fixture", WS_POPUP,
+                                 -10000, -10000, 20, 20, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(upper, nullptr);
+    struct WindowGuard
+    {
+        HWND& window;
+        ~WindowGuard()
+        {
+            if (IsWindow(this->window))
+                DestroyWindow(this->window);
+        }
+    } guard{upper};
+    ShowWindow(upper, SW_SHOWNOACTIVATE);
+    this->toolbar_.SetUpperWindowQuery([&upper]() { return upper; });
+    const HWND foreground = GetForegroundWindow();
+    const auto above = [](HWND higher, HWND lower)
+    {
+        for (HWND current = GetWindow(higher, GW_HWNDNEXT); current; current = GetWindow(current, GW_HWNDNEXT))
+            if (current == lower)
+                return true;
+        return false;
+    };
+    const auto verify = [&]()
+    {
+        EXPECT_TRUE(above(upper, this->toolbar_.NativeHandle()));
+        EXPECT_TRUE(above(this->toolbar_.NativeHandle(), this->owner_));
+        EXPECT_TRUE(IsWindowVisible(this->toolbar_.NativeHandle()));
+        EXPECT_EQ(GetForegroundWindow(), foreground);
+    };
+    this->Show();
+    verify();
+    EXPECT_TRUE(this->toolbar_.Show(42).success);
+    verify();
+    EXPECT_TRUE(
+        this->toolbar_.UpdatePlacement({-9900, -9900, -9700, -9800}, {-10000, -10000, -9000, -9000}, 144).success);
+    RECT suggested{-9900, -9900, -9700, -9800};
+    SendMessageW(this->toolbar_.NativeHandle(), WM_DPICHANGED, MAKELONG(144, 144),
+                 reinterpret_cast<LPARAM>(&suggested));
+    verify();
+    const std::array<ToolbarButtonState, 1> states{{{CaptureToolbarCommand::Copy, true, false, false}}};
+    EXPECT_TRUE(this->toolbar_.UpdateButtonStates(states).success);
+    EXPECT_TRUE(this->toolbar_.RefreshTexts().success);
+    verify();
+    EXPECT_TRUE(SetWindowPos(this->toolbar_.NativeHandle(), HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE));
+    verify();
+    DestroyWindow(upper);
+    upper = nullptr;
+    EXPECT_TRUE(this->toolbar_.Show(42).success);
+    EXPECT_TRUE(IsWindowVisible(this->toolbar_.NativeHandle()));
+    upper = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, L"STATIC", L"Reopened result ordering fixture", WS_POPUP,
+                            -10000, -10000, 20, 20, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(upper, nullptr);
+    ShowWindow(upper, SW_SHOWNOACTIVATE);
+    EXPECT_TRUE(this->toolbar_.Show(42).success);
+    verify();
+    this->toolbar_.SetUpperWindowQuery({});
+}
+
 // 验证创建入口必须拒绝重复命令 ID，并清理部分创建资源。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。
 // 返回：无返回值；通过 GoogleTest 断言记录验证结果。

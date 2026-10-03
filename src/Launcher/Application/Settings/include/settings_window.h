@@ -48,12 +48,35 @@ struct SettingsTranslationField final
     std::vector<SettingsOption> options;
 };
 // 由上级 Application 提供本地化查询及保存通知，Settings 不依赖同级本地化模块。
+// 编辑窗口显示和提交共用的配置样本快照，description仅为本地化显示。
+struct SettingsTranslationTestSample final
+{
+    std::string text, sourceLanguage, targetLanguage;
+    std::wstring description;
+};
+// 配置中的供应商资源入口；只用于用户点击打开，不进入翻译请求。
+struct SettingsTranslationResource final
+{
+    std::string kind, labelKey, url;
+};
+struct SettingsTranslationResources final
+{
+    std::vector<SettingsTranslationResource> links;
+    std::wstring error;
+};
 struct SettingsWindowCallbacks final
 {
     bool translationAvailable{};
+    // 一次读取全部资源入口，缺少某供应商表示不显示，不猜测默认网址。
+    std::function<SettingsTranslationResources()> translationResources;
+    // 只打开经过校验的HTTPS资源地址，成功表示系统已接受，不提交或保存配置。
+    std::function<bool(std::string_view)> openTranslationResource;
     // 提交当前未保存条目及代理草稿；返回请求身份或安全拒绝原因，不写盘。
-    std::function<SettingsTranslationTestStatus(const nlohmann::json&, std::string_view, std::string_view)>
+    std::function<SettingsTranslationTestStatus(const nlohmann::json&, std::string_view, std::string_view,
+                                                const SettingsTranslationTestSample&)>
         submitTranslationTest;
+    // 一次读取当前配置的测试样本；缺失或非法时无值，不回退代码默认。
+    std::function<std::optional<SettingsTranslationTestSample>()> translationTestSample;
     // 仅查询所给身份的状态；不接管普通翻译的结果。
     std::function<SettingsTranslationTestStatus(std::uint64_t)> translationTestStatus;
     // 取消编辑窗口拥有的请求，关闭窗口不等待线程。

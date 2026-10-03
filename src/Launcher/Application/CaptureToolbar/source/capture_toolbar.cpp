@@ -27,6 +27,7 @@ struct CaptureToolbar::Impl
     std::vector<Button> buttons;
     TextResolver textResolver;
     CommandHandler onCommand;
+    std::function<HWND()> upperWindowQuery;
     toolbar_detail::ToolbarLayout layout;
     RECT selection{};
     RECT workArea{};
@@ -38,6 +39,23 @@ struct CaptureToolbar::Impl
     bool placed{};
     bool shown{};
 
+    // 每次查询有效上层窗口，避免保存已经关闭或被复用的借用句柄。
+    // 入参：无。返回：有效同线程可见上层窗口，缺失或查询异常时为空。
+    HWND UpperWindow() const noexcept
+    {
+        try
+        {
+            const HWND upper = this->upperWindowQuery ? this->upperWindowQuery() : nullptr;
+            return upper && upper != this->window && IsWindowVisible(upper) &&
+                           GetWindowThreadProcessId(upper, nullptr) == GetCurrentThreadId()
+                       ? upper
+                       : nullptr;
+        }
+        catch (...)
+        {
+            return nullptr;
+        }
+    }
     // 将工具栏图标尺寸从 DIP 换算为目标屏幕物理像素。
     // 入参：value：以 96 DPI 为基准的 DIP 长度。
     // 返回：按宿主指定 DPI 四舍五入后的物理像素长度。
@@ -449,6 +467,19 @@ LRESULT CALLBACK CaptureToolbar::Impl::WindowProc(HWND window, UINT message, WPA
             self->Invoke(static_cast<std::size_t>(LOWORD(wParam) - 1));
         }
         return 0;
+    case WM_WINDOWPOSCHANGING:
+    {
+        WINDOWPOS& position = *reinterpret_cast<WINDOWPOS*>(lParam);
+        if ((position.flags & SWP_NOZORDER) == 0)
+        {
+            if (const HWND upper = self->UpperWindow())
+            {
+                position.hwndInsertAfter = upper;
+                position.flags |= SWP_NOACTIVATE;
+            }
+        }
+        break;
+    }
     case WM_DPICHANGED:
         // App 的 UpdatePlacement 决定最终几何，不使用 Windows 的建议矩形覆盖物理选区适配。
         return 0;
@@ -559,6 +590,12 @@ ToolbarResult CaptureToolbar::Create(HINSTANCE instance, HWND owner, std::vector
     return texts;
 }
 
+// 设置宿主排序约束，所有原生提升入口统一由窗口定位消息执行。
+// 入参：query 为当前上层窗口查询。返回：无。
+void CaptureToolbar::SetUpperWindowQuery(std::function<HWND()> query)
+{
+    this->impl_->upperWindowQuery = std::move(query);
+}
 // 按选区和目标显示器工作区定位工具栏。
 // 入参：selection、workArea：虚拟桌面物理像素矩形；dpi：目标显示器 DPI。
 // 返回：布局及窗口定位成功时 success 为 true；无有效窗口或布局失败时为 false 并附诊断。
@@ -769,6 +806,7 @@ void CaptureToolbar::Close() noexcept
 {
     this->impl_->onCommand = {};
     this->impl_->textResolver = {};
+    this->impl_->upperWindowQuery = {};
     this->Hide();
     if (IsWindow(this->impl_->tooltip))
     {

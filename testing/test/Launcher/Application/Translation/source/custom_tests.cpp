@@ -1,5 +1,6 @@
 // 验证有序配置、静态 HTTP 模板与有界响应映射；完全不访问线上服务。
 #include <fstream>
+#include "translation_test_defaults.h"
 #include <gtest/gtest.h>
 #include <translation_protocol.h>
 
@@ -12,7 +13,7 @@ namespace
 // 返回：独立配置。
 nlohmann::json Custom()
 {
-    nlohmann::json profile = CreateTranslationProfile("custom_http");
+    nlohmann::json profile = TestTranslationProfile("custom_http");
     profile["secrets"]["api_key"] = "fixture";
     return profile;
 }
@@ -21,7 +22,7 @@ nlohmann::json Custom()
 // 返回：有界原文。
 TranslationRequest Text()
 {
-    TranslationRequest input;
+    TranslationRequest input = TestTranslationRequest();
     input.text = "你好\"\n&+%😀";
     return input;
 }
@@ -31,15 +32,15 @@ TranslationRequest Text()
 // 返回：断言结果。
 TEST(TranslationSchema, DefaultsAndNewIdentity)
 {
-    const nlohmann::json defaults = DefaultTranslationInterfaces();
+    const nlohmann::json defaults = TestDefaultSettings().at("translation.interfaces");
     EXPECT_EQ(defaults.size(), 6U);
     EXPECT_EQ(ValidateTranslationInterfaces(defaults), TranslationError::None);
     EXPECT_TRUE(defaults[0]["enabled"].get<bool>());
     for (std::size_t i = 1; i < defaults.size(); ++i)
         EXPECT_FALSE(defaults[i]["enabled"].get<bool>());
-    EXPECT_NE(CreateTranslationProfile("google")["id"], CreateTranslationProfile("google")["id"]);
-    EXPECT_EQ(DefaultTranslationInterfaces(), defaults);
-    EXPECT_EQ(ValidateTranslationProfile(CreateTranslationProfile("custom_http")), TranslationError::None);
+    EXPECT_NE(TestTranslationProfile("google")["id"], TestTranslationProfile("google")["id"]);
+    EXPECT_EQ(TestDefaultSettings().at("translation.interfaces"), defaults);
+    EXPECT_EQ(ValidateTranslationProfile(TestTranslationProfile("custom_http")), TranslationError::None);
     std::ifstream stream(std::filesystem::path(OPEN_ST_TEST_SOURCE_ROOT) / "resources/default_settings.json");
     ASSERT_TRUE(stream.good());
     const nlohmann::json resource = nlohmann::json::parse(stream);
@@ -51,49 +52,90 @@ TEST(TranslationSchema, DefaultsAndNewIdentity)
 TEST(TranslationSchema, RejectsDuplicatesAndUnsupportedStructure)
 {
     nlohmann::json profiles =
-        nlohmann::json::array({CreateTranslationProfile("google"), CreateTranslationProfile("google")});
+        nlohmann::json::array({TestTranslationProfile("google"), TestTranslationProfile("google")});
     EXPECT_EQ(ValidateTranslationInterfaces(profiles), TranslationError::None);
     profiles[1]["id"] = profiles[0]["id"];
     EXPECT_EQ(ValidateTranslationInterfaces(profiles), TranslationError::InvalidConfiguration);
     profiles = nlohmann::json::array();
     for (int i = 0; i < 17; ++i)
-        profiles.push_back(CreateTranslationProfile("google"));
+        profiles.push_back(TestTranslationProfile("google"));
     EXPECT_EQ(ValidateTranslationInterfaces(profiles), TranslationError::InvalidConfiguration);
-    profiles = DefaultTranslationInterfaces();
+    profiles = TestDefaultSettings().at("translation.interfaces");
     profiles[0]["unknown"] = "unused";
     EXPECT_EQ(ValidateTranslationInterfaces(profiles), TranslationError::InvalidConfiguration);
 }
-// 验证 JSON 保存形态及错误外部类型不被默认值掩盖。
-// 入参：无。
-// 返回：断言结果。
-TEST(TranslationSchema, SettingsCapturePreservesInvalidTypes)
+// 验证配置必须来自完整快照，缺失和非法值不得触发代码默认回退。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, SettingsCaptureRejectsMissingAndInvalidFields)
 {
-    const TranslationSettings settings = ReadTranslationSettings(
-        [](std::string_view key) -> std::optional<nlohmann::json>
+    EXPECT_THROW(ReadTranslationSettings({}), std::invalid_argument);
+    const nlohmann::json defaults = TestDefaultSettings();
+    for (const std::string_view key : TranslationSettingKeys())
+    {
+        for (int mode = 0; mode < 2; ++mode)
         {
-            if (key == "translation.interfaces")
-                return DefaultTranslationInterfaces();
-            if (key == "translation.target_language")
-                return 42;
-            return {};
-        });
-    EXPECT_TRUE(settings.configuration.interfaces.is_array());
-    EXPECT_EQ(ValidateTranslationConfiguration(settings.configuration, settings.options),
-              TranslationError::InvalidConfiguration);
+            nlohmann::json values = defaults;
+            if (mode == 0)
+                values.erase(std::string(key));
+            else
+                values[key] = 42;
+            EXPECT_THROW(ReadTranslationSettings(
+                             [&values](std::string_view field) -> std::optional<nlohmann::json>
+                             {
+                                 const auto found = values.find(field);
+                                 return found == values.end() ? std::nullopt : std::optional<nlohmann::json>(*found);
+                             }),
+                         std::invalid_argument);
+        }
+    }
     EXPECT_EQ(TranslationSettingKeys().size(), 5U);
+}
+// 验证资源默认值决定新条目及语言代理，新增条目不复用身份或秘密。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, ConfiguredDefaultsAreTheOnlySource)
+{
+    nlohmann::json values = TestDefaultSettings();
+    for (nlohmann::json& profile : values["translation.interfaces"])
+    {
+        if (profile["kind"] != "openai")
+            continue;
+        profile["configuration"]["base_url"] = "https://fixture.invalid/v2";
+        profile["configuration"]["model"] = "configured-model";
+        profile["name"] = "configured-name";
+        profile["secrets"]["api_key"] = "must-not-copy";
+        profile["enabled"] = true;
+        const nlohmann::json created = CreateTranslationProfile("openai", values["translation.interfaces"]);
+        EXPECT_EQ(created["configuration"], profile["configuration"]);
+        EXPECT_EQ(created["name"], profile["name"]);
+        EXPECT_NE(created["id"], profile["id"]);
+        EXPECT_FALSE(created["enabled"].get<bool>());
+        EXPECT_TRUE(created["secrets"]["api_key"].get<std::string>().empty());
+    }
+    values["translation.source_language"] = "ja";
+    values["translation.target_language"] = "en";
+    values["translation.network.proxy_mode"] = "custom";
+    values["translation.network.proxy_address"] = "localhost:3456";
+    const TranslationSettings settings = ReadTranslationSettings(
+        [&values](std::string_view key) -> std::optional<nlohmann::json> { return values.at(key); });
+    EXPECT_EQ(settings.options.sourceLanguage, "ja");
+    EXPECT_EQ(settings.options.targetLanguage, "en");
+    EXPECT_EQ(settings.configuration.proxyMode, "custom");
+    EXPECT_EQ(settings.configuration.proxyAddress, "localhost:3456");
+    EXPECT_THROW(CreateTranslationProfile("openai", nlohmann::json::array()), std::invalid_argument);
+    EXPECT_THROW(CreateTranslationProfile("unknown", values["translation.interfaces"]), std::invalid_argument);
 }
 // 验证秘密空值可保存，而控制字符和恶意代理地址不可保存。
 // 入参：无。
 // 返回：断言结果。
 TEST(TranslationSchema, AllowsEmptyCredentialsButRejectsMalformedValues)
 {
-    EXPECT_EQ(ValidateTranslationProfile(CreateTranslationProfile("baidu")), TranslationError::None);
+    EXPECT_EQ(ValidateTranslationProfile(TestTranslationProfile("baidu")), TranslationError::None);
     EXPECT_EQ(ValidateTranslationField("translation.network.proxy_address", "http://u:p@localhost:1"),
               TranslationError::InvalidConfiguration);
     EXPECT_EQ(ValidateTranslationField("translation.network.proxy_address", "localhost:7897"), TranslationError::None);
     EXPECT_EQ(ValidateTranslationField("translation.network.proxy_mode", "direct"),
               TranslationError::InvalidConfiguration);
-    nlohmann::json local = CreateTranslationProfile("ctranslate2_local");
+    nlohmann::json local = TestTranslationProfile("ctranslate2_local");
     local["configuration"]["pack_id"] = "elsewhere";
     EXPECT_EQ(ValidateTranslationProfile(local), TranslationError::InvalidConfiguration);
 }
@@ -167,7 +209,7 @@ TEST(TranslationCustom, RejectsUndeclaredVariablesAndFalseLanguageCapabilities)
 // 返回：断言结果。
 TEST(TranslationCustom, SkipsMissingSecretsAndUnsupportedLanguages)
 {
-    nlohmann::json profile = CreateTranslationProfile("custom_http");
+    nlohmann::json profile = TestTranslationProfile("custom_http");
     http::Request request;
     EXPECT_EQ(translation_detail::BuildRequest(Text(), profile, "salt", request), TranslationError::MissingCredentials);
     profile = Custom();

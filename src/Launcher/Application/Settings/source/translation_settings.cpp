@@ -87,7 +87,7 @@ TranslationSettingsPanel::TranslationSettingsPanel(WindowRenderer& renderer, Set
 // 返回：候选副本。
 nlohmann::json TranslationSettingsPanel::List() const
 {
-    return this->session_.ReadJson(TRANSLATION_INTERFACES_KEY).value_or(nlohmann::json::array());
+    return this->session_.ReadJson(TRANSLATION_INTERFACES_KEY).value_or(nlohmann::json{});
 }
 // 生成只读的名称、类型、启用三列，行序就是父草稿的尝试顺序。
 // 入参：无。
@@ -215,12 +215,26 @@ bool TranslationSettingsPanel::Store(const nlohmann::json& value)
 void TranslationSettingsPanel::Act(std::string_view operation)
 {
     nlohmann::json list = this->List();
+    if (!list.is_array())
+        return;
     const auto found = std::find_if(list.begin(), list.end(),
                                     // 身份定位只读取固定字段。
                                     // 入参：item 为数组对象。
                                     // 返回：对应当前选择为 true。
                                     [this](const nlohmann::json& item)
                                     { return item.is_object() && item.value("id", "") == this->selected_; });
+    std::optional<std::string> proxyMode, proxyAddress;
+    if (operation == "add" || operation == "edit")
+    {
+        proxyMode = this->session_.ReadString("translation.network.proxy_mode");
+        proxyAddress = this->session_.ReadString("translation.network.proxy_address");
+        if (!proxyMode || !proxyAddress)
+        {
+            (void)this->renderer_.SetFieldError("translationInterfaces",
+                                                this->callbacks_.text("translation.error.configuration"));
+            return;
+        }
+    }
     if (operation == "add")
     {
         const auto kinds = this->callbacks_.translationChoices("translation.kind");
@@ -228,9 +242,7 @@ void TranslationSettingsPanel::Act(std::string_view operation)
             return;
         nlohmann::json profile = this->callbacks_.createTranslationProfile(kinds.front().value);
         if (EditTranslationProfile(this->renderer_.NativeHandle(), this->callbacks_.largeIcon, profile,
-                                   this->callbacks_, true,
-                                   this->session_.ReadString("translation.network.proxy_mode").value_or("system"),
-                                   this->session_.ReadString("translation.network.proxy_address").value_or("")))
+                                   this->callbacks_, true, *proxyMode, *proxyAddress))
         {
             list.push_back(profile);
             if (this->Store(list))
@@ -248,9 +260,7 @@ void TranslationSettingsPanel::Act(std::string_view operation)
         nlohmann::json candidate = *found;
         const std::string identity = candidate.at("id").get<std::string>();
         if (!EditTranslationProfile(this->renderer_.NativeHandle(), this->callbacks_.largeIcon, candidate,
-                                    this->callbacks_, false,
-                                    this->session_.ReadString("translation.network.proxy_mode").value_or("system"),
-                                    this->session_.ReadString("translation.network.proxy_address").value_or("")))
+                                    this->callbacks_, false, *proxyMode, *proxyAddress))
             return;
         // 父表单模态期间冻结，仍按 ID 重新定位，不把旧索引用于替换。
         nlohmann::json current = this->List();

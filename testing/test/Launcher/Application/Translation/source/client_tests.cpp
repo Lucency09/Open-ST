@@ -1,6 +1,7 @@
 // 使用统一提供方替身测试真实工作线程的顺序、取消、期限和本地零网络边界。
 #include <atomic>
 #include <chrono>
+#include "translation_test_defaults.h"
 #include <gtest/gtest.h>
 #include <mutex>
 #include <thread>
@@ -177,7 +178,7 @@ std::unique_ptr<translation_detail::ClientDependencies> ProtocolDependencies(std
 // 返回：可执行配置。
 nlohmann::json CustomProfile()
 {
-    nlohmann::json profile = CreateTranslationProfile("custom_http");
+    nlohmann::json profile = TestTranslationProfile("custom_http");
     profile["enabled"] = true;
     profile["secrets"]["api_key"] = "fixture-key";
     return profile;
@@ -187,7 +188,7 @@ nlohmann::json CustomProfile()
 // 返回：完整整轮请求。
 TranslationRequest Request(std::initializer_list<std::string_view> names)
 {
-    TranslationRequest request;
+    TranslationRequest request = TestTranslationRequest();
     request.text = "hello";
     request.sessionId = 7;
     request.sourceRevision = 9;
@@ -195,7 +196,7 @@ TranslationRequest Request(std::initializer_list<std::string_view> names)
     request.configuration.interfaces = nlohmann::json::array();
     for (const std::string_view name : names)
     {
-        nlohmann::json profile = CreateTranslationProfile("google");
+        nlohmann::json profile = TestTranslationProfile("google");
         profile["name"] = name;
         profile["enabled"] = true;
         request.configuration.interfaces.push_back(std::move(profile));
@@ -432,7 +433,7 @@ TEST(TranslationChain, LocalOnlyAutoReachesEngine)
 {
     TranslationClient client(std::filesystem::temp_directory_path() / L"open-st-nonexistent-model-fixture", {});
     TranslationRequest request = Request({});
-    nlohmann::json local = CreateTranslationProfile("ctranslate2_local");
+    nlohmann::json local = TestTranslationProfile("ctranslate2_local");
     local["enabled"] = true;
     request.text = "This is an English paragraph about reading books in the library. "
                    "The students are learning new words and writing their homework every day.";
@@ -463,7 +464,7 @@ TEST(TranslationChain, RealLocalAdapterFallsBackThroughTheSameOnlineProtocol)
         request.options.sourceLanguage = source;
         request.text = "This is an English paragraph about reading books in the library. "
                        "The students are learning new words and writing their homework every day.";
-        nlohmann::json local = CreateTranslationProfile("ctranslate2_local");
+        nlohmann::json local = TestTranslationProfile("ctranslate2_local");
         local["enabled"] = true;
         nlohmann::json disabled = CustomProfile();
         disabled["enabled"] = false;
@@ -564,6 +565,30 @@ TEST(TranslationProvider, CancellationAndDeadlineNeverCallTransport)
     EXPECT_TRUE(transport->requests.empty());
 }
 
+// 用稳定测试标记检查字节预算及秘密不外泄，不模拟生产界面的翻译逻辑。
+// 入参：结构化诊断。返回：测试可观察的安全摘要。
+std::string DiagnosticTextForTest(const TranslationDiagnosticText& parts)
+{
+    std::string result;
+    for (const TranslationDiagnosticPart& part : parts)
+        switch (part.kind)
+        {
+        case TranslationDiagnosticPartKind::Text:
+            result += part.text;
+            break;
+        case TranslationDiagnosticPartKind::Redacted:
+            result += "[redacted]";
+            break;
+        case TranslationDiagnosticPartKind::Omitted:
+            result += "[omitted]";
+            break;
+        case TranslationDiagnosticPartKind::TooLong:
+            result += "[omitted: too long]";
+            break;
+        }
+    return result;
+}
+
 // 验证百度 HTTP 200 业务失败可诊断，普通翻译不保留诊断正文。
 // 入参：合成错误响应。返回：断言结果，不访问网络。
 TEST(TranslationChain, DiagnosticBaiduErrorIsOptInAndRedacted)
@@ -578,7 +603,7 @@ TEST(TranslationChain, DiagnosticBaiduErrorIsOptInAndRedacted)
             R"({"error_code":"54001","error_msg":"Invalid signature fixture-secret app-fixture","echo":"do not publish"})");
         TranslationClient client = TranslationClientTestAccess::Create(ProtocolDependencies(transport));
         TranslationRequest request = Request({});
-        nlohmann::json profile = CreateTranslationProfile("baidu");
+        nlohmann::json profile = TestTranslationProfile("baidu");
         profile["enabled"] = true;
         profile["configuration"]["app_id"] = "app-fixture";
         profile["secrets"]["api_key"] = "fixture-secret";
@@ -595,12 +620,12 @@ TEST(TranslationChain, DiagnosticBaiduErrorIsOptInAndRedacted)
         {
             const TranslationDiagnostic& details = *snapshot.attempts[0].diagnostic;
             EXPECT_EQ(details.httpStatus, 200U);
-            EXPECT_EQ(details.providerCode, "54001");
-            EXPECT_NE(details.providerMessage.find("Invalid signature"), std::string::npos);
-            EXPECT_EQ(details.response.find("fixture-secret"), std::string::npos);
-            EXPECT_EQ(details.response.find("app-fixture"), std::string::npos);
-            EXPECT_EQ(details.response.find("do not publish"), std::string::npos);
-            EXPECT_LE(details.response.size(), 4096U);
+            EXPECT_EQ(DiagnosticTextForTest(details.providerCode), "54001");
+            EXPECT_NE(DiagnosticTextForTest(details.providerMessage).find("Invalid signature"), std::string::npos);
+            EXPECT_EQ(DiagnosticTextForTest(details.response).find("fixture-secret"), std::string::npos);
+            EXPECT_EQ(DiagnosticTextForTest(details.response).find("app-fixture"), std::string::npos);
+            EXPECT_EQ(DiagnosticTextForTest(details.response).find("do not publish"), std::string::npos);
+            EXPECT_LE(DiagnosticTextForTest(details.response).size(), 4096U);
             EXPECT_GE(details.elapsedMilliseconds, 0);
         }
         EXPECT_FALSE(snapshot.result);
@@ -632,7 +657,9 @@ TEST(TranslationChain, DiagnosticCustomResponseFailsClosed)
     EXPECT_EQ(details.systemError, ERROR_WINHTTP_CANNOT_CONNECT);
     EXPECT_EQ(details.httpStatus, 502U);
     EXPECT_TRUE(details.providerMessage.empty());
-    EXPECT_EQ(details.response, "[response omitted]");
+    ASSERT_EQ(details.response.size(), 1U);
+    EXPECT_EQ(details.response.front().kind, TranslationDiagnosticPartKind::Omitted);
+    EXPECT_TRUE(details.response.front().text.empty());
 }
 // 验证无法执行的测试仍发布耗时和稳定错误，绝不进入传输。
 // 入参：未配置凭据的百度条目。返回：断言结果。
@@ -641,7 +668,7 @@ TEST(TranslationChain, DiagnosticMissingCredentialsHasAttemptWithoutNetwork)
     auto transport = std::make_shared<TransportState>();
     TranslationClient client = TranslationClientTestAccess::Create(ProtocolDependencies(transport));
     TranslationRequest request = Request({});
-    nlohmann::json profile = CreateTranslationProfile("baidu");
+    nlohmann::json profile = TestTranslationProfile("baidu");
     profile["enabled"] = true;
     request.configuration.interfaces.push_back(profile);
     request.diagnostic = true;
@@ -672,7 +699,7 @@ TEST(TranslationProvider, DiagnosticMalformedAndLongMessagesAreBounded)
         transport->bodies.push_back(body);
         std::unique_ptr<translation_detail::ITranslationProvider> provider =
             translation_detail::CreateOnlineProvider("baidu", std::make_unique<FixtureTransport>(transport));
-        nlohmann::json profile = CreateTranslationProfile("baidu");
+        nlohmann::json profile = TestTranslationProfile("baidu");
         profile["configuration"]["app_id"] = "app-fixture";
         profile["secrets"]["api_key"] = "fixture-secret";
         TranslationRequest request = Request({});
@@ -680,9 +707,20 @@ TEST(TranslationProvider, DiagnosticMalformedAndLongMessagesAreBounded)
         const translation_detail::ProviderResult result = provider->Execute(request, profile, Clock::now() + 1s, {});
         ASSERT_TRUE(result.diagnostic);
         EXPECT_NE(result.error, TranslationError::None);
-        EXPECT_LE(result.diagnostic->response.size(), 4096U);
-        EXPECT_LE(result.diagnostic->providerMessage.size(), 1024U);
-        EXPECT_EQ(result.diagnostic->response.find("fixture-secret"), std::string::npos);
+        EXPECT_LE(DiagnosticTextForTest(result.diagnostic->response).size(), 4096U);
+        EXPECT_LE(DiagnosticTextForTest(result.diagnostic->providerMessage).size(), 1024U);
+        EXPECT_EQ(DiagnosticTextForTest(result.diagnostic->response).find("fixture-secret"), std::string::npos);
+        if (body.starts_with("<"))
+        {
+            ASSERT_EQ(result.diagnostic->response.size(), 1U);
+            EXPECT_EQ(result.diagnostic->response.front().kind, TranslationDiagnosticPartKind::Omitted);
+        }
+        else
+        {
+            ASSERT_EQ(result.diagnostic->providerMessage.size(), 1U);
+            EXPECT_EQ(result.diagnostic->providerMessage.front().kind, TranslationDiagnosticPartKind::TooLong);
+            EXPECT_TRUE(result.diagnostic->providerMessage.front().text.empty());
+        }
     }
 }
 // 验证诊断任务共用忙门禁，取消时不能发布迟到诊断或成功结果。
@@ -743,6 +781,71 @@ TEST(TranslationChain, DiagnosticSuccessfulTranslationRedactsEchoedCredentials)
         else
             for (const std::string_view secret : {"fixture-key", "header-secret", "query-secret", "form-secret"})
                 EXPECT_EQ(snapshot.result->text.find(secret), std::string::npos);
+    }
+}
+// 服务字面占位保持原文；只有实际凭据匹配才产生结构化脱敏标记。
+// 入参：合成百度错误，包含交叠秘密。返回：断言结果，不联网。
+TEST(TranslationProvider, DiagnosticMarkersDistinguishRemoteTextAndOverlappingSecrets)
+{
+    auto transport = std::make_shared<TransportState>();
+    http::Result response;
+    response.status = 200;
+    transport->responses.push_back(response);
+    transport->bodies.push_back(R"({"error_code":"54001","error_msg":"[redacted] [message omitted] abcdef"})");
+    auto provider = translation_detail::CreateOnlineProvider("baidu", std::make_unique<FixtureTransport>(transport));
+    nlohmann::json profile = TestTranslationProfile("baidu");
+    profile["configuration"]["app_id"] = "abcd";
+    profile["secrets"]["api_key"] = "cdef";
+    TranslationRequest request = Request({});
+    request.diagnostic = true;
+    const translation_detail::ProviderResult result = provider->Execute(request, profile, Clock::now() + 1s, {});
+    ASSERT_TRUE(result.diagnostic);
+    const TranslationDiagnosticText& message = result.diagnostic->providerMessage;
+    ASSERT_EQ(message.size(), 2U);
+    EXPECT_EQ(message[0].kind, TranslationDiagnosticPartKind::Text);
+    EXPECT_EQ(message[0].text, "[redacted] [message omitted] ");
+    EXPECT_EQ(message[1].kind, TranslationDiagnosticPartKind::Redacted);
+    EXPECT_TRUE(message[1].text.empty());
+    EXPECT_EQ(DiagnosticTextForTest(result.diagnostic->response).find("abcdef"), std::string::npos);
+}
+// 成功诊断的译文也按片段发布；普通翻译保持服务原文和既有成功分类。
+// 入参：合成成功百度响应。返回：断言结果。
+TEST(TranslationChain, DiagnosticSuccessfulTranslationKeepsStructuredRedaction)
+{
+    for (const bool diagnostic : {false, true})
+    {
+        auto transport = std::make_shared<TransportState>();
+        http::Result response;
+        response.status = 200;
+        transport->responses.push_back(response);
+        transport->bodies.push_back(R"({"from":"en","to":"zh","trans_result":[{"dst":"[redacted] fixture-secret"}]})");
+        TranslationClient client = TranslationClientTestAccess::Create(ProtocolDependencies(transport));
+        TranslationRequest request = Request({});
+        nlohmann::json profile = TestTranslationProfile("baidu");
+        profile["enabled"] = true;
+        profile["configuration"]["app_id"] = "app-fixture";
+        profile["secrets"]["api_key"] = "fixture-secret";
+        request.configuration.interfaces.push_back(profile);
+        request.diagnostic = diagnostic;
+        std::uint64_t id{};
+        TranslationError error{};
+        ASSERT_TRUE(client.Submit(request, id, error));
+        const TranslationSnapshot snapshot = Finish(client);
+        ASSERT_EQ(snapshot.phase, TranslationPhase::Succeeded);
+        ASSERT_TRUE(snapshot.result);
+        if (diagnostic)
+        {
+            ASSERT_TRUE(snapshot.attempts.front().diagnostic);
+            const TranslationDiagnosticText& parts = snapshot.attempts.front().diagnostic->translatedText;
+            ASSERT_EQ(parts.size(), 2U);
+            EXPECT_EQ(parts[0].kind, TranslationDiagnosticPartKind::Text);
+            EXPECT_EQ(parts[0].text, "[redacted] ");
+            EXPECT_EQ(parts[1].kind, TranslationDiagnosticPartKind::Redacted);
+            EXPECT_TRUE(parts[1].text.empty());
+            EXPECT_EQ(snapshot.result->text.find("fixture-secret"), std::string::npos);
+        }
+        else
+            EXPECT_EQ(snapshot.result->text, "[redacted] fixture-secret");
     }
 }
 } // namespace open_st

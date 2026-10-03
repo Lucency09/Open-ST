@@ -75,6 +75,15 @@ TEST(UpdateModelTest, versions_compare_numerically_and_reject_ambiguous_values)
     ASSERT_TRUE(next.has_value());
     EXPECT_LT(*old, *next);
     EXPECT_EQ(ParseVersion("v0.10.0"), next);
+    const auto current = ParseVersion("v1.0.0");
+    ASSERT_TRUE(current.has_value());
+    const auto previousRelease = ParseVersion("v0.4.1");
+    const auto nextPatch = ParseVersion("v1.0.1");
+    ASSERT_TRUE(previousRelease.has_value());
+    ASSERT_TRUE(nextPatch.has_value());
+    EXPECT_GT(*current, *previousRelease);
+    EXPECT_LT(*current, *nextPatch);
+    EXPECT_FALSE(ParseVersion("v1.0"));
     for (const std::string_view invalid : {"0.10", "0.10.0.1", "0.10.0-beta", "0.10.0+meta", "v00.10.0", "0.-1.0",
                                            "+0.10.0", "0.4294967296.0", "V0.10.0", " 0.10.0", "0.10.0 "})
     {

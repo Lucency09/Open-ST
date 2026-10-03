@@ -1,5 +1,6 @@
 // 使用真实结果窗口与会话编排、可控 OCR 边界验证输入归属和迟到结果，不识别或写真实剪贴板。
 #include "capture_text_session.h"
+#include "../Translation/source/translation_test_defaults.h"
 #include "text_result_window.h"
 #include <clipboard_writer.h>
 #include <gtest/gtest.h>
@@ -228,7 +229,7 @@ class TextTranslationInteractionTest : public testing::Test
   protected:
     OcrBoundaryState state_;
     HWND owner_{};
-    nlohmann::json settings_ = nlohmann::json::object();
+    nlohmann::json settings_ = open_st::TestDefaultSettings();
     bool settingsReadable_{true};
     unsigned settingsReads_{};
     std::unique_ptr<open_st::TranslationClient> translator_;
@@ -524,8 +525,12 @@ TEST_F(TextTranslationInteractionTest, failed_settings_snapshot_never_submits_tr
     this->ClickTranslate();
     EXPECT_EQ(this->state_.translationSubmissions, 0U);
     this->settingsReadable_ = true;
+    this->settings_["translation.source_language"] = "ja";
+    this->settings_["translation.target_language"] = "en";
     this->ClickTranslate();
     EXPECT_EQ(this->state_.translationSubmissions, 1U);
+    EXPECT_EQ(this->state_.request.options.sourceLanguage, "ja");
+    EXPECT_EQ(this->state_.request.options.targetLanguage, "en");
 }
 // 临时语言改变取消整轮，用户明确重译时才使用新语种。
 // 入参：无。返回：断言结果。
@@ -608,7 +613,7 @@ TEST_F(TextTranslationInteractionTest, reopen_cannot_bypass_unfinished_translati
 // 入参：无。返回：断言结果。
 TEST_F(TextTranslationInteractionTest, insecure_http_warning_tracks_configuration_before_submission)
 {
-    nlohmann::json profile = open_st::CreateTranslationProfile("custom_http");
+    nlohmann::json profile = open_st::TestTranslationProfile("custom_http");
     profile["enabled"] = true;
     profile["configuration"]["url"] = "http://example.invalid/translate";
     this->settings_["translation.interfaces"] = nlohmann::json::array({profile});

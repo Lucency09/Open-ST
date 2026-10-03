@@ -77,10 +77,34 @@ TranslationError NetworkError(const http::Result& result)
         return TranslationError::Proxy;
     return TranslationError::Network;
 }
+// 规范占位仅用于内部字节预算和客户端成功校验，界面消费结构化片段。
+// 入参：parts 为已脱敏片段。返回：不含秘密的规范文本，不作为本地化展示来源。
+std::string DiagnosticBudgetText(const TranslationDiagnosticText& parts)
+{
+    std::string result;
+    for (const TranslationDiagnosticPart& part : parts)
+        switch (part.kind)
+        {
+        case TranslationDiagnosticPartKind::Text:
+            result += part.text;
+            break;
+        case TranslationDiagnosticPartKind::Redacted:
+            result += "[redacted]";
+            break;
+        case TranslationDiagnosticPartKind::Omitted:
+            result += "[omitted]";
+            break;
+        case TranslationDiagnosticPartKind::TooLong:
+            result += "[omitted: too long]";
+            break;
+        }
+    return result;
+}
 // 诊断的服务消息和译文共用脱敏器，普通翻译不经过此路径。
 // 入参：profile/request 为固定请求；value 为候选展示文本。
 // 返回：脱敏且限长的 UTF-8 文本，无法安全展示时省略。
-std::string SafeDiagnosticText(const nlohmann::json& profile, const http::Request& request, std::string value)
+TranslationDiagnosticText SafeDiagnosticText(const nlohmann::json& profile, const http::Request& request,
+                                             std::string value)
 {
     std::vector<std::string> hidden;
     // 遍历已有有界配置的字符串值，防止错误消息回显静态配置或凭据。
@@ -105,7 +129,7 @@ std::string SafeDiagnosticText(const nlohmann::json& profile, const http::Reques
     for (const http::Header& header : request.headers)
     {
         if (std::any_of(header.value.begin(), header.value.end(), [](wchar_t character) { return character > 127; }))
-            return "[message omitted]";
+            return {{TranslationDiagnosticPartKind::Omitted, {}}};
         std::string headerValue;
         for (const wchar_t character : header.value)
             headerValue.push_back(static_cast<char>(character));
@@ -141,9 +165,8 @@ std::string SafeDiagnosticText(const nlohmann::json& profile, const http::Reques
             offset = end + 1;
         }
     }
-    std::sort(hidden.begin(), hidden.end(),
-              [](const std::string& left, const std::string& right) { return left.size() > right.size(); });
-    // 先脱敏再限制长度，防止截断产生未匹配的密钥前缀；拒绝控制符和非法 UTF-8。
+    // 在原始字节上标记所有秘密并合并交叠区间，程序占位从不参加后续匹配。
+    std::vector<bool> masked(value.size(), false);
     for (const std::string& secret : hidden)
     {
         if (secret.empty())
@@ -151,22 +174,34 @@ std::string SafeDiagnosticText(const nlohmann::json& profile, const http::Reques
         std::size_t position{};
         while ((position = value.find(secret, position)) != std::string::npos)
         {
-            value.replace(position, secret.size(), "[redacted]");
-            position += 10;
+            std::fill(masked.begin() + static_cast<std::ptrdiff_t>(position),
+                      masked.begin() + static_cast<std::ptrdiff_t>(position + secret.size()), true);
+            ++position;
         }
     }
+    TranslationDiagnosticText parts;
+    for (std::size_t begin = 0; begin < value.size();)
+    {
+        std::size_t end = begin + 1;
+        while (end < value.size() && masked[end] == masked[begin])
+            ++end;
+        parts.push_back({masked[begin] ? TranslationDiagnosticPartKind::Redacted : TranslationDiagnosticPartKind::Text,
+                         masked[begin] ? std::string{} : value.substr(begin, end - begin)});
+        begin = end;
+    }
+    const std::string safe = DiagnosticBudgetText(parts);
     std::size_t count{};
-    if (!CountText(value, count) ||
-        std::any_of(value.begin(), value.end(),
+    if (!CountText(safe, count) ||
+        std::any_of(safe.begin(), safe.end(),
                     [](unsigned char character)
                     {
                         return (character < 32 && character != '\r' && character != '\n' && character != '\t') ||
                                character == 127;
                     }))
-        return "[message omitted]";
-    if (value.size() > 1024)
-        return "[message omitted: too long]";
-    return value;
+        return {{TranslationDiagnosticPartKind::Omitted, {}}};
+    if (safe.size() > 1024)
+        return {{TranslationDiagnosticPartKind::TooLong, {}}};
+    return parts;
 }
 // 仅选取已知协议错误字段，并删除凭据及请求派生值；未知正文不尝试通用脱敏。
 // 入参：profile/request 为本次固定配置，response/body 为当前响应。
@@ -177,7 +212,7 @@ TranslationDiagnostic Diagnostic(const nlohmann::json& profile, const http::Requ
     TranslationDiagnostic result;
     result.httpStatus = response.status;
     result.systemError = response.systemError;
-    result.response = "[response omitted]";
+    result.response = {{TranslationDiagnosticPartKind::Omitted, {}}};
     if (profile.at("kind") == "custom_http" || body.size() > 16384)
         return result;
     try
@@ -207,9 +242,30 @@ TranslationDiagnostic Diagnostic(const nlohmann::json& profile, const http::Requ
         result.providerCode = SafeDiagnosticText(profile, request, std::move(code));
         result.providerMessage = SafeDiagnosticText(profile, request, std::move(message));
         if (!result.providerCode.empty() || !result.providerMessage.empty())
-            result.response = nlohmann::json{{"code", result.providerCode}, {"message", result.providerMessage}}.dump();
-        if (result.response.size() > 4096)
-            result.response = "[response omitted: too long]";
+        {
+            result.response = {{TranslationDiagnosticPartKind::Text, "{\"code\":\""}};
+            // 转义服务原文为 JSON 字符串内容，程序标记仍保持独立类型供界面本地化。
+            // 入参：parts 为字段安全片段。返回：无，追加摘要片段。
+            const auto append = [&result](const TranslationDiagnosticText& parts)
+            {
+                for (const TranslationDiagnosticPart& part : parts)
+                {
+                    if (part.kind == TranslationDiagnosticPartKind::Text)
+                    {
+                        const std::string quoted = nlohmann::json(part.text).dump();
+                        result.response.push_back({part.kind, quoted.substr(1, quoted.size() - 2)});
+                    }
+                    else
+                        result.response.push_back(part);
+                }
+            };
+            append(result.providerCode);
+            result.response.push_back({TranslationDiagnosticPartKind::Text, "\",\"message\":\""});
+            append(result.providerMessage);
+            result.response.push_back({TranslationDiagnosticPartKind::Text, "\"}"});
+        }
+        if (DiagnosticBudgetText(result.response).size() > 4096)
+            result.response = {{TranslationDiagnosticPartKind::TooLong, {}}};
     }
     catch (...)
     {
@@ -319,9 +375,14 @@ class OnlineProvider final : public ITranslationProvider
                                            : ParseResponse(this->kind_, response.status, body, parsed);
                         if (result.error == TranslationError::None)
                         {
-                            result.text = input.diagnostic
-                                              ? SafeDiagnosticText(profile, request, std::move(parsed.text))
-                                              : std::move(parsed.text);
+                            if (input.diagnostic)
+                            {
+                                result.diagnostic->translatedText =
+                                    SafeDiagnosticText(profile, request, std::move(parsed.text));
+                                result.text = DiagnosticBudgetText(result.diagnostic->translatedText);
+                            }
+                            else
+                                result.text = std::move(parsed.text);
                             result.detectedLanguage = std::move(parsed.detectedLanguage);
                         }
                     }

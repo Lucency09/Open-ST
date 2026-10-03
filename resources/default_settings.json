@@ -83,6 +83,53 @@
     "translation.source_language": "auto",
     "translation.target_language": "zh-CN",
     "translation.network.proxy_mode": "system",
-    "translation.network.proxy_address": ""
+    "translation.network.proxy_address": "",
+    "translation.test_sample": {
+      "text": "Hello, world!",
+      "source_language": "en",
+      "target_language": "zh-CN"
+    },
+    "translation.provider_resources": {
+      "baidu": [
+        {
+          "label_key": "translation.resources.baidu_credentials",
+          "url": "https://fanyi-api.baidu.com/manage/developer"
+        },
+        {
+          "label_key": "translation.resources.baidu_docs",
+          "url": "https://fanyi-api.baidu.com/doc/13"
+        }
+      ],
+      "google": [
+        {
+          "label_key": "translation.resources.google",
+          "url": "https://translate.google.com/"
+        }
+      ],
+      "openai": [
+        {
+          "label_key": "translation.resources.openai",
+          "url": "https://help.openai.com/en/articles/4936850-where-do-i-find-my-openai-api-key"
+        }
+      ],
+      "deepl": [
+        {
+          "label_key": "translation.resources.deepl",
+          "url": "https://support.deepl.com/hc/en-us/articles/360020695820-API-key-for-DeepL-API"
+        }
+      ],
+      "microsoft": [
+        {
+          "label_key": "translation.resources.microsoft",
+          "url": "https://learn.microsoft.com/en-us/azure/ai-services/translator/how-to/create-translator-resource"
+        }
+      ],
+      "ctranslate2_local": [
+        {
+          "label_key": "translation.resources.local",
+          "url": "https://opennmt.net/CTranslate2/"
+        }
+      ]
+    }
   }
 }

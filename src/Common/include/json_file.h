@@ -65,6 +65,11 @@ class JsonFileHandle final
     // true；拒绝、异常、编辑后无文档或读写失败时为 false；相同内容也检查写入条件但不重写文件。
     [[nodiscard]] bool Write(const JsonDocumentEditor& editor, JsonFileError* error = nullptr) const noexcept;
 
+    // 在同进程写入互斥锁内安全清理旁挂锁文件，后续写入仍可重新创建。
+    // 入参：error 为可选分类错误输出。
+    // 返回：已缺失或清理成功为 true；外部占用返回 Busy；调用方须先停止提交新的写入。
+    [[nodiscard]] bool CleanupIdleLock(JsonFileError* error = nullptr) const noexcept;
+
   private:
     friend class JsonFileManager;
 

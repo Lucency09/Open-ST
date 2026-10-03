@@ -4,6 +4,55 @@
 当前开发版本：`0.4.1`；已发布版本：[v0.4.1](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.1)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
+## 2026-10-03 v1.0.0 版本更新与整体审计
+
+当前开发版本为 **1.0.0**；历史公开发布记录仍为v0.4.1，本次不创建标签、安装包或远端Release。版本号与功能／质量验收分别记录。
+
+本次对源码、未提交变更、工程配置和进度表做静态复核，并只运行版本相关验证。审计前全文有52个未勾选项，多数是历史计划或重复人工验收，不能等同52个未实现功能。下表是去重后的当前工作入口，历史记录保留原语境。
+
+| 状态 | 当前事项 | 边界 |
+| --- | --- | --- |
+| 明确风险，待整改 | Release构建脚本会整树删除旧build/Release，包含data | 本轮人工备份恢复保护数据；脚本保留数据机制尚未实现，不影响安装器已有的数据保留流程 |
+| 质量待解决 | 本地中英模型短句误译 | 自动识别和排布修复不代表质量通过；原独立评估报告当前缺失，历史摘要保留 |
+| 工程未完成 | GPU设备丢失与桌面复制访问丢失恢复 | 当前失败返回不等于当次重建恢复 |
+| 性能待完成／验收 | 截图启动≤150ms；跨屏FPS、144Hz、CPU、尾延迟；复杂几何冷构建 | 当前未做新的性能实测，不使用历史单次数据冒充当前成绩 |
+| 验证未闭环 | 只读快捷键真实前台前提、贴图SetCursorPos前提 | 保留历史失败，不直接认定两个产品功能缺陷；D-066零冗余定位另属后置优化 |
+| 实机验收 | OCR／翻译／保存／贴图／设置：IME、多语言、混合DPI/HDR、焦点、长文本、取消、4K内存 | 百度通用翻译用户已确认可用；其他平台凭据、模型质量和完整使用矩阵不代签 |
+| 环境验收 | Windows10、所有用户提权／多账户、缺运行库／重启、显式删数据、覆盖升级、远端更新安装 | 安装与检查更新已实现，不重新列成未开发功能；程序／Setup仍未签名 |
+| 明确后置 | 图片翻译、冻结鼠标指针、UIA子控件识别、界面字体选择、D-066优化 | 需要用户重新排期；冻结指针原设计文件当前缺失，恢复时需补齐方案 |
+
+首页和包内说明中“翻译未接入”、旧开发版本及测试脚本路径说明已同步；5处失效本地文档引用已移除或指向可核实历史摘要，未补造被删除的报告。
+锁清理、配置来源、接口诊断身份隔离、资源链接和窗口层级的静态复核未发现新的明确严重阻断；这不代替剩余实机验收。
+
+- [x] CMake与vcpkg工程版本统一为1.0.0；生成头、Windows版本资源、安装器输入继续由同一工程版本派生。
+- [x] 正式test.ps1构建Update目标，3项版本比较／产物命名／本地版本领先用例通过，未运行全量测试。
+- [x] 正式build.ps1 Release构建通过；EXE FileVersion=1.0.0.0、ProductVersion=1.0.0、release-metadata.version=1.0.0已核对。
+- [x] 原Release/data的5个文件已备份恢复并逐项SHA-256验证，备份在.cache/release-data-backups/v1-06ee8d6ce40647f09984ac2554a73c89；没有修改用户配置内容。
+- 日志：testing/testoutput/v1-version-tests.log、v1-update-targeted.log、v1-release-build.log。未生成Setup／ZIP、未创建标签、未公开发布。
+
+
+## 2026-10-03 补齐供应商资源链接与工具栏层级
+
+- [x] 补做此前遗漏的两项已确认需求：链接实际落入settings.json；文字结果窗保持在截图工具栏上方。
+- [x] translation.provider_resources默认值在资源配置，用户settings.json可整体覆盖；启动仅补缺失字段，保留既有链接（含空对象）及其他配置。编辑页参数区上方按类型显示入口，Google/Local注明无需Key，百度区分通用AppID与大模型Key，OpenAI注明第三方兼容凭据来源。
+- [x] 复用公共按钮与HTTPS参数校验，配置快照按值绑定，不携带接口凭据、不提交草稿；非法链接局部提示，文档锚点可用。
+- [x] App动态查询文字结果窗句柄，工具栏窗口定位消息统一约束相对层级；初次打开／重复激活刷新，DPI／定位／状态刷新／外部提升后不反盖，不抢焦点，关闭重开不留旧句柄。
+- [x] 正式test.ps1构建相关目标；工具栏21项（20通过、1人工跳过），设置相关35项、App配置1项及文字会话／工具栏队列21项全部通过。合计78项，77通过、1人工跳过，未运行全量。
+- [x] 核实用户实际运行build/Release/Open-ST.exe，正式build.ps1 -Configuration Release构建及staging通过，更新实际使用目录而非仅生成Debug；未生成安装包或公开发布。
+- [x] 构建前备份Release/data的5个文件，构建后原样恢复并逐文件SHA-256核对一致，凭据／日志保留；备份在.cache/release-data-backups/29793bab294149358dc6aa53f8bb3cce。未修改构建脚本。
+- 日志：testing/testoutput/resources-zorder-toolbar.log、resources-links-settings.log、resources-links-settings-targeted.log、resources-links-app.log、resources-zorder-text-session.log、resources-zorder-release.log。
+
+## 2026-10-03 默认配置统一、本地化与退出锁清理
+
+- [x] 用户指定仅处理A1/A2/A5配置来源、A19本地化及settings.json.lock退出清理，其余审计项不迁移。
+- [x] 删除C++默认接口生成器，内置新建模板读取正式默认配置，生成新ID、停用并清空凭据。语言／代理／接口列表缺失或非法明确失败，移除结构体、结果窗及编辑入口的重复默认回退。
+- [x] 测试文本及语言集中到translation.test_sample；编辑窗口显示与提交共用同一快照，缺失时禁用测试，用户配置可覆盖默认资源。界面文案不再复制固定样本。
+- [x] 诊断原文与脱敏／省略标记以结构化片段区分，错误及成功译文均由界面资源本地化标记；原服务消息保持原文，普通翻译不改变。
+- [x] Settings正常退出安全删除空闲用户锁，其他进程持有时保留；Common复用路径锚定并通过同一独占句柄标记删除，不改变其他锁的保留策略。强制终止不保证清理。
+- [x] 正式test.ps1构建相关模块，定向验证Translation47项全过；Common锁协调／JSON共40项，39过／1符号链接权限跳过；Settings130项，129过／1人工跳过；App样本配置与文字翻译会话12项全过。合计229项，227通过、2跳过，未运行全量。
+- [x] 正式build.ps1 Debug产品 /W4 /WX 构建通过；未发布。新增配置读取及锁测试均使用隔离数据，不修改真实用户配置或调用在线服务。
+- 日志：testing/testoutput/config-unification-translation-recheck.log、config-lock-common-build.log、config-lock-common-targeted.log、config-unification-settings.log、config-unification-app.log、config-unification-app-recheck.log、config-unification-text-window.log、config-unification-product.log。
+
 ## 2026-10-03 接口编辑截图、连接诊断与本地自动识别
 
 - [x] 用户确认底部测试按钮／只读可复制结果布局、编辑窗口保持打开可截图，并批准三项合并施工；子Agent复核设计、实现与范围。
@@ -14,7 +63,8 @@
 - [x] 正式test.ps1完成Local26项、Translation44项、Settings126项（125通过／1人工跳过）；App经正式脚本构建并运行新增取消隔离单例，随后仅选截图热键／工具栏／OCR／文字翻译会话25项，全部通过。合计222项，221通过／1人工跳过；未运行全量。
 - [x] 正式build.ps1 Debug产品 /W4 /WX 构建通过，产物为 build/Debug/src/Launcher/Open-ST.exe；未发布。未使用用户百度凭据发出在线请求，自动化使用传输替身／无凭据拒绝路径。
 - 日志：testing/testoutput/connection-auto-local.log、connection-diagnostics-protocol.log、connection-settings.log、connection-application-final.log、connection-application-targeted.log、connection-product-build.log。
-- [ ] 用户实际编辑截图及使用已配置百度接口点击测试连接后的体验验收。
+- [x] 百度通用翻译配置与可用性已由用户明确确认“现在能用了”。
+- [ ] 编辑截图及最近窗口层级／资源链接的完整实际体验仍待逐项确认。
 
 ## 2026-10-03 构建与模型准备审计整改
 
@@ -68,7 +118,7 @@
 - [x] 接入统一提供方、有序调度、内置与自定义HTTP、CTranslate2子模块及有界模型缓存；默认六项仅百度启用，稳定ID支持同类多实例与排序。
 - [x] Settings结构化草稿与原有字段原子保存；结果窗口演进为唯一可编辑原文和只读译文，修改／配置应用／关窗立即撤销旧任务资格，后台对象跨窗口保留。
 - [x] 固定模型转换配方、14份运行文件清单与校验、CTranslate2 overlay及三方许可已接入；Debug产品与额外三种功能开关组合编译通过。
-- [x] 完成本机Release诊断探针的中英冷／热耗时、释放及OCR叠加内存实测，详见[本地翻译评估](local-translation-evaluation-2026-10-02.md)。14份模型文件共163.48 MiB，质量存在明确短句误译，不视为验收通过。
+- [x] 完成本机Release诊断探针的中英冷／热耗时、释放及OCR叠加内存实测，详见历史实测记录（原独立报告当前缺失）。14份模型文件共163.48 MiB，质量存在明确短句误译，不视为验收通过。
 - [x] Debug／Release产品 `/W4 /WX` 构建及Release staging通过，开发候选目录为 `build/Release/`；未生成ZIP／Setup、未公开发布。版本仍为0.4.1的dirty开发树，不冒充新的正式发行。
 - [x] 正常权限下全量915项：900通过、12按原条件跳过、3失败；日志 `testing/testoutput/translation-full-regression.log`。翻译核心37、本地模型9、文字窗口10均通过，Settings 117通过／1人工跳过、Http 12通过、OCR 21通过、Update 21通过／1权限跳过。快照读取失败零请求、同类配置／切换、取消与迟到结果、模型元数据／完整验证边界均有覆盖。
 - [ ] 两项桌面输入前提仍失败：只读注册热键无法取得真实前台、贴图真实点击用例的SetCursorPos返回失败，正常权限定向复跑仍失败；保留失败而不改成跳过。另有已后置D-066贴图重复定位请求失败，未越界修改PinWindow。完整回归不宣称全绿；日志 `translation-desktop-recheck.log`、`translation-readonly-recheck.log`。
@@ -783,7 +833,7 @@ OCR、翻译、代理、API Key 和图片上传提醒等设置随对应业务实
 
 ## 待处理事项
 
-- [ ] 【后置】冻结鼠标指针：保留 [未批准设计稿](design/frozen-pointer-v0.3.md)，不执行其阶段 A 验证；恢复排期另行确认。
+- [ ] 【后置】冻结鼠标指针：保留 未批准设计稿（原文件当前缺失，恢复排期时需补齐），不执行其阶段 A 验证；恢复排期另行确认。
 
 - [x] 快速移动鼠标导致三次重试耗尽：直接使用鼠标更新帧的实验出现黑屏并回滚；改为每输出共用500ms预算
   后，用户于2026-09-08复测反馈“看起来没问题”，详见D-049。

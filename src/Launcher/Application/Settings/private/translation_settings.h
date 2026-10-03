@@ -25,7 +25,7 @@ std::wstring TranslationSettingsError(const SettingsEditSession& session, const 
 // 入参：owner/icon 为宿主；profile 为确认后替换的条目；callbacks 提供领域规则；creating 允许新增时选择类型。
 // 返回：明确确认且校验通过为 true，取消或窗口失败为 false。
 bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, const SettingsWindowCallbacks& callbacks,
-                            bool creating = false, std::string proxyMode = "system", std::string proxyAddress = {});
+                            bool creating, std::string proxyMode, std::string proxyAddress);
 
 class TranslationSettingsPanel final
 {

@@ -61,12 +61,12 @@ enum class TranslationPhase
 };
 struct TranslationOptions
 {
-    std::string sourceLanguage{"auto"}, targetLanguage{"zh-CN"};
+    std::string sourceLanguage, targetLanguage;
 };
 struct TranslationConfiguration
 {
     nlohmann::json interfaces;
-    std::string proxyMode{"system"}, proxyAddress;
+    std::string proxyMode, proxyAddress;
 };
 struct TranslationSettings
 {
@@ -78,14 +78,10 @@ struct TranslationProfileField
     std::string_view key;
     bool secret{}, multiline{};
 };
-// 创建具有新稳定身份的条目；初始停用，凭据为空。
-// 入参：kind 为领域提供方类型。
-// 返回：完整 JSON 条目；未知类型抛出参数异常。
-nlohmann::json CreateTranslationProfile(std::string_view kind);
-// 发布六项默认列表，仅百度默认启用；默认身份固定，复制应创建新身份。
-// 入参：无。
-// 返回：独立有序 JSON 数组。
-nlohmann::json DefaultTranslationInterfaces();
+// 根据宿主读取的默认资源创建新身份条目；初始停用，凭据清空。
+// 入参：kind 为类型；defaultInterfaces 为默认资源中的接口列表。
+// 返回：完整 JSON；模板缺失、重复或非法时抛出参数异常。
+nlohmann::json CreateTranslationProfile(std::string_view kind, const nlohmann::json& defaultInterfaces);
 // 发布条目表单字段，秘密值由 secrets 对象存储，其余来自 configuration。
 // 入参：kind 为提供方类型。
 // 返回：静态字段列表；自定义 HTTP 使用分组表单及 TranslationChoices 专用选项。
@@ -110,9 +106,9 @@ TranslationError ValidateTranslationProfile(const nlohmann::json& profile) noexc
 // 入参：interfaces 为 JSON 数组。
 // 返回：合法为 None。
 TranslationError ValidateTranslationInterfaces(const nlohmann::json& interfaces) noexcept;
-// 捕获独立设置快照，缺字段采用领域默认，类型错误保留为无效配置。
+// 捕获宿主已合并默认资源的完整设置快照，不在领域代码中回退。
 // 入参：read 读取单个 JSON 设置字段；缺失返回空 optional。
-// 返回：独立设置副本；读取和内存异常交给宿主。
+// 返回：独立设置副本；缺失或非法字段抛出参数异常，读取和内存异常交给宿主。
 TranslationSettings ReadTranslationSettings(const std::function<std::optional<nlohmann::json>(std::string_view)>& read);
 // 校验整轮配置与源目标，不把单项缺失凭据判为全局错误。
 // 入参：configuration 为列表与代理，options 为源目标。
@@ -142,13 +138,27 @@ struct TranslationResult
     TranslationOptions options;
     std::uint64_t requestId{}, sessionId{}, sourceRevision{}, configurationRevision{};
 };
+// 区分远端原文与程序生成的诊断标记，界面只翻译标记，不猜测服务文字。
+enum class TranslationDiagnosticPartKind
+{
+    Text,
+    Redacted,
+    Omitted,
+    TooLong
+};
+struct TranslationDiagnosticPart
+{
+    TranslationDiagnosticPartKind kind{TranslationDiagnosticPartKind::Text};
+    std::string text;
+};
+using TranslationDiagnosticText = std::vector<TranslationDiagnosticPart>;
 // 仅显式连接测试发布的有界诊断；正文仅含安全字段摘要，不含请求凭据。
 struct TranslationDiagnostic
 {
     unsigned httpStatus{};
     unsigned long systemError{};
     std::int64_t elapsedMilliseconds{};
-    std::string providerCode, providerMessage, response;
+    TranslationDiagnosticText providerCode, providerMessage, response, translatedText;
 };
 struct TranslationAttempt
 {

@@ -22,8 +22,10 @@ class TextResultWindow final
     ~TextResultWindow();
     // 创建非模态表单并固定初始语言，不读取配置文件。
     // 入参：owner/icon为宿主资源；callbacks为窄通知；source/target为语言。返回：成功为true。
-    bool Show(HWND owner, HICON icon, TextResultCallbacks callbacks, std::string source = "auto",
-              std::string target = "zh-CN");
+    bool Show(HWND owner, HICON icon, TextResultCallbacks callbacks, std::string source, std::string target);
+    // 配置恢复后填充尚未选择的语言，保留用户已作出的临时选择。
+    // 入参：source/target为成功读取的配置语言。返回：无。
+    void InitializeMissingLanguages(const std::string& source, const std::string& target);
     // 更新通用状态。入参：key为文本键。返回：无。
     void Status(std::string_view key);
     // 更新带参数或逐项诊断的安全状态。入参：text不含原文和凭据。返回：无。
@@ -52,6 +54,9 @@ class TextResultWindow final
     void Close() noexcept;
     // 激活现有窗口。入参：无。返回：无。
     void Activate() noexcept;
+    // 提供当前结果窗口以供宿主排序，不转移所有权。
+    // 入参：无。返回：存活结果窗口，否则为空。
+    HWND NativeHandle() const noexcept;
     // 查询原生存活状态。入参：无。返回：存活为true。
     bool IsOpen() const noexcept;
     // 复用公共表单输入。入参：message。返回：消费为true。

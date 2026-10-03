@@ -2077,9 +2077,9 @@
       "ja-JP": "成功時の数値"
     },
     "translation.test.sample": {
-      "zh-CN": "测试样本：Hello, world!（英语 → 简体中文）",
-      "en-US": "Sample: Hello, world! (English → Simplified Chinese)",
-      "ja-JP": "テスト：Hello, world!（英語 → 簡体字中国語）"
+      "zh-CN": "测试样本：{text}（{source} → {target}）",
+      "en-US": "Test sample: {text} ({source} → {target})",
+      "ja-JP": "テスト文：{text}（{source} → {target}）"
     },
     "translation.test.start": {
       "zh-CN": "测试连接",
@@ -2150,6 +2150,66 @@
       "zh-CN": "测试已取消。",
       "en-US": "Test cancelled.",
       "ja-JP": "テストをキャンセルしました。"
+    },
+    "translation.diagnostic.redacted": {
+      "zh-CN": "[已脱敏]",
+      "en-US": "[redacted]",
+      "ja-JP": "[非表示]"
+    },
+    "translation.diagnostic.omitted": {
+      "zh-CN": "[已省略]",
+      "en-US": "[omitted]",
+      "ja-JP": "[省略]"
+    },
+    "translation.diagnostic.too_long": {
+      "zh-CN": "[内容过长，已省略]",
+      "en-US": "[omitted: too long]",
+      "ja-JP": "[長すぎるため省略]"
+    },
+    "translation.resources.baidu_credentials": {
+      "zh-CN": "获取通用翻译 AppID 和密钥",
+      "en-US": "Get general translation AppID and secret key",
+      "ja-JP": "汎用翻訳のAppIDとシークレットキーを取得"
+    },
+    "translation.resources.baidu_docs": {
+      "zh-CN": "通用翻译开通说明（非大模型 API Key）",
+      "en-US": "General translation setup (not an LLM API key)",
+      "ja-JP": "汎用翻訳の利用開始（LLM APIキーとは異なります）"
+    },
+    "translation.resources.google": {
+      "zh-CN": "Google 翻译官网（当前网页接口无需 Key）",
+      "en-US": "Google Translate website (this web adapter needs no key)",
+      "ja-JP": "Google翻訳公式サイト（このWeb接続はキー不要）"
+    },
+    "translation.resources.openai": {
+      "zh-CN": "OpenAI Key 获取说明（其他兼容服务请使用其平台凭据）",
+      "en-US": "OpenAI key guide (other compatible services use their own credentials)",
+      "ja-JP": "OpenAIキー取得方法（互換サービスは各社の認証情報を使用）"
+    },
+    "translation.resources.deepl": {
+      "zh-CN": "DeepL API Key 获取说明",
+      "en-US": "DeepL API key guide",
+      "ja-JP": "DeepL APIキー取得方法"
+    },
+    "translation.resources.microsoft": {
+      "zh-CN": "Microsoft Translator 创建和密钥说明",
+      "en-US": "Microsoft Translator setup and keys",
+      "ja-JP": "Microsoft Translatorの作成とキー取得"
+    },
+    "translation.resources.local": {
+      "zh-CN": "CTranslate2 引擎文档（本地接口无需 Key）",
+      "en-US": "CTranslate2 documentation (local adapter needs no key)",
+      "ja-JP": "CTranslate2ドキュメント（ローカル翻訳はキー不要）"
+    },
+    "translation.resources.invalid": {
+      "zh-CN": "部分资源链接配置无效，已忽略；仍可编辑并保存接口。",
+      "en-US": "Some resource links are invalid and were ignored. Interface editing is still available.",
+      "ja-JP": "一部のリンク設定が無効なため無視されました。接続設定は編集・保存できます。"
+    },
+    "translation.resources.open_failed": {
+      "zh-CN": "无法打开资源链接，请检查链接或默认浏览器。",
+      "en-US": "Could not open the resource link. Check the URL or default browser.",
+      "ja-JP": "リンクを開けません。URLまたは既定のブラウザーを確認してください。"
     }
   }
 }

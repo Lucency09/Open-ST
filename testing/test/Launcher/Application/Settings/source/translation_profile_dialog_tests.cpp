@@ -354,10 +354,16 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
     int submitted = 0, cancelled = 0;
     this->configure_ = [&](open_st::SettingsWindowCallbacks& callbacks)
     {
-        callbacks.submitTranslationTest =
-            [&](const nlohmann::json& candidate, std::string_view mode, std::string_view address)
+        callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
+        { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
+        callbacks.submitTranslationTest = [&](const nlohmann::json& candidate, std::string_view mode,
+                                              std::string_view address,
+                                              const open_st::SettingsTranslationTestSample& sample)
         {
             ++submitted;
+            EXPECT_EQ(sample.text, "配置中的测试原文");
+            EXPECT_EQ(sample.sourceLanguage, "zh-CN");
+            EXPECT_EQ(sample.targetLanguage, "en");
             EXPECT_EQ(candidate["name"], "Unsaved");
             EXPECT_EQ(candidate["secrets"]["api_key"], "draft-secret");
             EXPECT_FALSE(candidate["enabled"].get<bool>());
@@ -377,6 +383,7 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
     {
         SetWindowTextW(Field(window, L"settings.translation.profile_name", L"EDIT"), L"Unsaved");
         SetWindowTextW(Field(window, L"settings.translation.field.api_key", L"EDIT"), L"draft-secret");
+        EXPECT_NE(Control(window, L"STATIC", L"配置样本说明"), nullptr);
         const HWND test = Control(window, L"BUTTON", L"translation.test.start");
         ASSERT_NE(test, nullptr);
         SendMessageW(test, BM_CLICK, 0, 0);
@@ -405,7 +412,10 @@ TEST_F(TranslationProfileDialogTest, connection_result_is_polled_after_host_disp
     HWND dialog{};
     this->configure_ = [&](open_st::SettingsWindowCallbacks& callbacks)
     {
-        callbacks.submitTranslationTest = [](const nlohmann::json&, std::string_view, std::string_view)
+        callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
+        { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
+        callbacks.submitTranslationTest =
+            [](const nlohmann::json&, std::string_view, std::string_view, const open_st::SettingsTranslationTestSample&)
         { return open_st::SettingsTranslationTestStatus{72, true, L"pending"}; };
         callbacks.cancelTranslationTest = [](std::uint64_t id) { EXPECT_EQ(id, 72U); };
         callbacks.translationTestStatus = [&](std::uint64_t id)
@@ -441,3 +451,77 @@ TEST_F(TranslationProfileDialogTest, connection_result_is_polled_after_host_disp
     EXPECT_TRUE(delivered);
 }
 } // namespace
+
+// 样本读取失败时不悄悄发送程序内置文本。
+// 入参：无。返回：断言结果。
+TEST_F(TranslationProfileDialogTest, missing_configured_sample_disables_connection_test)
+{
+    int submitted = 0;
+    this->configure_ = [&](open_st::SettingsWindowCallbacks& callbacks)
+    {
+        callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
+        { return std::nullopt; };
+        callbacks.submitTranslationTest = [&](const nlohmann::json&, std::string_view, std::string_view,
+                                              const open_st::SettingsTranslationTestSample&)
+        {
+            ++submitted;
+            return open_st::SettingsTranslationTestStatus{};
+        };
+        callbacks.translationTestStatus = [](std::uint64_t) { return open_st::SettingsTranslationTestStatus{}; };
+        callbacks.cancelTranslationTest = [](std::uint64_t) {};
+    };
+    this->action_ = [](HWND window)
+    {
+        const HWND test = Control(window, L"BUTTON", L"translation.test.start");
+        ASSERT_NE(test, nullptr);
+        EXPECT_FALSE(IsWindowEnabled(test));
+        SendMessageW(test, BM_CLICK, 0, 0);
+        PostMessageW(window, WM_CLOSE, 0, 0);
+    };
+    auto profile = Profile("test");
+    EXPECT_FALSE(this->Run(profile));
+    EXPECT_EQ(submitted, 0);
+}
+
+// 资源按钮随类型切换并使用自身快照，点击失败不覆盖草稿。
+// 入参：无。返回：真实窗口消息断言。
+TEST_F(TranslationProfileDialogTest, configured_resource_links_follow_kind_without_saving_draft)
+{
+    std::vector<std::string> opened;
+    this->configure_ = [&](open_st::SettingsWindowCallbacks& callbacks)
+    {
+        callbacks.translationResources = []()
+        {
+            return open_st::SettingsTranslationResources{
+                {{"test", "resource.test", "https://example.invalid/credentials#keys"},
+                 {"custom_http", "resource.custom", "https://example.invalid/docs"}},
+                {}};
+        };
+        callbacks.openTranslationResource = [&](std::string_view url)
+        {
+            opened.emplace_back(url);
+            return false;
+        };
+    };
+    this->action_ = [](HWND window)
+    {
+        const HWND first = Control(window, L"BUTTON", L"resource.test");
+        ASSERT_NE(first, nullptr);
+        EXPECT_EQ(Control(window, L"BUTTON", L"resource.custom"), nullptr);
+        SendMessageW(first, BM_CLICK, 0, 0);
+        EXPECT_NE(Control(window, L"STATIC", L"translation.resources.open_failed"), nullptr);
+        const HWND kind = Field(window, L"settings.translation.profile_type", L"COMBOBOX");
+        Select(kind, L"custom_http");
+        EXPECT_EQ(Control(window, L"BUTTON", L"resource.test"), nullptr);
+        const HWND second = Control(window, L"BUTTON", L"resource.custom");
+        ASSERT_NE(second, nullptr);
+        SendMessageW(second, BM_CLICK, 0, 0);
+        PostMessageW(window, WM_CLOSE, 0, 0);
+    };
+    auto profile = Profile("test");
+    const auto before = profile;
+    EXPECT_FALSE(this->Run(profile, true));
+    EXPECT_EQ(profile, before);
+    EXPECT_EQ(opened,
+              (std::vector<std::string>{"https://example.invalid/credentials#keys", "https://example.invalid/docs"}));
+}

@@ -584,4 +584,83 @@ TEST_F(SettingsTest, snapshot_requires_complete_fields_and_reads_defaults_only_f
     EXPECT_EQ(complete->at("ui.language"), "ja-JP");
     EXPECT_EQ(complete->at("mode"), "custom");
 }
+// 正常关闭删除空闲用户锁，保留配置并允许下次初始化重建锁。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(SettingsTest, shutdown_removes_idle_user_lock_and_restart_recreates_it)
+{
+    this->WriteDefault();
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::filesystem::path path = this->root_ / "data" / "settings.json";
+    const std::filesystem::path lockPath = this->root_ / "data" / "settings.json.lock";
+    const std::string before = SettingsTest::ReadRaw(path);
+    ASSERT_TRUE(std::filesystem::exists(lockPath));
+    open_st::ShutdownSettings();
+    EXPECT_FALSE(std::filesystem::exists(lockPath));
+    EXPECT_EQ(SettingsTest::ReadRaw(path), before);
+    EXPECT_FALSE(open_st::SetStringSetting("ui.language", "zh-CN"));
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_TRUE(std::filesystem::exists(lockPath));
+    open_st::ShutdownSettings();
+    EXPECT_FALSE(std::filesystem::exists(lockPath));
+}
+
+// 外部持有租约时退出不删除文件，也不阻塞；以后空闲退出仍可清理。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(SettingsTest, shutdown_preserves_busy_user_lock)
+{
+    this->WriteDefault();
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::filesystem::path lockPath = this->root_ / "data" / "settings.json.lock";
+    open_st::FileLease external;
+    ASSERT_TRUE(external.TryAcquire(lockPath, open_st::FileLeaseMode::Shared));
+    open_st::ShutdownSettings();
+    EXPECT_TRUE(std::filesystem::exists(lockPath));
+    external.Reset();
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    open_st::ShutdownSettings();
+    EXPECT_FALSE(std::filesystem::exists(lockPath));
+}
+
+// 默认资源失败时仍清理先前遗留的空闲用户锁，不删除用户文档。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(SettingsTest, failed_initialization_removes_stale_idle_user_lock)
+{
+    this->WriteDefault();
+    const std::filesystem::path path = this->root_ / "data" / "settings.json";
+    const std::filesystem::path lockPath = this->root_ / "data" / "settings.json.lock";
+    SettingsTest::WriteRaw(path, R"({"schemaVersion":1,"settings":{"ui.language":"en-US"}})");
+    const std::string before = SettingsTest::ReadRaw(path);
+    open_st::FileLease stale;
+    ASSERT_TRUE(stale.TryAcquire(lockPath, open_st::FileLeaseMode::Exclusive));
+    stale.Reset();
+    SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json", "broken");
+    EXPECT_FALSE(open_st::InitializeSettings(this->root_));
+    EXPECT_FALSE(std::filesystem::exists(lockPath));
+    EXPECT_EQ(SettingsTest::ReadRaw(path), before);
+}
+
 } // namespace
+
+// 旧配置只补新增链接字段，显式配置和已有凭据不被后续默认资源覆盖。
+// 入参：无。返回：隔离文件验证。
+TEST_F(SettingsTest, provider_resources_are_backfilled_once_without_overwriting_user_values)
+{
+    const nlohmann::json resources{{"baidu", nlohmann::json::array({{{"label_key", "resource.docs"},
+                                                                     {"url", "https://example.invalid/default"}}})}};
+    const nlohmann::json defaults{
+        {"schemaVersion", 1}, {"settings", {{"translation.provider_resources", resources}, {"other.new.default", 1}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const nlohmann::json original{{"schemaVersion", 1}, {"settings", {{"existing.secret", "preserved"}}}};
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    nlohmann::json actual = nlohmann::json::parse(this->ReadRaw(userPath));
+    EXPECT_EQ(actual["settings"]["translation.provider_resources"], resources);
+    EXPECT_EQ(actual["settings"]["existing.secret"], "preserved");
+    EXPECT_FALSE(actual["settings"].contains("other.new.default"));
+    open_st::ShutdownSettings();
+    actual["settings"]["translation.provider_resources"] = nlohmann::json::object();
+    this->WriteRaw(userPath, actual.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), actual);
+}

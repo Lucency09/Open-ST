@@ -111,6 +111,10 @@ class CaptureToolbar final
     // 返回：ToolbarResult：成功时 success 为 true；失败时为 false，error 仅用于日志诊断。
     ToolbarResult Create(HINSTANCE instance, HWND owner, std::vector<ToolbarButtonSpec> buttons,
                          TextResolver textResolver, CommandHandler onCommand);
+    // 注入宿主指定的上层窗口查询，不持有窗口或业务会话。
+    // 入参：query 每次返回当前应位于工具栏上方的窗口；空值恢复通常置顶行为。
+    // 返回：无。
+    void SetUpperWindowQuery(std::function<HWND()> query);
     // 按选区和目标显示器工作区定位工具栏。
     // 入参：selection、workArea：虚拟桌面物理像素矩形；dpi：目标显示器 DPI。
     // 返回：布局及窗口定位成功时 success 为 true；无有效窗口或布局失败时为 false 并附诊断。

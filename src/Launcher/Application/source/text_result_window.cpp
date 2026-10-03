@@ -106,7 +106,11 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
         if (!renderer.BindString(
                 id,
                 // 查询本窗口临时语言。入参：无。返回：选择值。
-                [this, isSource]() { return RendererStringResult{true, isSource ? this->source_ : this->target_, {}}; },
+                [this, isSource]()
+                {
+                    const std::string& selected = isSource ? this->source_ : this->target_;
+                    return RendererStringResult{!selected.empty(), selected, {}};
+                },
                 // 改语言仅取消，不自动重发。入参：value为候选。返回：接受状态。
                 [this, isSource](std::string_view value)
                 {
@@ -164,6 +168,21 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
 #endif
     this->Status("ocr.preparing");
     return true;
+}
+// 仅在首次配置读取失败后补入已恢复的设置，不覆盖用户临时选择。
+// 入参：source/target为宿主验证过的配置语言。返回：无。
+void TextResultWindow::InitializeMissingLanguages(const std::string& source, const std::string& target)
+{
+    if (this->source_.empty())
+    {
+        this->source_ = source;
+        (void)this->renderer_->RefreshValue("sourceLanguage");
+    }
+    if (this->target_.empty())
+    {
+        this->target_ = target;
+        (void)this->renderer_->RefreshValue("targetLanguage");
+    }
 }
 // 原文/选择变化统一推进修订并保留旧译文。入参：无。返回：无。
 void TextResultWindow::Changed()
@@ -291,6 +310,12 @@ void TextResultWindow::Activate() noexcept
         ShowWindow(this->renderer_->NativeHandle(), SW_RESTORE);
         SetForegroundWindow(this->renderer_->NativeHandle());
     }
+}
+// 提供借用原生句柄，关闭中的窗口不再参与宿主排序。
+// 入参：无。返回：当前结果窗口或空。
+HWND TextResultWindow::NativeHandle() const noexcept
+{
+    return this->IsOpen() ? this->renderer_->NativeHandle() : nullptr;
 }
 // 查询原生寿命。入参：无。返回：存活为true。
 bool TextResultWindow::IsOpen() const noexcept

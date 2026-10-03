@@ -5,6 +5,10 @@
 #include "diagnostic_text.h"
 #include "app_translation_state.h"
 #include <app.h>
+#include <algorithm>
+#include <shellapi.h>
+#include <array>
+#include <stdexcept>
 #include <hotkeys.h>
 #include <pin_window_manager.h>
 #include <settings.h>
@@ -17,10 +21,61 @@
 #endif
 #ifdef OPEN_ST_HAS_TRANSLATION
 #include <translation_client.h>
+#include <http_transport.h>
 #endif
 
 namespace open_st
 {
+#ifdef OPEN_ST_HAS_TRANSLATION
+namespace
+{
+// 复用HTTP参数校验限制网页协议；完整地址允许文档锚点，但拒绝控制符和浏览器路径混淆。
+// 入参：url为配置中的UTF-8网址。返回：适合交给默认浏览器的HTTPS地址。
+bool ValidTranslationResource(std::string_view url)
+{
+    if (url.empty() || url.size() > 32768 ||
+        std::any_of(url.begin(), url.end(), [](unsigned char c) { return c <= 32 || c == 127 || c == '\\'; }))
+        return false;
+    std::string lower(url);
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c)
+                   { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c); });
+    if (lower.find("%00") != std::string::npos || lower.find("%0d") != std::string::npos ||
+        lower.find("%0a") != std::string::npos || lower.find("%5c") != std::string::npos)
+        return false;
+    const std::wstring page = Utf8ToWide(url);
+    if (page.empty())
+        return false;
+    http::Request request;
+    request.url = page.substr(0, page.find(L'#'));
+    return http::IsValidRequest(request);
+}
+// 只本地化程序生成的诊断标记；远端同名字面文本保持原样。
+// 入参：parts为已经脱敏和限长的片段。返回：当前界面语言的可复制文字。
+std::wstring DiagnosticDisplay(const TranslationDiagnosticText& parts)
+{
+    std::wstring result;
+    for (const TranslationDiagnosticPart& part : parts)
+    {
+        switch (part.kind)
+        {
+        case TranslationDiagnosticPartKind::Text:
+            result += Utf8ToWide(part.text);
+            break;
+        case TranslationDiagnosticPartKind::Redacted:
+            result += GetUiText("translation.diagnostic.redacted");
+            break;
+        case TranslationDiagnosticPartKind::Omitted:
+            result += GetUiText("translation.diagnostic.omitted");
+            break;
+        case TranslationDiagnosticPartKind::TooLong:
+            result += GetUiText("translation.diagnostic.too_long");
+            break;
+        }
+    }
+    return result;
+}
+} // namespace
+#endif
 // 组装贴图与宿主之间的窄回调，保持兄弟模块互不依赖。
 // 入参：无。
 // 返回：文本同步查询，复制保存仅提交异步请求。
@@ -57,10 +112,108 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     callbacks.processThreadMessage = [this](MSG& message) { return this->ProcessApplicationMessage(message); };
 #ifdef OPEN_ST_HAS_TRANSLATION
     callbacks.translationAvailable = true;
+    // 资源入口以整个配置字段为一次快照；网址不来自源码或接口密钥。
+    // 入参：无。返回：有效入口及不阻止编辑的资源错误提示。
+    callbacks.translationResources = []()
+    {
+        SettingsTranslationResources result;
+        const auto invalid = [&]() { result.error = GetUiText("translation.resources.invalid"); };
+        try
+        {
+            const std::array<std::string_view, 1> keys{"translation.provider_resources"};
+            const std::optional<nlohmann::json> snapshot = ReadSettingsSnapshot(keys);
+            if (!snapshot || !snapshot->at(keys[0]).is_object() || snapshot->at(keys[0]).size() > 16)
+            {
+                invalid();
+                return result;
+            }
+            for (const auto& provider : snapshot->at(keys[0]).items())
+            {
+                if (!provider.value().is_array() || provider.value().size() > 8)
+                {
+                    invalid();
+                    continue;
+                }
+                for (const nlohmann::json& entry : provider.value())
+                {
+                    if (!entry.is_object() || !entry.contains("label_key") || !entry.at("label_key").is_string() ||
+                        !entry.contains("url") || !entry.at("url").is_string())
+                    {
+                        invalid();
+                        continue;
+                    }
+                    const std::string label = entry.at("label_key").get<std::string>();
+                    const std::string url = entry.at("url").get<std::string>();
+                    if (label.empty() || label.size() > 128 || !ValidTranslationResource(url))
+                    {
+                        invalid();
+                        continue;
+                    }
+                    result.links.push_back({provider.key(), label, url});
+                }
+            }
+        }
+        catch (...)
+        {
+            invalid();
+        }
+        return result;
+    };
+    // 用户明确点击才打开配置地址；再次校验，绝不附加API Key或其他请求参数。
+    // 入参：url为编辑窗口快照中的完整链接。返回：系统接受启动为真。
+    callbacks.openTranslationResource = [this](std::string_view url)
+    {
+        try
+        {
+            if (!ValidTranslationResource(url))
+                return false;
+            const std::wstring page = Utf8ToWide(url);
+            return reinterpret_cast<INT_PTR>(
+                       ShellExecuteW(this->DialogOwner(), L"open", page.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    };
+    // 读取一个完整样本对象，显示和实际请求共享此快照，不重复解释默认值。
+    // 入参：无。返回：完整且合法的样本；读取失败或字段非法为空。
+    callbacks.translationTestSample = []() -> std::optional<SettingsTranslationTestSample>
+    {
+        const std::array<std::string_view, 1> keys{"translation.test_sample"};
+        const std::optional<nlohmann::json> snapshot = ReadSettingsSnapshot(keys);
+        if (!snapshot)
+            return std::nullopt;
+        try
+        {
+            const nlohmann::json& value = snapshot->at(keys[0]);
+            SettingsTranslationTestSample sample;
+            sample.text = value.at("text").get<std::string>();
+            sample.sourceLanguage = value.at("source_language").get<std::string>();
+            sample.targetLanguage = value.at("target_language").get<std::string>();
+            const std::wstring text = Utf8ToWide(sample.text);
+            if (text.empty() || sample.text.find('\0') != std::string::npos ||
+                ValidateTranslationField("translation.source_language", sample.sourceLanguage) !=
+                    TranslationError::None ||
+                ValidateTranslationField("translation.target_language", sample.targetLanguage) !=
+                    TranslationError::None ||
+                sample.sourceLanguage == sample.targetLanguage)
+                return std::nullopt;
+            sample.description = GetUiText("translation.test.sample",
+                                           {{L"text", text},
+                                            {L"source", GetUiText("translation.choice." + sample.sourceLanguage)},
+                                            {L"target", GetUiText("translation.choice." + sample.targetLanguage)}});
+            return sample;
+        }
+        catch (...)
+        {
+            return std::nullopt;
+        }
+    };
     // 接口测试捕获未保存的单项和代理草稿，临时启用只存在于本次不可变请求。
     // 入参：profile/proxyMode/proxyAddress 为编辑草稿。返回：身份或安全拒绝信息。
-    callbacks.submitTranslationTest =
-        [this](const nlohmann::json& profile, std::string_view proxyMode, std::string_view proxyAddress)
+    callbacks.submitTranslationTest = [this](const nlohmann::json& profile, std::string_view proxyMode,
+                                             std::string_view proxyAddress, const SettingsTranslationTestSample& sample)
     {
         SettingsTranslationTestStatus status;
         try
@@ -82,8 +235,8 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
                 return status;
             }
             TranslationRequest request;
-            request.text = "Hello, world!";
-            request.options = {"en", "zh-CN"};
+            request.text = sample.text;
+            request.options = {sample.sourceLanguage, sample.targetLanguage};
             nlohmann::json candidate = profile;
             candidate["enabled"] = true;
             request.configuration.interfaces = nlohmann::json::array({std::move(candidate)});
@@ -150,17 +303,22 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
                                    std::to_wstring(diagnostic.systemError);
                 if (!diagnostic.providerCode.empty())
                     status.text += L"\r\n" + GetUiText("translation.test.provider_code") + L": " +
-                                   Utf8ToWide(diagnostic.providerCode);
+                                   DiagnosticDisplay(diagnostic.providerCode);
                 if (!diagnostic.providerMessage.empty())
                     status.text += L"\r\n" + GetUiText("translation.test.provider_message") + L": " +
-                                   Utf8ToWide(diagnostic.providerMessage);
+                                   DiagnosticDisplay(diagnostic.providerMessage);
                 if (!diagnostic.response.empty())
-                    status.text +=
-                        L"\r\n" + GetUiText("translation.test.response") + L":\r\n" + Utf8ToWide(diagnostic.response);
+                    status.text += L"\r\n" + GetUiText("translation.test.response") + L":\r\n" +
+                                   DiagnosticDisplay(diagnostic.response);
             }
             if (snapshot.phase == TranslationPhase::Succeeded && snapshot.result)
-                status.text +=
-                    L"\r\n" + GetUiText("translation.test.result") + L":\r\n" + Utf8ToWide(snapshot.result->text);
+            {
+                std::wstring translated = Utf8ToWide(snapshot.result->text);
+                if (!snapshot.attempts.empty() && snapshot.attempts.back().diagnostic &&
+                    !snapshot.attempts.back().diagnostic->translatedText.empty())
+                    translated = DiagnosticDisplay(snapshot.attempts.back().diagnostic->translatedText);
+                status.text += L"\r\n" + GetUiText("translation.test.result") + L":\r\n" + translated;
+            }
             if (!status.running && !this->shuttingDown_)
                 KillTimer(this->messageWindow_, TranslationPollTimer);
         }
@@ -192,7 +350,13 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
         return result;
     };
     // 新条目由领域创建独立稳定身份。入参：kind为类型。返回：草稿条目。
-    callbacks.createTranslationProfile = [](std::string_view kind) { return CreateTranslationProfile(kind); };
+    callbacks.createTranslationProfile = [](std::string_view kind)
+    {
+        const std::optional<nlohmann::json> defaults = GetDefaultJsonSetting("translation.interfaces");
+        if (!defaults)
+            throw std::runtime_error("Translation default configuration is unavailable");
+        return CreateTranslationProfile(kind, *defaults);
+    };
     // 将领域字段适配到普通子表单描述。入参：kind为类型。返回：无业务依赖的字段。
     callbacks.translationProfileFields = [](std::string_view kind)
     {
@@ -228,15 +392,22 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     // 入参：values为全部设置候选。返回：安全错误或空。
     callbacks.validateTranslationSettings = [](const nlohmann::json& values)
     {
-        const TranslationSettings settings = ReadTranslationSettings(
-            // 仅借用本次候选值。入参：key为领域字段。返回：独立值或缺失。
-            [&values](std::string_view key) -> std::optional<nlohmann::json>
-            {
-                const auto found = values.find(key);
-                return found == values.end() ? std::nullopt : std::optional<nlohmann::json>(*found);
-            });
-        const TranslationError error = ValidateTranslationConfiguration(settings.configuration, settings.options);
-        return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+        try
+        {
+            const TranslationSettings settings = ReadTranslationSettings(
+                // 仅借用本次候选值。入参：key为领域字段。返回：独立值或缺失。
+                [&values](std::string_view key) -> std::optional<nlohmann::json>
+                {
+                    const auto found = values.find(key);
+                    return found == values.end() ? std::nullopt : std::optional<nlohmann::json>(*found);
+                });
+            const TranslationError error = ValidateTranslationConfiguration(settings.configuration, settings.options);
+            return error == TranslationError::None ? std::wstring{} : GetUiText(TranslationErrorTextKey(error));
+        }
+        catch (...)
+        {
+            return GetUiText(TranslationErrorTextKey(TranslationError::InvalidConfiguration));
+        }
     };
     // 提示本地边界或显式HTTP风险，不在UI线程加载模型。
     // 入参：profile为条目。返回：安全说明。

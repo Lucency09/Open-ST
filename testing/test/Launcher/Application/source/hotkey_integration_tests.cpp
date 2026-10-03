@@ -8,6 +8,10 @@
 #include <gtest/gtest.h>
 #include <selection_model.h>
 #include <settings_window.h>
+#include <settings.h>
+#include "settings_internal.h"
+#include "json_file_test_access.h"
+#include <fstream>
 #ifdef OPEN_ST_TEST_TRANSLATION
 #include <translation_client.h>
 #endif
@@ -237,6 +241,34 @@ TEST_F(AppHotkeyIntegrationTest, settings_modal_dispatch_preserves_live_overlay_
 // 入参：无。返回：无，不连接任何在线服务。
 TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rejects_stale_cancellation)
 {
+    // 建立隔离的正式资源配置，验证模板与测试样本都来自文件，不碰用户数据。
+    const std::filesystem::path root = std::filesystem::path(OPEN_ST_TEST_SOURCE_ROOT) / "testing/testoutput" /
+                                       ("configured-probe-" + std::to_string(GetCurrentProcessId()));
+    struct SettingsGuard
+    {
+        std::filesystem::path root;
+        ~SettingsGuard()
+        {
+            ShutdownSettings();
+            (void)JsonFileTestAccess::ReleaseFile("settings.user");
+            (void)JsonFileTestAccess::ReleaseFile("settings.default");
+            std::error_code ignored;
+            std::filesystem::remove_all(this->root, ignored);
+        }
+    } guard{root};
+    ShutdownSettings();
+    (void)JsonFileTestAccess::ReleaseFile("settings.user");
+    (void)JsonFileTestAccess::ReleaseFile("settings.default");
+    std::filesystem::create_directories(root / "resources");
+    std::ifstream input(std::filesystem::path(OPEN_ST_TEST_SOURCE_ROOT) / "resources/default_settings.json");
+    nlohmann::json defaults = nlohmann::json::parse(input);
+    defaults["settings"]["translation.test_sample"] = {
+        {"text", "这是来自配置的测试样本"}, {"source_language", "zh-CN"}, {"target_language", "en"}};
+    {
+        std::ofstream output(root / "resources/default_settings.json");
+        output << defaults.dump();
+    }
+    ASSERT_TRUE(InitializeSettings(root));
     const SettingsWindowCallbacks callbacks = AppHotkeyTestAccess::Callbacks(*this->app_);
     if (!callbacks.translationAvailable)
         GTEST_SKIP() << "Translation disabled in this build";
@@ -248,7 +280,13 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     const nlohmann::json original = profile;
     TranslationClient* client = AppHotkeyTestAccess::Client(*this->app_);
     ASSERT_NE(client, nullptr);
-    const SettingsTranslationTestStatus first = callbacks.submitTranslationTest(profile, "system", "");
+    ASSERT_TRUE(callbacks.translationTestSample);
+    const std::optional<SettingsTranslationTestSample> sample = callbacks.translationTestSample();
+    ASSERT_TRUE(sample);
+    EXPECT_EQ(sample->text, "这是来自配置的测试样本");
+    EXPECT_EQ(sample->sourceLanguage, "zh-CN");
+    EXPECT_EQ(sample->targetLanguage, "en");
+    const SettingsTranslationTestStatus first = callbacks.submitTranslationTest(profile, "system", "", *sample);
     ASSERT_NE(first.requestId, 0U);
     EXPECT_TRUE(first.running);
     EXPECT_EQ(profile, original);
@@ -276,7 +314,7 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     const std::wstring error = callbacks.text("translation.error.credentials");
     EXPECT_FALSE(error.empty());
     EXPECT_NE(completed.text.find(error), std::wstring::npos);
-    const SettingsTranslationTestStatus second = callbacks.submitTranslationTest(profile, "system", "");
+    const SettingsTranslationTestStatus second = callbacks.submitTranslationTest(profile, "system", "", *sample);
     ASSERT_GT(second.requestId, first.requestId);
     callbacks.cancelTranslationTest(first.requestId);
     const SettingsTranslationTestStatus secondCompleted = wait(second.requestId);
@@ -289,6 +327,40 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     EXPECT_EQ(AppHotkeyTestAccess::Client(*this->app_), client);
     EXPECT_EQ(profile, original);
     callbacks.cancelTranslationTest(second.requestId);
+    JsonFileHandle userFile, defaultFile;
+    ASSERT_TRUE(GetSettingsEditFiles(userFile, defaultFile));
+    ASSERT_TRUE(userFile.Write(JsonDocumentEditor(
+        [](std::optional<nlohmann::json>& document)
+        {
+            (*document)["settings"]["translation.test_sample"] = nlohmann::json{{"text", "bad"}};
+            return true;
+        })));
+    EXPECT_FALSE(callbacks.translationTestSample());
+    // 已展示的旧快照仍保持原内容，非法新配置不会暗中替换它。
+    EXPECT_EQ(sample->text, "这是来自配置的测试样本");
+    ASSERT_TRUE(callbacks.translationResources);
+    ASSERT_TRUE(callbacks.openTranslationResource);
+    const SettingsTranslationResources defaultsLinks = callbacks.translationResources();
+    EXPECT_TRUE(defaultsLinks.error.empty());
+    EXPECT_GE(defaultsLinks.links.size(), 6U);
+    ASSERT_TRUE(userFile.Write(JsonDocumentEditor(
+        [](std::optional<nlohmann::json>& document)
+        {
+            (*document)["settings"]["translation.provider_resources"] = {
+                {"baidu", nlohmann::json::array(
+                              {{{"label_key", "resource.custom"}, {"url", "https://example.invalid/help#appid"}},
+                               {{"label_key", "resource.invalid"}, {"url", "file:///C:/test.exe"}}})}};
+            return true;
+        })));
+    const SettingsTranslationResources customLinks = callbacks.translationResources();
+    ASSERT_EQ(customLinks.links.size(), 1U);
+    EXPECT_EQ(customLinks.links[0].url, "https://example.invalid/help#appid");
+    EXPECT_EQ(customLinks.links[0].kind, "baidu");
+    EXPECT_FALSE(customLinks.error.empty());
+    // 这里只调用被拒绝的地址，不启动真实浏览器。
+    for (const std::string& url : {"file:///C:/test.exe", "javascript:alert(1)", "http://example.invalid/",
+                                   "https://name:password@example.invalid/", "https://example.invalid/%0a"})
+        EXPECT_FALSE(callbacks.openTranslationResource(url));
 }
 } // namespace
 } // namespace open_st

@@ -396,4 +396,108 @@ TEST_F(CoordinationTest, shutdown_cleanup_returns_busy_without_deleting_logs)
     EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::None);
     EXPECT_TRUE(this->Logs().empty());
 }
+// 清理只作用于空闲既有文件；缺失目录不会被创建，后续租约可重新创建文件。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(CoordinationTest, idle_cleanup_removes_existing_lock_and_allows_recreation)
+{
+    const std::filesystem::path path = this->root_ / "lease.lock";
+    open_st::FileLeaseError error;
+    ASSERT_TRUE(open_st::FileLease::CleanupIdle(this->root_ / "missing" / "lease.lock", &error));
+    EXPECT_FALSE(std::filesystem::exists(this->root_ / "missing"));
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(path, open_st::FileLeaseMode::Exclusive));
+    lease.Reset();
+    ASSERT_TRUE(open_st::FileLease::CleanupIdle(path, &error));
+    EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::None);
+    EXPECT_FALSE(std::filesystem::exists(path));
+    ASSERT_TRUE(lease.TryAcquire(path, open_st::FileLeaseMode::Exclusive));
+    EXPECT_TRUE(std::filesystem::exists(path));
+}
+
+// 即使外部进程仅持共享租约，清理也必须立即返回 Busy 并保留原文件。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(CoordinationTest, idle_cleanup_preserves_active_process_lock)
+{
+    const std::filesystem::path path = this->root_ / "lease.lock";
+    Probe probe(L"shared", path);
+    ASSERT_TRUE(probe.Ready());
+    open_st::FileLeaseError error;
+    EXPECT_FALSE(open_st::FileLease::CleanupIdle(path, &error));
+    EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::Busy);
+    EXPECT_TRUE(std::filesystem::exists(path));
+    EXPECT_EQ(probe.Finish(), 0U);
+    EXPECT_TRUE(open_st::FileLease::CleanupIdle(path, &error));
+    EXPECT_FALSE(std::filesystem::exists(path));
+}
+
+// 拒绝硬链接锁文件，避免清理拥有其他名字的文件身份。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(CoordinationTest, idle_cleanup_rejects_hardlinks)
+{
+    const std::filesystem::path path = this->root_ / "lease.lock";
+    const std::filesystem::path alias = this->root_ / "alias.lock";
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(path, open_st::FileLeaseMode::Exclusive));
+    lease.Reset();
+    ASSERT_TRUE(CreateHardLinkW(alias.c_str(), path.c_str(), nullptr));
+    open_st::FileLeaseError error;
+    EXPECT_FALSE(open_st::FileLease::CleanupIdle(alias, &error));
+    EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::AccessDenied);
+    EXPECT_TRUE(std::filesystem::exists(path));
+    EXPECT_TRUE(std::filesystem::exists(alias));
+}
+
+// 拒绝重解析锁路径，不能借清理删除链接目标；无创建权限时明确跳过。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(CoordinationTest, idle_cleanup_rejects_reparse_file_and_parent)
+{
+    const std::filesystem::path path = this->root_ / "lease.lock";
+    const std::filesystem::path alias = this->root_ / "alias.lock";
+    const std::filesystem::path directoryAlias = this->root_ / "alias-directory";
+    const std::filesystem::path directory = this->root_ / "directory";
+    std::filesystem::create_directory(directory);
+    open_st::FileLease lease;
+    ASSERT_TRUE(lease.TryAcquire(path, open_st::FileLeaseMode::Exclusive));
+    lease.Reset();
+    if (!CreateSymbolicLinkW(alias.c_str(), path.c_str(), SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE))
+    {
+        if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD)
+            GTEST_SKIP() << "Symbolic link creation requires developer mode or privilege.";
+        FAIL() << GetLastError();
+    }
+    open_st::FileLeaseError error;
+    EXPECT_FALSE(open_st::FileLease::CleanupIdle(alias, &error));
+    EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::AccessDenied);
+    EXPECT_TRUE(std::filesystem::exists(path));
+    ASSERT_TRUE(CreateSymbolicLinkW(directoryAlias.c_str(), directory.c_str(),
+                                    SYMBOLIC_LINK_FLAG_DIRECTORY | SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE));
+    EXPECT_FALSE(open_st::FileLease::CleanupIdle(directoryAlias / "missing.lock", &error));
+    EXPECT_EQ(error.code, open_st::FileLeaseErrorCode::AccessDenied);
+}
+
+// JSON 层清理不改变文档内容，后续写入重建锁并继续原子事务。
+// 入参：无。返回：GoogleTest 断言结果。
+TEST_F(CoordinationTest, json_idle_cleanup_preserves_document_and_recreates_lock_on_write)
+{
+    const std::filesystem::path path = this->root_ / "settings.json";
+    const std::filesystem::path lockPath = this->root_ / "settings.json.lock";
+    const open_st::JsonFileHandle file = open_st::JsonFileManager::Instance().GetFile(this->card_, path);
+    ASSERT_TRUE(file.Write(nlohmann::json{{"value", 1}}));
+    ASSERT_TRUE(file.CleanupIdleLock());
+    EXPECT_FALSE(std::filesystem::exists(lockPath));
+    nlohmann::json document;
+    ASSERT_TRUE(file.Read(document));
+    EXPECT_EQ(document.at("value"), 1);
+    ASSERT_TRUE(file.Write(nlohmann::json{{"value", 2}}));
+    EXPECT_TRUE(std::filesystem::exists(lockPath));
+    ASSERT_TRUE(file.Read(document));
+    EXPECT_EQ(document.at("value"), 2);
+    Probe probe(L"exclusive", lockPath);
+    ASSERT_TRUE(probe.Ready());
+    open_st::JsonFileError error;
+    EXPECT_FALSE(file.CleanupIdleLock(&error));
+    EXPECT_EQ(error.code, open_st::JsonFileErrorCode::Busy);
+    EXPECT_TRUE(std::filesystem::exists(lockPath));
+}
+
 } // namespace

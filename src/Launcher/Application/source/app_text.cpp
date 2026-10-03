@@ -36,7 +36,10 @@ void App::ProcessSelectionText()
                                                                       std::move(read), this->EnsureTranslationClient());
         }
         if (this->textSession_->ActivateExisting())
+        {
+            this->RefreshCaptureToolbar();
             return;
+        }
         SdrSelectionFrame frame;
         std::wstring error;
         this->completionBusy_ = true;
@@ -55,6 +58,7 @@ void App::ProcessSelectionText()
             throw std::runtime_error("OCR input generation failed");
         this->textSession_->Begin(frame, GetStringSetting("ocr.model").value_or("fast"),
                                   GetStringSetting("ocr.language").value_or("chi_sim+eng+jpn"));
+        this->RefreshCaptureToolbar();
     }
     catch (...)
     {

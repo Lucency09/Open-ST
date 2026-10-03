@@ -1,4 +1,5 @@
 // 用合成协议覆盖多语言、编码、预算与供应商错误，不访问任何线上服务。
+#include "translation_test_defaults.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <sha256.h>
@@ -13,9 +14,9 @@ namespace
 // 返回：可用于纯请求构造的配置。
 TranslationRequest Input(std::string provider)
 {
-    TranslationRequest input;
+    TranslationRequest input = TestTranslationRequest();
     input.text = "hello";
-    nlohmann::json profile = CreateTranslationProfile(provider);
+    nlohmann::json profile = TestTranslationProfile(provider);
     if (provider == "baidu")
         profile["configuration"]["app_id"] = "2015063000000001";
     if (provider == "openai")
@@ -104,7 +105,7 @@ TEST(TranslationProtocol, RejectsInvalidConfiguration)
     input.configuration.interfaces[0]["secrets"]["api_key"] = "";
     http::Request request;
     EXPECT_EQ(Build(input, "1", request), TranslationError::MissingCredentials);
-    nlohmann::json profile = CreateTranslationProfile("openai");
+    nlohmann::json profile = TestTranslationProfile("openai");
     profile["secrets"]["api_key"] = "key\r\nOther: injected";
     EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
     profile["secrets"]["api_key"] = "";
@@ -207,7 +208,7 @@ TEST(TranslationProtocol, custom_editor_choices_match_supported_configuration)
     // 入参：无。返回：只含合成参数的配置。
     const auto baseline = []()
     {
-        nlohmann::json profile = CreateTranslationProfile("custom_http");
+        nlohmann::json profile = TestTranslationProfile("custom_http");
         profile["configuration"]["query"] = {{"text", "{{text}}"}, {"source", "{{source}}"}, {"target", "{{target}}"}};
         return profile;
     };

@@ -58,6 +58,10 @@ class FileLease final
     // 返回：成功 true；失败 false，不等待、不重试，不替换当前已持有租约。
     [[nodiscard]] bool TryAcquire(const std::filesystem::path& path, FileLeaseMode mode,
                                   FileLeaseError* error = nullptr, bool createParents = false) noexcept;
+    // 安全清理空闲的既有锁文件，不改变普通租约释放语义。
+    // 入参：path 为锁路径；error 输出失败原因；不会创建缺失路径。
+    // 返回：已缺失或删除成功为 true；其他进程占用时返回 Busy，不等待、不重试。
+    [[nodiscard]] static bool CleanupIdle(const std::filesystem::path& path, FileLeaseError* error = nullptr) noexcept;
     // 释放持有的租约。
     // 入参：无。
     // 返回：无返回值。

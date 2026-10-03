@@ -1328,6 +1328,9 @@ void App::CreateCaptureToolbar() noexcept
             this->MakeToolbarTextResolver(), this->MakeToolbarCommandHandler());
         if (result.success)
         {
+            // 业务窗口顺序由 App 指定；动态查询覆盖结果窗口关闭与重开。
+            this->captureToolbar_->SetUpperWindowQuery(
+                [this]() { return this->textSession_ ? this->textSession_->ResultWindowHandle() : nullptr; });
             return;
         }
         OPEN_ST_LOG_WARNING("Failed to create capture toolbar. detail=",

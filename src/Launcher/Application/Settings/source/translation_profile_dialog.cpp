@@ -42,6 +42,10 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                             bool creating, std::string proxyMode, std::string proxyAddress)
 {
     using Json = nlohmann::json;
+    const std::optional<SettingsTranslationTestSample> sample =
+        callbacks.translationTestSample ? callbacks.translationTestSample() : std::nullopt;
+    const SettingsTranslationResources resources =
+        callbacks.translationResources ? callbacks.translationResources() : SettingsTranslationResources{};
     const std::string identity = profile.at("id").get<std::string>();
     const std::string originalKind = profile.at("kind").get<std::string>();
     std::string kind = originalKind, name = profile.at("name").get<std::string>();
@@ -69,9 +73,20 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                      {{"type", "select"}, {"id", "profileKind"}, {"labelKey", "settings.translation.profile_type"}},
                      {{"type", "checkbox"}, {"id", "profileEnabled"}, {"labelKey", "settings.translation.enabled"}},
                      {{"type", "text"}, {"id", "profileHint"}, {"textKey", "settings.translation.profile_hint"}}});
+    if (!resources.error.empty())
+        children.push_back({{"type", "text"}, {"id", "resourceError"}, {"textKey", "translation.resources.error"}});
     for (const auto& entry : drafts)
     {
         Json fields = Json::array();
+        for (std::size_t index = 0; index < resources.links.size(); ++index)
+        {
+            const SettingsTranslationResource& resource = resources.links[index];
+            if (resource.kind == entry.first)
+                fields.push_back({{"type", "button"},
+                                  {"id", "resource." + std::to_string(index)},
+                                  {"textKey", resource.labelKey},
+                                  {"width", "fill"}});
+        }
         if (entry.first == "custom_http")
         {
             custom = std::make_unique<CustomTranslationEditor>(renderer, callbacks, entry.second);
@@ -145,6 +160,10 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
         // 返回：不含秘密值的显示文本。
         [&](std::string_view key)
         {
+            if (key == "translation.resources.error")
+                return resources.error;
+            if (key == "translation.test.sample")
+                return sample ? sample->description : callbacks.text("translation.error.configuration");
             if (key == "translation.test.action")
                 return callbacks.text(probe.running ? "translation.test.cancel" : "translation.test.start");
             if (key == "settings.translation.profile_status")
@@ -170,7 +189,7 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
         (void)renderer.SetStatus(error);
         (void)renderer.SetEnabled("accept", error.empty());
         (void)renderer.SetEnabled(
-            "testConnection", probe.running || (error.empty() && callbacks.submitTranslationTest &&
+            "testConnection", probe.running || (sample && error.empty() && callbacks.submitTranslationTest &&
                                                 callbacks.translationTestStatus && callbacks.cancelTranslationTest));
         (void)renderer.RefreshValue("testResult");
         (void)renderer.RefreshTexts();
@@ -208,13 +227,13 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                                                probe.running = false;
                                                probe.text = callbacks.text("translation.test.cancelled");
                                            }
-                                           else if (validate().empty() && callbacks.submitTranslationTest)
+                                           else if (sample && validate().empty() && callbacks.submitTranslationTest)
                                            {
                                                if (probe.requestId && callbacks.cancelTranslationTest)
                                                    callbacks.cancelTranslationTest(probe.requestId);
                                                testedCandidate = candidate;
-                                               probe =
-                                                   callbacks.submitTranslationTest(candidate, proxyMode, proxyAddress);
+                                               probe = callbacks.submitTranslationTest(candidate, proxyMode,
+                                                                                       proxyAddress, *sample);
                                            }
                                            (void)validate();
                                        }));
@@ -304,6 +323,21 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                       // 入参：无。
                       // 返回：无，不重建输入控件或原生撤销栈。
             [&]() { (void)validate(); });
+    for (std::size_t index = 0; index < resources.links.size(); ++index)
+    {
+        const SettingsTranslationResource resource = resources.links[index];
+        if (!drafts.contains(resource.kind))
+            continue;
+        RequireProfile(renderer.BindAction(
+            "resource." + std::to_string(index),
+            // 按值捕获本次资源快照，类型切换不会打开另一项，也不保存草稿。
+            // 入参：无。返回：失败在现有状态栏显示。
+            [&, resource]()
+            {
+                if (!callbacks.openTranslationResource || !callbacks.openTranslationResource(resource.url))
+                    (void)renderer.SetStatus(callbacks.text("translation.resources.open_failed"));
+            }));
+    }
     RequireProfile(renderer.BindAction("accept",
                                        // 确认时重新组装和校验完整候选，随后才允许返回父事务。
                                        // 入参：无。

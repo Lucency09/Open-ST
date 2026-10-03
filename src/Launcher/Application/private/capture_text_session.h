@@ -26,6 +26,9 @@ class CaptureTextSession final
     // 接收本次正式输出及固定设置。
     // 入参：frame为借用图像；model/language为OCR参数，不自动发起翻译。返回：无。
     void Begin(const SdrSelectionFrame& frame, const std::string& model, const std::string& language);
+    // 提供结果窗口给宿主协调层级，不暴露窗口实现。
+    // 入参：无。返回：存活结果窗口的借用句柄或空。
+    HWND ResultWindowHandle() const noexcept;
     // 激活已有结果，防止再次生成图像。
     // 入参：无。返回：已有窗口为true，不提交识别或翻译。
     bool ActivateExisting() noexcept;

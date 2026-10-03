@@ -35,7 +35,7 @@ struct CaptureTextSession::Impl
     TranslationSettings ReadConfiguration() const
     {
         if (!this->read)
-            return ReadTranslationSettings({});
+            throw std::runtime_error("Translation settings reader unavailable");
         const std::optional<nlohmann::json> snapshot = this->read();
         if (!snapshot || !snapshot->is_object())
             throw std::runtime_error("Translation settings snapshot unavailable");
@@ -86,7 +86,7 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
         return;
     ++this->impl_->session;
     this->impl_->window = std::make_unique<TextResultWindow>();
-    std::string source = "auto", target = "zh-CN";
+    std::string source, target;
 #ifdef OPEN_ST_HAS_TRANSLATION
     try
     {
@@ -147,6 +147,12 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
     (void)model;
     (void)language;
 #endif
+}
+// 查询当前结果窗口，不缓存可能关闭重开的原生句柄。
+// 入参：无。返回：存活结果窗口或空。
+HWND CaptureTextSession::ResultWindowHandle() const noexcept
+{
+    return this->impl_->window ? this->impl_->window->NativeHandle() : nullptr;
 }
 // 只激活现有结果，不隐式提交翻译。
 // 入参：无。返回：存在窗口为true。
@@ -210,6 +216,7 @@ void CaptureTextSession::Translate() noexcept
             ++this->impl_->configurationRevision;
             window.ConfigurationChanged();
         }
+        window.InitializeMissingLanguages(settings.options.sourceLanguage, settings.options.targetLanguage);
         this->impl_->settings = settings;
         this->RefreshNetworkWarning();
         if (!SetTimer(this->impl_->owner, TextPollTimer, 100, nullptr))

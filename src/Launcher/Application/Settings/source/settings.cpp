@@ -72,16 +72,22 @@ class SettingsState final
                 return false;
             }
 
+            // 即使后续初始化异常，也保留仅用于 Shutdown 清理的用户句柄。
+            {
+                const std::scoped_lock<std::mutex> lock(this->mutex_);
+                this->userFile_ = userFile;
+            }
             nlohmann::json defaultDocument;
             if (!defaultFile.Read(defaultDocument) || !IsSettingsDocument(defaultDocument))
             {
                 OPEN_ST_LOG_ERROR("The default settings resource is unavailable or invalid.");
+                this->Shutdown();
                 return false;
             }
 
             open_st::JsonFileError writeError;
             const bool persistenceAvailable = userFile.Write(
-                // 仅缺失时填入默认设置；已有文档不改写，但仍由 Common 检查安全写入前提。
+                // 缺失时填入默认设置；已有文档仅补入新增资源链接字段，并检查安全写入前提。
                 // 入参：document 为 Common 锁内候选用户文档，缺失时填入捕获的默认文档。
                 // 返回：填充或保留后的文档结构有效为 true；结构无效为 false，取消提交。
                 [&defaultDocument](std::optional<nlohmann::json>& document)
@@ -97,6 +103,12 @@ class SettingsState final
                         OPEN_ST_LOG_WARNING("The user settings structure is invalid; preserving the file.");
                         return false;
                     }
+                    // 仅补入本次新增的资源链接字段，让已有用户也能直接在settings.json查看和编辑。
+                    // 用户已有配置（包括空对象）保持原样，其他缺省字段继续遵循既有读取规则。
+                    constexpr std::string_view resourcesKey = "translation.provider_resources";
+                    if (!(*document)["settings"].contains(resourcesKey) &&
+                        defaultDocument["settings"].contains(resourcesKey))
+                        (*document)["settings"][resourcesKey] = defaultDocument["settings"][resourcesKey];
                     return true;
                 },
                 &writeError);
@@ -120,12 +132,19 @@ class SettingsState final
         }
     }
 
-    // 仅释放设置模块持有的句柄，缓存与名称绑定生命周期由 Common 管理。
+    // 停止设置入口并清理空闲用户锁，缓存与名称绑定生命周期仍由 Common 管理。
     // 入参：无显式入参。
     // 返回：无返回值。
     void Shutdown() noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
+        this->initialized_ = false;
+        if (this->userFile_.IsValid())
+        {
+            open_st::JsonFileError error;
+            if (!this->userFile_.CleanupIdleLock(&error) && error.code != open_st::JsonFileErrorCode::Busy)
+                OPEN_ST_LOG_WARNING("The idle settings lock could not be cleaned. error=", error.systemCode);
+        }
         this->userFile_ = {};
         this->defaultFile_ = {};
         this->layoutFile_ = {};

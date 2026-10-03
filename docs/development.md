@@ -269,13 +269,19 @@ Settings 经 App 窄回调消费领域配置，结构化列表和已有字段通
 运行时不下载模型。自动化在线测试使用 fake 或本机回环服务，不读取用户密钥。
 
 App 唯一拥有 TranslationClient，文字会话只借用；接口测试与正式翻译互斥，取消与结果发布必须核对请求身份。
-连接测试由用户点击触发，冻结编辑器未保存条目及父页代理；不保存或改变启用状态。诊断只保留限长脱敏的服务错误字段及响应摘要，不记录凭据或响应日志。
+连接测试由用户点击触发，冻结编辑器未保存条目及父页代理；不保存或改变启用状态。
+测试样本由 `translation.test_sample` 配置对象提供（`text`、`source_language`、`target_language`），默认值仅在 `resources/default_settings.json` 中；用户可在 `data/settings.json` 覆盖。编辑窗口显示与提交使用同一份样本快照，配置缺失或非法时禁止测试，不回退程序字面量。
+内置新建接口模板同样来自默认配置的 `translation.interfaces`，生成新身份、停用并清空凭据；当前用户接口列表和源／目标／代理通过 Settings 一致快照读取。Translation 不直接依赖 Settings，也不再维护第二套默认值。自定义HTTP新增模板不属于本次迁移范围。
+诊断以结构化片段区分服务原文和程序标记，后者经 `ui_text.json` 本地化；不能以字符串替换猜测远端正文中的标记。诊断只保留限长脱敏的服务错误字段及响应摘要，不记录凭据或响应日志。
 接口编辑子模态与真正保存忙状态分开，允许截图；主循环与子模态调用同一消息分派和截图尾处理，保留控件归属检查。
+供应商资源链接使用 `translation.provider_resources` 配置对象，按kind列出 `label_key`／`url`；网址只存配置，文案存ui_text。启动时仅为旧settings.json补入缺失的该字段，已有值（含空对象）不覆盖；整字段覆盖，不隐式合并供应商子项。点击仅打开通过校验的HTTPS地址，不附加凭据、不保存接口草稿。
+文字结果窗与截图工具栏同时可见时，由App提供当前结果窗的动态借用句柄，工具栏每次定位／提升都保持在其下方且不抢焦点；结果窗关闭后查询为空，不保存陈旧窗口句柄。
 本地自动语言检测使用系统 ELS 的离线服务，只映射首选语言；NFC 仅用于检测副本，实际逐行翻译继续保留原文。
 
 ### 安装、共享数据与更新职责
 
 按已批准的 [安装与发布方案](design/install-release-v0.3.md)，Common FileLease 封装跨进程共享／独占的立即尝试，JSON Write 锁住刷新、编辑、提交；Read 资源不创建锁文件。Logger 独占活跃文件，并与轮转／清理复用同一协调与保留规则。Common 只返回错误，不创建产品窗口。
+`settings.json.lock` 在写事务间保持稳定；Settings 正常关闭时，Common 以独占既有句柄安全清理空闲用户锁，其他进程占用时保留。清理不删除设置文件，不改变其他租约的保留策略；强制终止不能保证执行清理，下次正常退出可清理残留。
 Settings 复用 Common 报告 Busy 并保留草稿；公共 MessageDialog 是普通提示／确认的唯一 Renderer 适配，Settings、欢迎页、App 提示及更新确认共用。
 SystemIntegration 的 InstallationLease 在所有语言／设置／日志读取之前取得，运行共享、维护独占，锁占用立即失败；App 只负责生命周期。全部设置与日志回收完成后才解除租约。
 Update 只依赖 Windows SDK、标准库、JSON 和必要通用能力，拥有 Release 校验、下载、缓存保护和取消状态，不依赖 Settings／Localization 等兄弟模块。

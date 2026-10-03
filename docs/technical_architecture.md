@@ -6,10 +6,10 @@
 本文同时记录已选定的目标架构和当前实现；技术选型不等于对应功能已完成。`0.2.0` 覆盖托盘、
 语言设置、桌面冻结与自由选区、HDR 到 SDR 转换、复制与 PNG/JPEG 保存、截图工具栏、多张置顶贴图、
 设置窗口框架、欢迎与当前用户开机启动。0.3.0 已接入顶层窗口自动预选及 M1／M2／M3 标注，包含画笔、局部橡皮擦、
-原位文字和多档马赛克。v0.4.0 已发布本地 OCR；UIA 子控件识别与翻译仍后置。相关组件职责、
+原位文字和多档马赛克。v0.4.0 已发布本地 OCR；文本翻译现已接入在线及本地提供方；UIA 子控件识别与图片翻译仍后置。相关组件职责、
 数据流及降级条目为后续约束，具体状态见 [实现进度](implementation_progress.md)。
 
-已发布版本为 `0.4.1`，当前源码版本为 `0.4.1`；真实登录、自启禁用、跨会话、跨 DPI 及部分视觉验收仍待完成；
+已发布版本为 `0.4.1`，当前源码版本为 `1.0.0`；真实登录、自启禁用、跨会话、跨 DPI 及部分视觉验收仍待完成；
 阶段顺序和本轮验证状态以实现进度与决策D-052为准。
 
 窗口预选由 Application 私有 `WindowSelectionSnapshot` 在捕获后、遮罩创建前一次收集元数据，
@@ -255,7 +255,7 @@ Windows Imaging Component 负责：
 
 文本翻译拟统一为Translation的ITranslationProvider，在线HTTP适配器与CTranslate2本地适配器消费同一请求/结果/取消契约并参与同一顺序列表。
 LocalCTranslateProvider位于Translation适配层，具体引擎、分词和模型缓存放在Translation/Local；Local子模块不得反向依赖父级ITranslationProvider，也不依赖Http。首版仅zh-CN↔en，不用OCR语言设置推断原文。
-模型权重/分词资源走固定清单、缓存和统一发布流水线，复用Common校验能力；固定模型及许可已接入本机候选构建；性能及质量实测见[本地模型评估](local-translation-evaluation-2026-10-02.md)，质量尚未验收，不代表已发布。完整边界见[文本翻译修订方案](design/text-translation-v0.5.md)。
+模型权重/分词资源走固定清单、缓存和统一发布流水线，复用Common校验能力；固定模型及许可已接入本机候选构建；性能及质量实测见[历史实测摘要](implementation_progress.md)，质量尚未验收，不代表已发布。完整边界见[文本翻译修订方案](design/text-translation-v0.5.md)。
 
 ### 2.12 nlohmann/json
 

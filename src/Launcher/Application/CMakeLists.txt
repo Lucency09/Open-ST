@@ -24,7 +24,7 @@ if(OPEN_ST_ENABLE_OCR)
     target_compile_definitions(open_st_application PRIVATE OPEN_ST_HAS_OCR=1)
 endif()
 if(OPEN_ST_ENABLE_TRANSLATION)
-    target_link_libraries(open_st_application PRIVATE OpenST::Translation)
+    target_link_libraries(open_st_application PRIVATE OpenST::Translation OpenST::Http)
     target_compile_definitions(open_st_application PRIVATE OPEN_ST_HAS_TRANSLATION=1)
 endif()
 

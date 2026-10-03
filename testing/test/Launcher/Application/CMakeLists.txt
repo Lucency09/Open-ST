@@ -34,6 +34,10 @@ target_sources(open_st_application_tests PRIVATE source/log_maintenance_task_tes
 target_sources(open_st_application_tests PRIVATE source/capture_selection_input_tests.cpp
     source/window_selection_integration_tests.cpp)
 target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export OpenST::Common OpenST::Settings)
+target_include_directories(open_st_application_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Settings/private"
+    "${PROJECT_SOURCE_DIR}/src/Common/private")
+target_compile_definitions(open_st_application_tests PRIVATE OPEN_ST_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
 if(OPEN_ST_ENABLE_TRANSLATION)
     target_link_libraries(open_st_application_tests PRIVATE OpenST::Translation)
     target_compile_definitions(open_st_application_tests PRIVATE OPEN_ST_TEST_TRANSLATION=1)
@@ -130,7 +134,7 @@ if(OPEN_ST_ENABLE_TRANSLATION)
         "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/capture_text_session.cpp"
         "${PROJECT_SOURCE_DIR}/src/Launcher/Application/source/diagnostic_text.cpp")
     target_compile_definitions(open_st_text_translation_interaction_tests PRIVATE
-        OPEN_ST_HAS_OCR=1 OPEN_ST_HAS_TRANSLATION=1)
+        OPEN_ST_HAS_OCR=1 OPEN_ST_HAS_TRANSLATION=1 OPEN_ST_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")
     target_link_libraries(open_st_text_translation_interaction_tests PRIVATE
         OpenST::Graphics OpenST::WindowRenderer OpenST::Common OpenST::Translation GTest::gtest_main)
     target_include_directories(open_st_text_translation_interaction_tests PRIVATE

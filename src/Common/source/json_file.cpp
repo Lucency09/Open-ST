@@ -523,6 +523,28 @@ class JsonFileState final
         return false;
     }
 
+    // 等待同进程已有写事务完成，再以独占句柄清理空闲锁文件。
+    // 入参：error 输出文件系统分类错误。
+    // 返回：锁文件已缺失或安全删除为 true；外部占用或其他错误为 false。
+    bool CleanupIdleLock(JsonFileError* error) noexcept
+    {
+        SetJsonError(error, ERROR_GEN_FAILURE);
+        try
+        {
+            const std::scoped_lock<std::mutex> lock(this->mutex_);
+            std::filesystem::path lockPath = this->path_;
+            lockPath += L".lock";
+            FileLeaseError leaseError;
+            const bool cleaned = FileLease::CleanupIdle(lockPath, &leaseError);
+            SetJsonError(error, cleaned ? ERROR_SUCCESS : leaseError.systemCode);
+            return cleaned;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
   private:
     struct FailureRecord final
     {
@@ -713,6 +735,19 @@ bool JsonFileHandle::Write(const JsonDocumentEditor& editor, JsonFileError* erro
         return false;
     }
     return this->state_->Write(editor, error);
+}
+
+// 以共享文件状态的写入互斥锁协调退出时的旁挂锁清理。
+// 入参：error 输出分类失败原因。
+// 返回：安全清理成功或已缺失为 true；句柄无效或锁被占用为 false。
+bool JsonFileHandle::CleanupIdleLock(JsonFileError* error) const noexcept
+{
+    if (this->state_ == nullptr)
+    {
+        SetJsonError(error, ERROR_INVALID_HANDLE);
+        return false;
+    }
+    return this->state_->CleanupIdleLock(error);
 }
 
 // 创建进程 JSON 文件管理器的内部绑定表。
