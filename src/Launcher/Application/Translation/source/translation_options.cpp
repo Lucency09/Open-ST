@@ -75,9 +75,9 @@ bool Url(std::string_view value, bool base)
 // 返回：静态目录。
 std::span<const std::string_view> TranslationSettingKeys() noexcept
 {
-    static constexpr std::array<std::string_view, 5> KEYS{
-        "translation.interfaces", "translation.source_language", "translation.target_language",
-        "translation.network.proxy_mode", "translation.network.proxy_address"};
+    static constexpr std::array<std::string_view, 6> KEYS{
+        "translation.interfaces",         "translation.source_language",       "translation.target_language",
+        "translation.network.proxy_mode", "translation.network.proxy_address", "translation.local_quality_presets"};
     return KEYS;
 }
 // 发布领域候选以供设置和执行共用。
@@ -89,6 +89,7 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
         "baidu", "google", "openai", "deepl", "microsoft", "ctranslate2_local", "custom_http"};
     static constexpr std::array<std::string_view, 4> SOURCES{"auto", "zh-CN", "en", "ja"};
     static constexpr std::array<std::string_view, 3> TARGETS{"zh-CN", "en", "ja"};
+    static constexpr std::array<std::string_view, 3> LOCAL_QUALITY{"fast", "balanced", "quality"};
     static constexpr std::array<std::string_view, 2> SERVICES{"free", "pro"};
     static constexpr std::array<std::string_view, 2> PROXIES{"system", "custom"};
     static constexpr std::array<std::string_view, 4> METHODS{"GET", "POST", "PUT", "PATCH"};
@@ -116,6 +117,8 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
         return SOURCES;
     if (fieldKey == "translation.target_language")
         return TARGETS;
+    if (fieldKey == "local.quality")
+        return LOCAL_QUALITY;
     if (fieldKey == "deepl.service")
         return SERVICES;
     if (fieldKey == "translation.network.proxy_mode")
@@ -127,11 +130,14 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
 // 返回：静态字段描述。
 std::span<const TranslationProfileField> TranslationProfileFields(std::string_view kind) noexcept
 {
+    static constexpr std::array LOCAL{TranslationProfileField{"quality"}};
     static constexpr std::array BAIDU{TranslationProfileField{"app_id"}, TranslationProfileField{"api_key", true}};
     static constexpr std::array OPENAI{TranslationProfileField{"base_url"}, TranslationProfileField{"model"},
                                        TranslationProfileField{"api_key", true}};
     static constexpr std::array DEEPL{TranslationProfileField{"service"}, TranslationProfileField{"api_key", true}};
     static constexpr std::array MICROSOFT{TranslationProfileField{"region"}, TranslationProfileField{"api_key", true}};
+    if (kind == "ctranslate2_local")
+        return LOCAL;
     if (kind == "baidu")
         return BAIDU;
     if (kind == "openai")
@@ -237,7 +243,11 @@ try
     if (kind == "custom_http")
         return translation_detail::ValidateCustom(profile);
     if (kind == "ctranslate2_local")
-        return config == nlohmann::json{{"pack_id", "opus-mt-2020-07-17-int8-v1"}} && secrets.empty()
+        return Keys(config, {"pack_id", "quality"}) && config.size() == 2 &&
+                       config.at("pack_id") == "opus-mt-2020-07-17-int8-v1" && config.at("quality").is_string() &&
+                       ValidateTranslationField("local.quality", config.at("quality").get_ref<const std::string&>()) ==
+                           TranslationError::None &&
+                       secrets.empty()
                    ? TranslationError::None
                    : TranslationError::InvalidConfiguration;
     if (!Keys(secrets, {"api_key"}))
@@ -259,6 +269,76 @@ try
     if (kind == "deepl" && config.at("service") != "free" && config.at("service") != "pro")
         return TranslationError::InvalidConfiguration;
     return TranslationError::None;
+}
+catch (const std::bad_alloc&)
+{
+    return TranslationError::OutOfMemory;
+}
+catch (...)
+{
+    return TranslationError::InvalidConfiguration;
+}
+// 校验唯一配置目录：身份由实现支持，参数完全取自资源且限制资源预算。
+// 入参：presets 为档位数组。返回：非法目录不允许部分使用。
+TranslationError ValidateLocalQualityPresets(const nlohmann::json& presets) noexcept
+try
+{
+    const std::span<const std::string_view> ids = TranslationChoices("local.quality");
+    if (!presets.is_array() || presets.size() != ids.size() || !translation_detail::BoundedJson(presets, 4096))
+        return TranslationError::InvalidConfiguration;
+    std::set<std::string> seen;
+    for (const nlohmann::json& preset : presets)
+    {
+        if (!Keys(preset, {"id", "beam_size"}) || preset.size() != 2 || !preset.at("id").is_string() ||
+            !preset.at("beam_size").is_number_integer())
+            return TranslationError::InvalidConfiguration;
+        const std::string& id = preset.at("id").get_ref<const std::string&>();
+        const nlohmann::json& beam = preset.at("beam_size");
+        if (std::find(ids.begin(), ids.end(), id) == ids.end() || !seen.insert(id).second || beam < 1 || beam > 8)
+            return TranslationError::InvalidConfiguration;
+    }
+    return TranslationError::None;
+}
+catch (const std::bad_alloc&)
+{
+    return TranslationError::OutOfMemory;
+}
+catch (...)
+{
+    return TranslationError::InvalidConfiguration;
+}
+// 界面消费实际资源顺序，不在显示路径复制档位或参数默认值。
+// 入参：presets 为完整目录。返回：身份数组；非法时抛异常。
+std::vector<std::string> LocalQualityChoices(const nlohmann::json& presets)
+{
+    if (ValidateLocalQualityPresets(presets) != TranslationError::None)
+        throw std::invalid_argument("invalid local translation quality presets");
+    std::vector<std::string> choices;
+    for (const nlohmann::json& preset : presets)
+        choices.push_back(preset.at("id").get<std::string>());
+    return choices;
+}
+// 只解析当前请求目录与已选身份；失败保留调用方输出，不猜测档位。
+// 入参：presets/profile 为快照，beamSize 接收参数。返回：分类结果。
+TranslationError ResolveLocalQuality(const nlohmann::json& presets, const nlohmann::json& profile,
+                                     std::size_t& beamSize) noexcept
+try
+{
+    const TranslationError catalogError = ValidateLocalQualityPresets(presets);
+    if (catalogError != TranslationError::None)
+        return catalogError;
+    const TranslationError profileError = ValidateTranslationProfile(profile);
+    if (profileError != TranslationError::None)
+        return profileError;
+    if (profile.at("kind") != "ctranslate2_local")
+        return TranslationError::InvalidConfiguration;
+    for (const nlohmann::json& preset : presets)
+        if (preset.at("id") == profile.at("configuration").at("quality"))
+        {
+            beamSize = preset.at("beam_size").get<std::size_t>();
+            return TranslationError::None;
+        }
+    return TranslationError::InvalidConfiguration;
 }
 catch (const std::bad_alloc&)
 {
@@ -307,6 +387,10 @@ TranslationSettings ReadTranslationSettings(const std::function<std::optional<nl
     if (!interfaces)
         throw std::invalid_argument("translation interfaces missing");
     settings.configuration.interfaces = *interfaces;
+    const std::optional<nlohmann::json> presets = read("translation.local_quality_presets");
+    if (!presets)
+        throw std::invalid_argument("local translation quality presets missing");
+    settings.configuration.localQualityPresets = *presets;
     const std::array<std::pair<std::string_view, std::string*>, 4> fields{
         {{"translation.source_language", &settings.options.sourceLanguage},
          {"translation.target_language", &settings.options.targetLanguage},
@@ -336,6 +420,9 @@ TranslationError ValidateTranslationConfiguration(const TranslationConfiguration
             TranslationError::None ||
         (configuration.proxyMode == "custom" && configuration.proxyAddress.empty()))
         return TranslationError::InvalidConfiguration;
+    const TranslationError catalogError = ValidateLocalQualityPresets(configuration.localQualityPresets);
+    if (catalogError != TranslationError::None)
+        return catalogError;
     return ValidateTranslationInterfaces(configuration.interfaces);
 }
 // 仅以保存的明确协议返回不安全传输标志，不自行修改目标。

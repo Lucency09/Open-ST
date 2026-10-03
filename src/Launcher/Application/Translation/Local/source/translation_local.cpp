@@ -172,9 +172,9 @@ struct Engine::Impl
         return tokens.size() + 1 > selected.maxSourceTokens ? Error::InputTooLong : Error::None;
     }
     // 同步推理一条原始内容行，加载及缓存由外层 Execute 唯一拥有。
-    // 入参：text 为非空内容，selected/deadline/stop 在所有行保持不变。返回：完整单行或错误。
-    Result TranslateLine(std::string_view text, const ModelRecord& selected, Clock::time_point deadline,
-                         std::stop_token stop)
+    // 入参：text 为非空内容，selected/options/deadline/stop 在所有行保持不变。返回：完整单行或错误。
+    Result TranslateLine(std::string_view text, const ModelRecord& selected, const Options& inferenceOptions,
+                         Clock::time_point deadline, std::stop_token stop)
     {
         if (const Error stopped = StopReason(deadline, stop); stopped != Error::None)
             return {stopped};
@@ -184,16 +184,15 @@ struct Engine::Impl
         if (const Error stopped = StopReason(deadline, stop); stopped != Error::None)
             return {stopped};
         ctranslate2::TranslationOptions options;
-        options.beam_size = 1;
+        options.beam_size = inferenceOptions.beamSize;
         options.max_input_length = 0;
         // decoder_start_token 占一个位置，返回的 EOS 也计入输出预算。
         options.max_decoding_length = selected.maxOutputTokens - 1;
         options.return_end_token = true;
         options.end_token = std::string("</s>");
-        // 所有行逐 token 合作停止，编码及载入不可中断阶段在返回后再次核验。
-        // 入参：生成步快照。返回：取消或整项到期时 true。
-        options.callback = [deadline, stop](const ctranslate2::GenerationStepResult&)
-        { return StopReason(deadline, stop) != Error::None; };
+        // 所有束宽共用编码边界和每个解码步的合作停止检查，不依赖仅支持贪心的生成回调。
+        // 入参：无。返回：取消或整项到期时 true；库丢弃未完成候选并抛出停止异常。
+        options.should_stop = [deadline, stop] { return StopReason(deadline, stop) != Error::None; };
         const Clock::time_point started = Clock::now();
         const std::vector<ctranslate2::TranslationResult> translated = this->replica->translate({tokens}, {}, options);
         Result result;
@@ -229,16 +228,16 @@ Engine::Engine(std::filesystem::path root) : impl_(std::make_unique<Impl>())
 Engine::~Engine() = default;
 
 // 执行明确语言方向的一次完整翻译，取消和超时均在计算真正结束后返回。
-// 入参：text 为 UTF-8；source 可自动识别，target 为明确语种；deadline 为预算；stop 为取消。
+// 入参：text 为 UTF-8；source 可自动识别，target 为明确语种；options 为显式束宽；deadline 为预算；stop 为取消。
 // 返回：完整结果或分类错误，不截断输入或输出。
-Result Engine::Execute(std::string_view text, std::string_view source, std::string_view target,
+Result Engine::Execute(std::string_view text, std::string_view source, std::string_view target, const Options& options,
                        Clock::time_point deadline, std::stop_token stop)
 {
     Result result;
     result.error = StopReason(deadline, stop);
     if (result.error != Error::None)
         return result;
-    if (!ValidText(text))
+    if (options.beamSize == 0 || !ValidText(text))
         return {Error::InvalidInput};
     try
     {
@@ -276,8 +275,8 @@ Result Engine::Execute(std::string_view text, std::string_view source, std::stri
             detail::TranslateLines(text, deadline, stop,
                                    // 每行借用同一模型和同一取消/期限；不得创建额外任务或按行重置预算。
                                    // 入参：line 为剥除原始缩进的内容行。返回：完整单行译文。
-                                   [this, selected, deadline, stop](std::string_view line)
-                                   { return this->impl_->TranslateLine(line, *selected, deadline, stop); });
+                                   [this, selected, &options, deadline, stop](std::string_view line)
+                                   { return this->impl_->TranslateLine(line, *selected, options, deadline, stop); });
         this->impl_->releaseAt = Clock::now() + std::chrono::minutes(5);
         translated.loadMilliseconds = result.loadMilliseconds;
         translated.detectedLanguage = result.detectedLanguage;
@@ -299,10 +298,7 @@ Result Engine::Execute(std::string_view text, std::string_view source, std::stri
                                : this->impl_->record == nullptr ? Error::ModelLoad
                                                                 : Error::Inference;
         this->impl_->Reset();
-        return {stopped == Error::Cancelled ? stopped
-                : allocation                ? Error::OutOfMemory
-                : stopped == Error::None    ? fallback
-                                            : stopped};
+        return {allocation ? Error::OutOfMemory : stopped == Error::None ? fallback : stopped};
     }
     catch (...)
     {

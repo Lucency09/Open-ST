@@ -278,6 +278,13 @@ App 唯一拥有 TranslationClient，文字会话只借用；接口测试与正�
 文字结果窗与截图工具栏同时可见时，由App提供当前结果窗的动态借用句柄，工具栏每次定位／提升都保持在其下方且不抢焦点；结果窗关闭后查询为空，不保存陈旧窗口句柄。
 本地自动语言检测使用系统 ELS 的离线服务，只映射首选语言；NFC 仅用于检测副本，实际逐行翻译继续保留原文。
 
+### 本地翻译档位
+
+本地接口编辑页提供快速／均衡／质量，默认均衡。`translation.local_quality_presets` 是唯一参数目录；默认资源定义fast/1、balanced/2、quality/4，各接口configuration.quality保存所选ID。C++仅校验受支持ID和资源上限，不另存beam映射。旧配置缺字段时从默认资源补入；已有值即使非法也不覆盖，不静默换档。
+设置草稿、说明、测试连接和正式任务共用捕获的目录；全局目录仍可通过settings.json配置。非法目录/档位明确失败，不能借只读显示回退作为实际推理参数。
+三个档位均为CPU INT8、同一任务线程、统一deadline和原有512 token/整体输出边界，保留换行、空行、缩进。本次不加入分句或更换模型，质量档不保证每句更优。
+CTranslate2端口的should_stop独立于token回调，在编码和每步解码边界合作停止；停止抛出异常，不返回部分译文。模型加载与单次CPU算子仍不能强制抢占；取消/超时后释放引擎，下次可重新加载。内存不足继续保持致命错误优先级，不因到期降级为可外发的超时。
+
 ### 安装、共享数据与更新职责
 
 按已批准的 [安装与发布方案](design/install-release-v0.3.md)，Common FileLease 封装跨进程共享／独占的立即尝试，JSON Write 锁住刷新、编辑、提交；Read 资源不创建锁文件。Logger 独占活跃文件，并与轮转／清理复用同一协调与保留规则。Common 只返回错误，不创建产品窗口。
@@ -324,6 +331,7 @@ Application 的关于表单从 GetDefaultStringSetting 读取 distribution.mode�
 ```
 
 - `build.ps1` 只构建产品，永远不加载 `testing/test` 或 `testing/mock`，也不提供开启测试的参数。
+- Release是干净发行输出，按用户确认重建时不备份或恢复data；Debug普通增量构建不清配置，无需额外备份。
 - 不指定配置时为 Debug；Debug 保留完整增量构建树。Release 在临时工作目录完成构建后，只把 EXE、运行时 DLL、资源和许可证整理到 `build/Release/`，随后删除 CMake/Ninja 中间产物。
 - `-Clean` 是终止型操作：Debug 只清理自身构建树；Release 同时清理运行目录与可能残留的临时工作/整理目录，随后立即返回，不重新配置或构建。
 - OCR 与翻译分别由 `build.ps1`／`test.ps1` 顶部固定变量 `$EnableOcr = $true`、`$EnableTranslation = $true` 控制，Debug/Release 默认包含两者；需要关闭时直接改为 `$false`，不再使用 OCR／翻译命令行开关。

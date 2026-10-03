@@ -2210,6 +2210,41 @@
       "zh-CN": "无法打开资源链接，请检查链接或默认浏览器。",
       "en-US": "Could not open the resource link. Check the URL or default browser.",
       "ja-JP": "リンクを開けません。URLまたは既定のブラウザーを確認してください。"
+    },
+    "settings.translation.field.quality": {
+      "zh-CN": "翻译档位",
+      "en-US": "Translation quality",
+      "ja-JP": "翻訳品質"
+    },
+    "translation.choice.fast": {
+      "zh-CN": "快速",
+      "en-US": "Fast",
+      "ja-JP": "高速"
+    },
+    "translation.choice.balanced": {
+      "zh-CN": "均衡（推荐）",
+      "en-US": "Balanced (recommended)",
+      "ja-JP": "バランス（推奨）"
+    },
+    "translation.choice.quality": {
+      "zh-CN": "质量",
+      "en-US": "Quality",
+      "ja-JP": "品質重視"
+    },
+    "translation.quality.fast.description": {
+      "zh-CN": "速度优先，适合简单短文本。",
+      "en-US": "Prioritizes speed for simple short text.",
+      "ja-JP": "短く単純な文章向けに速度を優先します。"
+    },
+    "translation.quality.balanced.description": {
+      "zh-CN": "兼顾速度与翻译质量，推荐使用。",
+      "en-US": "Balances speed and translation quality; recommended.",
+      "ja-JP": "速度と翻訳品質のバランスを重視します。"
+    },
+    "translation.quality.quality.description": {
+      "zh-CN": "搜索更充分、速度稍慢；不保证每句都优于均衡档。",
+      "en-US": "Explores more candidates and runs more slowly; individual translations may not improve.",
+      "ja-JP": "候補をより広く探索するため遅くなりますが、すべての訳が改善するとは限りません。"
     }
   }
 }

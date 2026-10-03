@@ -46,6 +46,6 @@ Requirements:
 
 OCR and translation are enabled by `$EnableOcr = $true` and `$EnableTranslation = $true` near the top of the build and test scripts. Edit these variables to disable a feature. When translation models are missing, explicitly prepare them with Windows x64 Python 3.12: `python packaging/translation/convert_models.py --root .`. Ordinary CMake configuration only validates the cache; see [dependencies](docs/dependencies.md).
 
-Debug keeps its incremental build tree. **The current Release build script replaces build/Release/, including any data stored there. Back up data before rebuilding and restore it afterwards.** Release produces build/Release/. -Package adds a ZIP and retains the versioned portable directory; -Installer adds Setup. Packages and SHA256SUMS.txt are written to artifacts/<version>/. These commands do not publish a release.
+Debug keeps its incremental build tree. **Release is a disposable, clean distribution directory: rebuilding replaces build/Release/, including runtime data there. Do not restore user data into this build output. Normal Debug incremental builds retain their data.** Release produces build/Release/. -Package adds a ZIP and retains the versioned portable directory; -Installer adds Setup. Packages and SHA256SUMS.txt are written to artifacts/<version>/. These commands do not publish a release.
 
 See `docs/development.md` for the agreed product and engineering specification.

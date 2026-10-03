@@ -58,7 +58,11 @@ std::wstring TranslationSettingsError(const SettingsEditSession& session, const 
     const std::wstring error = callbacks.validateTranslationInterfaces(*list);
     if (!error.empty())
         return error;
-    nlohmann::json values = {{std::string(TRANSLATION_INTERFACES_KEY), *list}};
+    const auto presets = session.ReadJson(TRANSLATION_LOCAL_QUALITY_KEY);
+    if (!presets)
+        return callbacks.text("settings.translation.invalid");
+    nlohmann::json values = {{std::string(TRANSLATION_INTERFACES_KEY), *list},
+                             {std::string(TRANSLATION_LOCAL_QUALITY_KEY), *presets}};
     for (const std::string_view key : TRANSLATION_STRING_KEYS)
     {
         const auto value = session.ReadString(key);
@@ -224,11 +228,12 @@ void TranslationSettingsPanel::Act(std::string_view operation)
                                     [this](const nlohmann::json& item)
                                     { return item.is_object() && item.value("id", "") == this->selected_; });
     std::optional<std::string> proxyMode, proxyAddress;
+    const auto presets = this->session_.ReadJson(TRANSLATION_LOCAL_QUALITY_KEY);
     if (operation == "add" || operation == "edit")
     {
         proxyMode = this->session_.ReadString("translation.network.proxy_mode");
         proxyAddress = this->session_.ReadString("translation.network.proxy_address");
-        if (!proxyMode || !proxyAddress)
+        if (!proxyMode || !proxyAddress || !presets || this->session_.RequiresRepair(TRANSLATION_LOCAL_QUALITY_KEY))
         {
             (void)this->renderer_.SetFieldError("translationInterfaces",
                                                 this->callbacks_.text("translation.error.configuration"));
@@ -242,7 +247,7 @@ void TranslationSettingsPanel::Act(std::string_view operation)
             return;
         nlohmann::json profile = this->callbacks_.createTranslationProfile(kinds.front().value);
         if (EditTranslationProfile(this->renderer_.NativeHandle(), this->callbacks_.largeIcon, profile,
-                                   this->callbacks_, true, *proxyMode, *proxyAddress))
+                                   this->callbacks_, true, *proxyMode, *proxyAddress, *presets))
         {
             list.push_back(profile);
             if (this->Store(list))
@@ -260,7 +265,7 @@ void TranslationSettingsPanel::Act(std::string_view operation)
         nlohmann::json candidate = *found;
         const std::string identity = candidate.at("id").get<std::string>();
         if (!EditTranslationProfile(this->renderer_.NativeHandle(), this->callbacks_.largeIcon, candidate,
-                                    this->callbacks_, false, *proxyMode, *proxyAddress))
+                                    this->callbacks_, false, *proxyMode, *proxyAddress, *presets))
             return;
         // 父表单模态期间冻结，仍按 ID 重新定位，不把旧索引用于替换。
         nlohmann::json current = this->List();
@@ -291,7 +296,8 @@ void TranslationSettingsPanel::Refresh()
     const std::wstring error = TranslationSettingsError(this->session_, this->callbacks_);
     (void)this->renderer_.SetFieldError("translationInterfaces",
                                         !error.empty() ? error
-                                        : this->session_.RequiresRepair(TRANSLATION_INTERFACES_KEY)
+                                        : (this->session_.RequiresRepair(TRANSLATION_INTERFACES_KEY) ||
+                                           this->session_.RequiresRepair(TRANSLATION_LOCAL_QUALITY_KEY))
                                             ? this->callbacks_.text("settings.storage.repair_pending")
                                             : L"");
     for (const std::string_view key : TRANSLATION_STRING_KEYS)

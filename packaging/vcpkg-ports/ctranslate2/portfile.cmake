@@ -5,7 +5,8 @@ vcpkg_from_github(
     REPO OpenNMT/CTranslate2
     REF 617405f4b050e994e829d527da6caa0e0030afe7
     SHA512 e37ad39437b4674547ff3dfff427aeafa8d3b5649dd6e44cd8b5ed893acf7ff53e1bf2f3070b0e2a69c7fbb23d9eb03eaccf51d816ca1dd0287394ecfb4cbd92
-    PATCHES check-onednn-status.patch qualify-bit-cast.patch use-vcpkg-json.patch
+    # 解码逐步检查取消／截止，beam search 不再依赖仅支持贪心的 token 回调。
+    PATCHES check-onednn-status.patch qualify-bit-cast.patch use-vcpkg-json.patch cooperative-stop.patch
 )
 vcpkg_from_github(
     OUT_SOURCE_PATH CPU_FEATURES_SOURCE

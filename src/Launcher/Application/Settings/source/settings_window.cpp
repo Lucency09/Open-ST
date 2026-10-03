@@ -468,6 +468,7 @@ class SettingsWindow::Impl final
             for (const auto key : TRANSLATION_STRING_KEYS)
                 strings.emplace_back(key);
             jsonKeys.emplace_back(TRANSLATION_INTERFACES_KEY);
+            jsonKeys.emplace_back(TRANSLATION_LOCAL_QUALITY_KEY);
         }
         return this->editSession_.Open(strings, {"startup.enabled"}, {"export.jpeg_quality"}, jsonKeys);
     }
@@ -654,6 +655,7 @@ class SettingsWindow::Impl final
         if (this->callbacks_.translationAvailable)
         {
             keys.emplace_back(TRANSLATION_INTERFACES_KEY);
+            keys.emplace_back(TRANSLATION_LOCAL_QUALITY_KEY);
             for (const auto key : TRANSLATION_STRING_KEYS)
                 keys.emplace_back(key);
         }
@@ -666,7 +668,8 @@ class SettingsWindow::Impl final
     {
         if (!this->callbacks_.translationAvailable)
             return false;
-        if (this->editSession_.RequiresRepair(TRANSLATION_INTERFACES_KEY))
+        if (this->editSession_.RequiresRepair(TRANSLATION_INTERFACES_KEY) ||
+            this->editSession_.RequiresRepair(TRANSLATION_LOCAL_QUALITY_KEY))
             return true;
         for (const auto key : TRANSLATION_STRING_KEYS)
             if (this->editSession_.RequiresRepair(key))
@@ -1226,11 +1229,15 @@ class SettingsWindow::Impl final
             }
             bool translationChanged = this->callbacks_.translationAvailable &&
                                       (restoreAll || commitSession.IsDirty(TRANSLATION_INTERFACES_KEY) ||
-                                       commitSession.RequiresRepair(TRANSLATION_INTERFACES_KEY));
+                                       commitSession.RequiresRepair(TRANSLATION_INTERFACES_KEY) ||
+                                       commitSession.IsDirty(TRANSLATION_LOCAL_QUALITY_KEY) ||
+                                       commitSession.RequiresRepair(TRANSLATION_LOCAL_QUALITY_KEY));
             if (this->callbacks_.translationAvailable)
             {
                 if (commitSession.RequiresRepair(TRANSLATION_INTERFACES_KEY))
                     requiredKeys.emplace_back(TRANSLATION_INTERFACES_KEY);
+                if (commitSession.RequiresRepair(TRANSLATION_LOCAL_QUALITY_KEY))
+                    requiredKeys.emplace_back(TRANSLATION_LOCAL_QUALITY_KEY);
                 for (const auto key : TRANSLATION_STRING_KEYS)
                 {
                     translationChanged =
@@ -1396,7 +1403,10 @@ class SettingsWindow::Impl final
                 if (this->callbacks_.translationAvailable)
                 {
                     if (page == this->renderer_->GetControlPageId("translationInterfaces"))
+                    {
                         fields.emplace_back(TRANSLATION_INTERFACES_KEY);
+                        fields.emplace_back(TRANSLATION_LOCAL_QUALITY_KEY);
+                    }
                     for (const auto key : TRANSLATION_STRING_KEYS)
                         if (page == this->renderer_->GetControlPageId(key))
                             fields.emplace_back(key);
@@ -1455,6 +1465,10 @@ class SettingsWindow::Impl final
                         const auto value = candidate.ReadJson(key);
                         valid = value && this->callbacks_.validateTranslationInterfaces(*value).empty();
                     }
+                    else if (key == TRANSLATION_LOCAL_QUALITY_KEY)
+                    {
+                        valid = candidate.ReadJson(key).has_value();
+                    }
                     else if (key.starts_with("translation."))
                     {
                         const auto value = candidate.ReadString(key);
@@ -1467,6 +1481,12 @@ class SettingsWindow::Impl final
                     }
                 }
                 if (std::find(fields.begin(), fields.end(), "ocr.model") != fields.end() && !this->OcrValid(candidate))
+                {
+                    this->SetStatus("settings.defaults_failed");
+                    return;
+                }
+                if (std::find(fields.begin(), fields.end(), TRANSLATION_LOCAL_QUALITY_KEY) != fields.end() &&
+                    !TranslationSettingsError(candidate, this->callbacks_).empty())
                 {
                     this->SetStatus("settings.defaults_failed");
                     return;

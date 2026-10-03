@@ -73,7 +73,7 @@ struct SettingsWindowCallbacks final
     std::function<bool(std::string_view)> openTranslationResource;
     // 提交当前未保存条目及代理草稿；返回请求身份或安全拒绝原因，不写盘。
     std::function<SettingsTranslationTestStatus(const nlohmann::json&, std::string_view, std::string_view,
-                                                const SettingsTranslationTestSample&)>
+                                                const SettingsTranslationTestSample&, const nlohmann::json&)>
         submitTranslationTest;
     // 一次读取当前配置的测试样本；缺失或非法时无值，不回退代码默认。
     std::function<std::optional<SettingsTranslationTestSample>()> translationTestSample;
@@ -88,7 +88,8 @@ struct SettingsWindowCallbacks final
     // 创建带新稳定 ID 的默认条目；入参为 kind。返回独立条目，不写盘。
     std::function<nlohmann::json(std::string_view)> createTranslationProfile;
     // 查询该类型的字段；入参为 kind。返回配置/秘密字段及显示选项。
-    std::function<std::vector<SettingsTranslationField>(std::string_view)> translationProfileFields;
+    std::function<std::vector<SettingsTranslationField>(std::string_view, const nlohmann::json&)>
+        translationProfileFields;
     // 校验完整列表；入参为候选。返回空表示有效，否则为不含凭据的本地化错误。
     std::function<std::wstring(const nlohmann::json&)> validateTranslationInterfaces;
     // 校验单条配置；入参为候选。返回空表示有效，允许未填写必需凭据。

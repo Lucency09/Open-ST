@@ -39,7 +39,8 @@ nlohmann::json ProfileField(std::string_view kind, const SettingsTranslationFiel
 // 入参：owner/icon为宿主；profile仅确认后输出；callbacks为领域规则；creating表示新增。
 // 返回：明确确认且完整校验通过为true，取消与失败均不改profile。
 bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, const SettingsWindowCallbacks& callbacks,
-                            bool creating, std::string proxyMode, std::string proxyAddress)
+                            bool creating, std::string proxyMode, std::string proxyAddress,
+                            const nlohmann::json& localQualityPresets)
 {
     using Json = nlohmann::json;
     const std::optional<SettingsTranslationTestSample> sample =
@@ -94,10 +95,12 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
         }
         else
         {
-            descriptions[entry.first] = callbacks.translationProfileFields(entry.first);
+            descriptions[entry.first] = callbacks.translationProfileFields(entry.first, localQualityPresets);
             for (const auto& field : descriptions.at(entry.first))
                 fields.push_back(ProfileField(entry.first, field));
         }
+        if (entry.first == "ctranslate2_local")
+            fields.push_back({{"type", "text"}, {"id", "qualityHelp"}, {"textKey", "translation.quality.description"}});
         children.push_back({{"type", "column"}, {"id", "kindGroup." + entry.first}, {"gap", 10}, {"children", fields}});
     }
     children.push_back({{"type", "text"}, {"id", "profileStatus"}, {"textKey", "settings.translation.profile_status"}});
@@ -160,6 +163,16 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
         // 返回：不含秘密值的显示文本。
         [&](std::string_view key)
         {
+            if (key == "translation.quality.description")
+            {
+                if (kind != "ctranslate2_local")
+                    return std::wstring{};
+                const Json& configuration = drafts.at(kind).at("configuration");
+                const auto quality = configuration.find("quality");
+                return quality != configuration.end() && quality->is_string()
+                           ? callbacks.text("translation.quality." + quality->get<std::string>() + ".description")
+                           : callbacks.text("translation.error.configuration");
+            }
             if (key == "translation.resources.error")
                 return resources.error;
             if (key == "translation.test.sample")
@@ -232,8 +245,8 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                                                if (probe.requestId && callbacks.cancelTranslationTest)
                                                    callbacks.cancelTranslationTest(probe.requestId);
                                                testedCandidate = candidate;
-                                               probe = callbacks.submitTranslationTest(candidate, proxyMode,
-                                                                                       proxyAddress, *sample);
+                                               probe = callbacks.submitTranslationTest(
+                                                   candidate, proxyMode, proxyAddress, *sample, localQualityPresets);
                                            }
                                            (void)validate();
                                        }));

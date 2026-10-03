@@ -1,5 +1,7 @@
 // 验证有序配置、静态 HTTP 模板与有界响应映射；完全不访问线上服务。
+#include <algorithm>
 #include <fstream>
+#include <limits>
 #include "translation_test_defaults.h"
 #include <gtest/gtest.h>
 #include <translation_protocol.h>
@@ -88,7 +90,7 @@ TEST(TranslationSchema, SettingsCaptureRejectsMissingAndInvalidFields)
                          std::invalid_argument);
         }
     }
-    EXPECT_EQ(TranslationSettingKeys().size(), 5U);
+    EXPECT_EQ(TranslationSettingKeys().size(), 6U);
 }
 // 验证资源默认值决定新条目及语言代理，新增条目不复用身份或秘密。
 // 入参：无。返回：断言结果。
@@ -138,6 +140,92 @@ TEST(TranslationSchema, AllowsEmptyCredentialsButRejectsMalformedValues)
     nlohmann::json local = TestTranslationProfile("ctranslate2_local");
     local["configuration"]["pack_id"] = "elsewhere";
     EXPECT_EQ(ValidateTranslationProfile(local), TranslationError::InvalidConfiguration);
+}
+// 验证档位数值与显示顺序均来自配置，而不是代码默认映射。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, LocalQualityUsesConfiguredCatalog)
+{
+    nlohmann::json presets = TestDefaultSettings().at("translation.local_quality_presets");
+    nlohmann::json profile = TestTranslationProfile("ctranslate2_local");
+    ASSERT_EQ(ValidateLocalQualityPresets(presets), TranslationError::None);
+    std::reverse(presets.begin(), presets.end());
+    for (nlohmann::json& preset : presets)
+        preset["beam_size"] = 7;
+    const std::vector<std::string> choices = LocalQualityChoices(presets);
+    ASSERT_EQ(choices.size(), presets.size());
+    for (std::size_t i = 0; i < presets.size(); ++i)
+    {
+        EXPECT_EQ(choices[i], presets[i]["id"].get<std::string>());
+        profile["configuration"]["quality"] = choices[i];
+        std::size_t beam{};
+        EXPECT_EQ(ResolveLocalQuality(presets, profile, beam), TranslationError::None);
+        EXPECT_EQ(beam, 7U);
+    }
+    nlohmann::json settings = TestDefaultSettings();
+    settings["translation.local_quality_presets"] = presets;
+    const TranslationSettings snapshot = ReadTranslationSettings(
+        [&settings](std::string_view key) -> std::optional<nlohmann::json> { return settings.at(key); });
+    settings["translation.local_quality_presets"][0]["beam_size"] = 1;
+    EXPECT_EQ(snapshot.configuration.localQualityPresets, presets);
+}
+// 验证完整目录在任何条目非法时整体拒绝，不能使用部分可解析的档位。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, LocalQualityRejectsMalformedCatalog)
+{
+    const nlohmann::json defaults = TestDefaultSettings().at("translation.local_quality_presets");
+    std::vector<nlohmann::json> invalid{nullptr, nlohmann::json::array(), nlohmann::json::object()};
+    for (const nlohmann::json& value :
+         {nlohmann::json(0), nlohmann::json(-1), nlohmann::json(9), nlohmann::json(1.5), nlohmann::json(true),
+          nlohmann::json("2"), nlohmann::json(std::numeric_limits<std::uint64_t>::max())})
+    {
+        nlohmann::json presets = defaults;
+        presets[0]["beam_size"] = value;
+        invalid.push_back(presets);
+    }
+    nlohmann::json presets = defaults;
+    presets[1]["id"] = presets[0]["id"];
+    invalid.push_back(presets);
+    presets = defaults;
+    presets[0]["id"] = "unknown";
+    invalid.push_back(presets);
+    presets = defaults;
+    presets[0]["extra"] = 1;
+    invalid.push_back(presets);
+    presets = defaults;
+    presets[0].erase("beam_size");
+    invalid.push_back(presets);
+    const nlohmann::json profile = TestTranslationProfile("ctranslate2_local");
+    for (const nlohmann::json& bad : invalid)
+    {
+        std::size_t beam = 42;
+        EXPECT_EQ(ValidateLocalQualityPresets(bad), TranslationError::InvalidConfiguration);
+        EXPECT_THROW(LocalQualityChoices(bad), std::invalid_argument);
+        EXPECT_EQ(ResolveLocalQuality(bad, profile, beam), TranslationError::InvalidConfiguration);
+        EXPECT_EQ(beam, 42U);
+    }
+}
+// 验证旧配置须先由设置迁移；执行层不猜测缺失或未知档位。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, LocalQualityRequiresExplicitValidSelection)
+{
+    const nlohmann::json presets = TestDefaultSettings().at("translation.local_quality_presets");
+    const nlohmann::json original = TestTranslationProfile("ctranslate2_local");
+    for (const nlohmann::json& value :
+         {nlohmann::json("unknown"), nlohmann::json(""), nlohmann::json(2), nlohmann::json(nullptr)})
+    {
+        nlohmann::json profile = original;
+        profile["configuration"]["quality"] = value;
+        std::size_t beam = 42;
+        EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
+        EXPECT_EQ(ResolveLocalQuality(presets, profile, beam), TranslationError::InvalidConfiguration);
+        EXPECT_EQ(beam, 42U);
+    }
+    nlohmann::json missing = original;
+    missing["configuration"].erase("quality");
+    EXPECT_EQ(ValidateTranslationProfile(missing), TranslationError::InvalidConfiguration);
+    std::size_t beam{};
+    EXPECT_EQ(ResolveLocalQuality(presets, TestTranslationProfile("google"), beam),
+              TranslationError::InvalidConfiguration);
 }
 // 验证 JSON 变量只替换字符串值，Unicode/引号换行保持完整数据。
 // 入参：无。

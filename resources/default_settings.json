@@ -75,7 +75,8 @@
         "enabled": false,
         "kind": "ctranslate2_local",
         "configuration": {
-          "pack_id": "opus-mt-2020-07-17-int8-v1"
+          "pack_id": "opus-mt-2020-07-17-int8-v1",
+          "quality": "balanced"
         },
         "secrets": {}
       }
@@ -130,6 +131,20 @@
           "url": "https://opennmt.net/CTranslate2/"
         }
       ]
-    }
+    },
+    "translation.local_quality_presets": [
+      {
+        "id": "fast",
+        "beam_size": 1
+      },
+      {
+        "id": "balanced",
+        "beam_size": 2
+      },
+      {
+        "id": "quality",
+        "beam_size": 4
+      }
+    ]
   }
 }

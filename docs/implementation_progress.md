@@ -4,6 +4,27 @@
 当前开发版本：`0.4.1`；已发布版本：[v0.4.1](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.1)。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
 
+## 2026-10-03 本地翻译三档设置
+
+- [x] 用户审核并批准本地接口编辑页的快速／均衡／质量三档，默认均衡；说明随选择刷新，测试连接使用未保存的同一档位和目录快照，确认／应用后持久化。
+- [x] translation.local_quality_presets统一定义fast/1、balanced/2、quality/4，接口configuration.quality保存ID；C++不保存参数默认表。旧缺失字段从默认资源迁移，现有显式值不覆盖，非法目录／档位明确报错。
+- [x] 设置目录进入同一编辑事务及配置快照，其他页面恢复默认不影响它；格式异常的目录不会通过显示回退悄悄进入测试请求。正常翻译与测试连接使用同一路径解析参数。
+- [x] CT2 overlay新增should_stop并升port-version=2，编码／每步greedy与beam解码边界合作停止，保持原callback限制。Local停止不发布部分结果，释放后下一请求恢复；OOM保持致命优先级。仅重建该依赖，源码归档命中工作区缓存，模型未下载或转换。
+- [x] 定向验证Local36、Translation50、Settings137（136通过／1人工跳过）、App配置与文字会话12；合计235个不同用例，234通过／1跳过。发现并修复单页恢复目录范围，修正测试保存前提后只复跑失败例；最终OOM优先级修正只复跑8项直接相关用例，未跑全量。
+- [x] 正式build.ps1 Release /W4 /WX及staging通过，仍为v1.0.0；核对三档及默认值已进入产物。按用户明确要求保持干净Release，无data目录、不备份恢复，Debug配置未清理；未公开发布。
+- 本次仅档位设置，不加入分句、替换模型或修改在线接口；高档位不保证所有译文更好，单位误译与整句遗漏仍是独立质量事项。
+- 日志：testing/testoutput/quality-tiers-local.log、quality-tiers-local-final.log、quality-tiers-stop-final.log、quality-tiers-translation-recheck.log、quality-tiers-settings.log、quality-tiers-settings-recheck.log、quality-tiers-app.log、quality-tiers-text-session.log、quality-tiers-release.log。
+
+## 2026-10-03 本地翻译质量隔离对照
+
+- [x] 用户明确要求测试：30条公共中英样本，INT8／原权重独立重转FP32 × beam1/2/4/6 ×3次重复，共720轮样本测量；只用现有缓存，无网络下载或在线翻译，未替换生产模型或修改正式推理代码。
+- [x] beam2修复了本组Hello误译和版本号1.0.0变1.00；FP32 beam1仍重现，两精度各beam仍有金额单位误译和两句输入漏后句。不能归因于量化，更不能宣称质量已修复。
+- [x] 额外分句对照保留了此前遗漏的后句；原行内拆句后拼回可以继续保留排布，但通用分句规则尚未实现。金额单位保真仍待解决。
+- [x] CPU探针每条暖运行中位数：INT8 beam1/2/4/6约18.8/20.8/24.5/40.2ms；FP32约50.1/52.8/95.5/106.2ms。样本有限，Python探针不代表正式产品全场景性能。
+- [x] 取消限制实际复现：beam>1不能使用当前逐token callback。后续修复需同时设计取消／deadline，不直接改参数。
+- [ ] 独立Marian/HF推理对照与同一行内分句尚未实施；三档推理设置已在后续审核通过并完成，见上方记录。
+- 详细报告和完整译文：testing/testoutput/local-quality-20261003/report.txt、comparison.csv；原始测量和可复现脚本均在该忽略目录。旧独立评估文档未重建。
+
 ## 2026-10-03 v1.0.0 版本更新与整体审计
 
 当前开发版本为 **1.0.0**；历史公开发布记录仍为v0.4.1，本次不创建标签、安装包或远端Release。版本号与功能／质量验收分别记录。
@@ -12,7 +33,7 @@
 
 | 状态 | 当前事项 | 边界 |
 | --- | --- | --- |
-| 明确风险，待整改 | Release构建脚本会整树删除旧build/Release，包含data | 本轮人工备份恢复保护数据；脚本保留数据机制尚未实现，不影响安装器已有的数据保留流程 |
+| 已澄清，按设计保留 | Release构建整树替换build/Release，保持发行目录干净 | 用户后续明确无需保护Release数据；以后不备份恢复。Debug普通增量构建保留配置，安装器数据保留规则不变 |
 | 质量待解决 | 本地中英模型短句误译 | 自动识别和排布修复不代表质量通过；原独立评估报告当前缺失，历史摘要保留 |
 | 工程未完成 | GPU设备丢失与桌面复制访问丢失恢复 | 当前失败返回不等于当次重建恢复 |
 | 性能待完成／验收 | 截图启动≤150ms；跨屏FPS、144Hz、CPU、尾延迟；复杂几何冷构建 | 当前未做新的性能实测，不使用历史单次数据冒充当前成绩 |

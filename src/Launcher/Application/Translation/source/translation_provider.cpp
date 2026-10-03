@@ -443,16 +443,24 @@ class LocalCTranslateProvider final : public ITranslationProvider
     // 返回：支持方向时 None。
     TranslationError Validate(const TranslationRequest& input, const nlohmann::json& profile) const override
     {
-        return Fits(input, this->Capabilities(profile));
+        std::size_t beamSize{};
+        const TranslationError error = ResolveLocalQuality(input.configuration.localQualityPresets, profile, beamSize);
+        return error == TranslationError::None ? Fits(input, this->Capabilities(profile)) : error;
     }
     // 调用独立子模块，同步实际收尾后才向唯一调度器返回。
     // 入参：input 为文字与语言，profile 为已验证单项，deadline 为期限，stop 为取消。
     // 返回：统一分类结果。
-    ProviderResult Execute(const TranslationRequest& input, const nlohmann::json&, Clock::time_point deadline,
+    ProviderResult Execute(const TranslationRequest& input, const nlohmann::json& profile, Clock::time_point deadline,
                            std::stop_token stop) override
     {
-        translation_local::Result local = this->engine_.Execute(input.text, input.options.sourceLanguage,
-                                                                input.options.targetLanguage, deadline, stop);
+        std::size_t beamSize{};
+        const TranslationError qualityError =
+            ResolveLocalQuality(input.configuration.localQualityPresets, profile, beamSize);
+        if (qualityError != TranslationError::None)
+            return {StatusOf(qualityError), qualityError, {}, {}, {}};
+        translation_local::Result local =
+            this->engine_.Execute(input.text, input.options.sourceLanguage, input.options.targetLanguage,
+                                  translation_local::Options{beamSize}, deadline, stop);
         TranslationError error = TranslationError::Unavailable;
         switch (local.error)
         {

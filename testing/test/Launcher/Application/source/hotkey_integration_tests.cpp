@@ -286,7 +286,10 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     EXPECT_EQ(sample->text, "这是来自配置的测试样本");
     EXPECT_EQ(sample->sourceLanguage, "zh-CN");
     EXPECT_EQ(sample->targetLanguage, "en");
-    const SettingsTranslationTestStatus first = callbacks.submitTranslationTest(profile, "system", "", *sample);
+    const auto presets = GetJsonSetting("translation.local_quality_presets");
+    ASSERT_TRUE(presets);
+    const SettingsTranslationTestStatus first =
+        callbacks.submitTranslationTest(profile, "system", "", *sample, *presets);
     ASSERT_NE(first.requestId, 0U);
     EXPECT_TRUE(first.running);
     EXPECT_EQ(profile, original);
@@ -314,7 +317,8 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     const std::wstring error = callbacks.text("translation.error.credentials");
     EXPECT_FALSE(error.empty());
     EXPECT_NE(completed.text.find(error), std::wstring::npos);
-    const SettingsTranslationTestStatus second = callbacks.submitTranslationTest(profile, "system", "", *sample);
+    const SettingsTranslationTestStatus second =
+        callbacks.submitTranslationTest(profile, "system", "", *sample, *presets);
     ASSERT_GT(second.requestId, first.requestId);
     callbacks.cancelTranslationTest(first.requestId);
     const SettingsTranslationTestStatus secondCompleted = wait(second.requestId);

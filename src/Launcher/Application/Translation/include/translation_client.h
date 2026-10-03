@@ -65,7 +65,7 @@ struct TranslationOptions
 };
 struct TranslationConfiguration
 {
-    nlohmann::json interfaces;
+    nlohmann::json interfaces, localQualityPresets;
     std::string proxyMode, proxyAddress;
 };
 struct TranslationSettings
@@ -98,6 +98,16 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
 // 入参：fieldKey 为字段，value 为 UTF-8 值。
 // 返回：合法为 None。
 TranslationError ValidateTranslationField(std::string_view fieldKey, std::string_view value) noexcept;
+// 校验本地质量目录的三个稳定身份及有界 beam 参数，不提供代码默认映射。
+// 入参：presets 为配置数组。返回：完整合法时 None。
+TranslationError ValidateLocalQualityPresets(const nlohmann::json& presets) noexcept;
+// 按配置顺序发布本地质量身份，界面只负责本地化名称。
+// 入参：presets 为完整目录。返回：稳定身份；非法目录抛参数异常。
+std::vector<std::string> LocalQualityChoices(const nlohmann::json& presets);
+// 解析本次请求条目选中的档位，不改变输入或回退到其他档位。
+// 入参：presets/profile 为同一请求快照，beamSize 仅成功时写入。返回：分类结果。
+TranslationError ResolveLocalQuality(const nlohmann::json& presets, const nlohmann::json& profile,
+                                     std::size_t& beamSize) noexcept;
 // 校验条目结构、语言能力、模板和静态预算；允许凭据为空。
 // 入参：profile 为完整条目。
 // 返回：合法为 None，不返回包含凭据的详细文本。

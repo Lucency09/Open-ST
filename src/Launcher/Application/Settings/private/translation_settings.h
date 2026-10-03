@@ -8,6 +8,7 @@
 namespace open_st
 {
 inline constexpr std::string_view TRANSLATION_INTERFACES_KEY = "translation.interfaces";
+inline constexpr std::string_view TRANSLATION_LOCAL_QUALITY_KEY = "translation.local_quality_presets";
 inline constexpr std::array<std::string_view, 4> TRANSLATION_STRING_KEYS{
     "translation.source_language", "translation.target_language", "translation.network.proxy_mode",
     "translation.network.proxy_address"};
@@ -25,7 +26,8 @@ std::wstring TranslationSettingsError(const SettingsEditSession& session, const 
 // 入参：owner/icon 为宿主；profile 为确认后替换的条目；callbacks 提供领域规则；creating 允许新增时选择类型。
 // 返回：明确确认且校验通过为 true，取消或窗口失败为 false。
 bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, const SettingsWindowCallbacks& callbacks,
-                            bool creating, std::string proxyMode, std::string proxyAddress);
+                            bool creating, std::string proxyMode, std::string proxyAddress,
+                            const nlohmann::json& localQualityPresets);
 
 class TranslationSettingsPanel final
 {

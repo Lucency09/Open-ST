@@ -213,7 +213,8 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     // 接口测试捕获未保存的单项和代理草稿，临时启用只存在于本次不可变请求。
     // 入参：profile/proxyMode/proxyAddress 为编辑草稿。返回：身份或安全拒绝信息。
     callbacks.submitTranslationTest = [this](const nlohmann::json& profile, std::string_view proxyMode,
-                                             std::string_view proxyAddress, const SettingsTranslationTestSample& sample)
+                                             std::string_view proxyAddress, const SettingsTranslationTestSample& sample,
+                                             const nlohmann::json& localQualityPresets)
     {
         SettingsTranslationTestStatus status;
         try
@@ -240,6 +241,7 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
             nlohmann::json candidate = profile;
             candidate["enabled"] = true;
             request.configuration.interfaces = nlohmann::json::array({std::move(candidate)});
+            request.configuration.localQualityPresets = localQualityPresets;
             request.configuration.proxyMode = proxyMode;
             request.configuration.proxyAddress = proxyAddress;
             request.diagnostic = true;
@@ -358,14 +360,21 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
         return CreateTranslationProfile(kind, *defaults);
     };
     // 将领域字段适配到普通子表单描述。入参：kind为类型。返回：无业务依赖的字段。
-    callbacks.translationProfileFields = [](std::string_view kind)
+    callbacks.translationProfileFields = [](std::string_view kind, const nlohmann::json& localQualityPresets)
     {
         std::vector<SettingsTranslationField> result;
         for (const TranslationProfileField& field : TranslationProfileFields(kind))
         {
             SettingsTranslationField item{std::string(field.key), field.secret, field.multiline, {}};
-            for (const std::string_view value : TranslationChoices(std::string(kind) + "." + std::string(field.key)))
-                item.options.push_back({std::string(value), GetUiText("translation.choice." + std::string(value))});
+            if (kind == "ctranslate2_local" && field.key == "quality")
+            {
+                for (const std::string& value : LocalQualityChoices(localQualityPresets))
+                    item.options.push_back({value, GetUiText("translation.choice." + value)});
+            }
+            else
+                for (const std::string_view value :
+                     TranslationChoices(std::string(kind) + "." + std::string(field.key)))
+                    item.options.push_back({std::string(value), GetUiText("translation.choice." + std::string(value))});
             result.push_back(std::move(item));
         }
         return result;

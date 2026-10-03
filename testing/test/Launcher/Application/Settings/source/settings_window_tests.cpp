@@ -416,7 +416,7 @@ class SettingsWindowTest : public testing::Test
         };
         // 本用例只需要一个遮罩字段。
         // 入参：kind 未使用。返回：测试字段描述。
-        callbacks.translationProfileFields = [](std::string_view)
+        callbacks.translationProfileFields = [](std::string_view, const nlohmann::json&)
         { return std::vector<open_st::SettingsTranslationField>{{"api_key", true, false, {}}}; };
         // 使用安全错误描述模拟领域拒绝，不回显候选正文。
         // 入参：value 为列表。返回：通过或固定错误。
@@ -662,6 +662,10 @@ class SettingsWindowTest : public testing::Test
                                                                        {"enabled", false},
                                                                        {"configuration", nlohmann::json::object()},
                                                                        {"secrets", {{"api_key", ""}}}}});
+            values["translation.local_quality_presets"] =
+                nlohmann::json::array({{{"id", "fast"}, {"beam_size", 1}},
+                                       {{"id", "balanced"}, {"beam_size", 2}},
+                                       {{"id", "quality"}, {"beam_size", 4}}});
             values["translation.source_language"] = "auto";
             values["translation.target_language"] = "zh-CN";
             values["translation.network.proxy_mode"] = "system";
@@ -2156,3 +2160,26 @@ TEST_F(SettingsWindowTest, enabled_translation_profile_with_empty_key_can_be_sav
     EXPECT_EQ(this->translationApplied_, 1U);
 }
 } // namespace
+
+// 其他页面恢复默认不能改变用户自定义的本地档位目录。
+// 入参：无。返回：真实父窗口保存事务断言。
+TEST_F(SettingsWindowTest, other_page_defaults_do_not_reset_local_quality_catalog)
+{
+    this->PrepareTranslation();
+    nlohmann::json document;
+    {
+        std::ifstream input(this->root_ / "data/settings.json", std::ios::binary);
+        document = nlohmann::json::parse(input);
+    }
+    document["settings"]["translation.local_quality_presets"][1]["beam_size"] = 7;
+    const nlohmann::json expected = document["settings"]["translation.local_quality_presets"];
+    this->Write("data/settings.json", document.dump());
+    ASSERT_NE(this->Open(), nullptr);
+    this->Select(L"zh-CN");
+    this->SelectPage(1);
+    this->Click("settings.restore_page_defaults");
+    this->Click("settings.apply");
+    const auto actual = open_st::GetJsonSetting("translation.local_quality_presets");
+    ASSERT_TRUE(actual);
+    EXPECT_EQ(*actual, expected);
+}

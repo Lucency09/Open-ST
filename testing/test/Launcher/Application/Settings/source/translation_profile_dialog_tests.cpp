@@ -123,6 +123,9 @@ class TranslationProfileDialogTest : public testing::Test
     bool visited_{}, timedOut_{};
     std::function<void(HWND)> action_;
     std::function<void(open_st::SettingsWindowCallbacks&)> configure_;
+    nlohmann::json presets_ = nlohmann::json::array({{{"id", "fast"}, {"beam_size", 1}},
+                                                     {{"id", "balanced"}, {"beam_size", 2}},
+                                                     {{"id", "quality"}, {"beam_size", 4}}});
     std::chrono::steady_clock::time_point deadline_;
     static thread_local TranslationProfileDialogTest* current_;
     // 建立只属于本测试的宿主。
@@ -218,7 +221,7 @@ class TranslationProfileDialogTest : public testing::Test
             profile["name"] = kind;
             return profile;
         };
-        callbacks.translationProfileFields = [](std::string_view)
+        callbacks.translationProfileFields = [](std::string_view, const nlohmann::json&)
         { return std::vector<open_st::SettingsTranslationField>{{"api_key", true, false, {}}}; };
         callbacks.validateTranslationProfile = [](const nlohmann::json& candidate)
         { return candidate.at("configuration").is_object() ? L"" : L"invalid"; };
@@ -228,7 +231,7 @@ class TranslationProfileDialogTest : public testing::Test
         this->timer_ = SetTimer(this->owner_, 901, 15, Drive);
         EXPECT_NE(this->timer_, 0U);
         const bool accepted = open_st::EditTranslationProfile(this->owner_, nullptr, profile, callbacks, creating,
-                                                              "manual", "http://127.0.0.1:7897");
+                                                              "manual", "http://127.0.0.1:7897", this->presets_);
         EXPECT_TRUE(this->visited_);
         EXPECT_FALSE(this->timedOut_);
         return accepted;
@@ -356,9 +359,9 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
     {
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
-        callbacks.submitTranslationTest = [&](const nlohmann::json& candidate, std::string_view mode,
-                                              std::string_view address,
-                                              const open_st::SettingsTranslationTestSample& sample)
+        callbacks.submitTranslationTest =
+            [&](const nlohmann::json& candidate, std::string_view mode, std::string_view address,
+                const open_st::SettingsTranslationTestSample& sample, const nlohmann::json&)
         {
             ++submitted;
             EXPECT_EQ(sample.text, "配置中的测试原文");
@@ -414,8 +417,8 @@ TEST_F(TranslationProfileDialogTest, connection_result_is_polled_after_host_disp
     {
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
-        callbacks.submitTranslationTest =
-            [](const nlohmann::json&, std::string_view, std::string_view, const open_st::SettingsTranslationTestSample&)
+        callbacks.submitTranslationTest = [](const nlohmann::json&, std::string_view, std::string_view,
+                                             const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
         { return open_st::SettingsTranslationTestStatus{72, true, L"pending"}; };
         callbacks.cancelTranslationTest = [](std::uint64_t id) { EXPECT_EQ(id, 72U); };
         callbacks.translationTestStatus = [&](std::uint64_t id)
@@ -462,7 +465,7 @@ TEST_F(TranslationProfileDialogTest, missing_configured_sample_disables_connecti
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return std::nullopt; };
         callbacks.submitTranslationTest = [&](const nlohmann::json&, std::string_view, std::string_view,
-                                              const open_st::SettingsTranslationTestSample&)
+                                              const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
         {
             ++submitted;
             return open_st::SettingsTranslationTestStatus{};
@@ -524,4 +527,54 @@ TEST_F(TranslationProfileDialogTest, configured_resource_links_follow_kind_witho
     EXPECT_EQ(profile, before);
     EXPECT_EQ(opened,
               (std::vector<std::string>{"https://example.invalid/credentials#keys", "https://example.invalid/docs"}));
+}
+
+// 本地档位复用下拉字段，当前草稿与测试连接共享同一目录，确认前不写配置。
+// 入参：无。返回：真实窗口消息断言。
+TEST_F(TranslationProfileDialogTest, local_quality_selection_and_probe_use_same_catalog)
+{
+    unsigned submissions{};
+    this->configure_ = [&](open_st::SettingsWindowCallbacks& callbacks)
+    {
+        callbacks.translationChoices = [](std::string_view)
+        { return std::vector<open_st::SettingsOption>{{"ctranslate2_local", L"Local"}}; };
+        callbacks.translationProfileFields = [](std::string_view, const nlohmann::json& presets)
+        {
+            open_st::SettingsTranslationField field{"quality", false, false, {}};
+            for (const auto& preset : presets)
+            {
+                const std::string id = preset.at("id").get<std::string>();
+                field.options.push_back({id, std::wstring(id.begin(), id.end())});
+            }
+            return std::vector<open_st::SettingsTranslationField>{field};
+        };
+        callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
+        { return open_st::SettingsTranslationTestSample{"test", "en", "zh-CN", L"sample"}; };
+        callbacks.submitTranslationTest = [&](const nlohmann::json& profile, std::string_view, std::string_view,
+                                              const open_st::SettingsTranslationTestSample&,
+                                              const nlohmann::json& presets)
+        {
+            ++submissions;
+            EXPECT_EQ(profile["configuration"]["quality"], "quality");
+            EXPECT_EQ(presets, this->presets_);
+            return open_st::SettingsTranslationTestStatus{78, false, L"completed"};
+        };
+        callbacks.translationTestStatus = [](std::uint64_t) { return open_st::SettingsTranslationTestStatus{}; };
+        callbacks.cancelTranslationTest = [](std::uint64_t) {};
+    };
+    this->action_ = [](HWND window)
+    {
+        const HWND quality = Field(window, L"settings.translation.field.quality", L"COMBOBOX");
+        ASSERT_NE(quality, nullptr);
+        EXPECT_EQ(Value(quality), L"balanced");
+        Select(quality, L"quality");
+        EXPECT_NE(Control(window, L"STATIC", L"translation.quality.quality.description"), nullptr);
+        SendMessageW(Control(window, L"BUTTON", L"translation.test.start"), BM_CLICK, 0, 0);
+        SendMessageW(Control(window, L"BUTTON", L"dialog.ok"), BM_CLICK, 0, 0);
+    };
+    auto profile = Profile("ctranslate2_local");
+    profile["configuration"]["quality"] = "balanced";
+    EXPECT_TRUE(this->Run(profile));
+    EXPECT_EQ(submissions, 1U);
+    EXPECT_EQ(profile["configuration"]["quality"], "quality");
 }

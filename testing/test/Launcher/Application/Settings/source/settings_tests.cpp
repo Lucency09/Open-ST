@@ -664,3 +664,94 @@ TEST_F(SettingsTest, provider_resources_are_backfilled_once_without_overwriting_
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
     EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), actual);
 }
+
+// 旧本地条目只填缺失档位，源于资源模板且重启后保持，凭据和额外字段不丢失。
+// 入参：无。返回：隔离配置文件断言。
+TEST_F(SettingsTest, local_quality_migration_uses_resource_default_and_persists)
+{
+    const nlohmann::json presets = nlohmann::json::array({{{"id", "fast"}, {"beam_size", 1}},
+                                                          {{"id", "balanced"}, {"beam_size", 2}},
+                                                          {{"id", "quality"}, {"beam_size", 4}}});
+    const nlohmann::json local{{"kind", "ctranslate2_local"},
+                               {"name", "my local"},
+                               {"enabled", true},
+                               {"secrets", {{"fixture", "preserved"}}},
+                               {"configuration", {{"pack_id", "preserved-pack"}, {"extra", 7}}}};
+    nlohmann::json templateProfile = local;
+    templateProfile["configuration"]["quality"] = "quality";
+    nlohmann::json defaults{{"schemaVersion", 1},
+                            {"settings",
+                             {{"translation.local_quality_presets", presets},
+                              {"translation.interfaces", nlohmann::json::array({templateProfile})}}}};
+    nlohmann::json original{
+        {"schemaVersion", 1},
+        {"settings", {{"translation.interfaces", nlohmann::json::array({local})}, {"other", "untouched"}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_TRUE(open_st::IsSettingsPersistenceAvailable());
+    original["settings"]["translation.local_quality_presets"] = presets;
+    original["settings"]["translation.interfaces"][0]["configuration"]["quality"] = "quality";
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    open_st::ShutdownSettings();
+    defaults["settings"]["translation.interfaces"][0]["configuration"]["quality"] = "fast";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+}
+// 显式有效、未知、空值均由领域校验，不因启动迁移改写；非本地结构保持不变。
+// 入参：无。返回：隔离配置文件断言。
+TEST_F(SettingsTest, local_quality_migration_preserves_all_explicit_values)
+{
+    const nlohmann::json local{{"kind", "ctranslate2_local"}, {"configuration", {{"quality", "balanced"}}}};
+    const nlohmann::json defaults{
+        {"schemaVersion", 1},
+        {"settings",
+         {{"translation.local_quality_presets", nlohmann::json::array({{{"id", "balanced"}, {"beam_size", 2}}})},
+          {"translation.interfaces", nlohmann::json::array({local})}}}};
+    nlohmann::json profiles = nlohmann::json::array();
+    for (const nlohmann::json& quality : {nlohmann::json("fast"), nlohmann::json("unknown"), nlohmann::json(""),
+                                          nlohmann::json(nullptr), nlohmann::json(4)})
+    {
+        nlohmann::json profile = local;
+        profile["configuration"]["quality"] = quality;
+        profiles.push_back(profile);
+    }
+    profiles.push_back({{"kind", "google"}, {"configuration", nlohmann::json::object()}});
+    profiles.push_back({{"kind", "ctranslate2_local"}, {"configuration", "invalid"}});
+    const nlohmann::json original{
+        {"schemaVersion", 1},
+        {"settings",
+         {{"translation.interfaces", profiles}, {"translation.local_quality_presets", "explicit-invalid"}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+}
+// 资源没有唯一合法引用时不编造档位；用户没接口列表时不多余写入默认列表。
+// 入参：无。返回：隔离配置文件断言。
+TEST_F(SettingsTest, local_quality_migration_does_not_guess_invalid_resources)
+{
+    const nlohmann::json local{{"kind", "ctranslate2_local"}, {"configuration", nlohmann::json::object()}};
+    nlohmann::json defaults{{"schemaVersion", 1},
+                            {"settings", {{"translation.interfaces", nlohmann::json::array({local})}}}};
+    const nlohmann::json original{{"schemaVersion", 1},
+                                  {"settings", {{"translation.interfaces", nlohmann::json::array({local})}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    open_st::ShutdownSettings();
+    defaults["settings"]["translation.interfaces"][0]["configuration"]["quality"] = "unknown";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    open_st::ShutdownSettings();
+    const nlohmann::json missing{{"schemaVersion", 1}, {"settings", nlohmann::json::object()}};
+    this->WriteRaw(userPath, missing.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), missing);
+}

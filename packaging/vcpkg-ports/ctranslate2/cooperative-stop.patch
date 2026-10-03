@@ -1,0 +1,237 @@
+--- a/include/ctranslate2/translation.h
++++ b/include/ctranslate2/translation.h
+@@ -83,6 +83,9 @@
+     // Function to call for each generated token in greedy search.
+     // Returns true indicate the current generation is considered finished thus can be stopped early.
+     std::function<bool(GenerationStepResult)> callback = nullptr;
++
++    // Open-ST：停止整项翻译，适用于 beam search，禁止返回未完成的结果。
++    std::function<bool()> should_stop = nullptr;
+   };
+ 
+   struct TranslationResult {
+--- a/include/ctranslate2/decoding.h
++++ b/include/ctranslate2/decoding.h
+@@ -57,7 +57,8 @@
+                const float length_penalty = 0,
+                const float coverage_penalty = 0,
+                const float prefix_bias_beta = 0,
+-               const float patience = 1);
++               const float patience = 1,
++               std::function<bool()> should_stop = nullptr);
+ 
+     std::vector<DecodingResult>
+     search(layers::Decoder& decoder,
+@@ -83,6 +84,7 @@
+     const float _coverage_penalty;
+     const float _prefix_bias_beta;
+     const size_t _max_candidates;
++    const std::function<bool()> _should_stop;
+   };
+ 
+   class BiasedDecoder {
+@@ -109,7 +111,8 @@
+     // Penalties are only applied to return scores consistent with the beam search.
+     GreedySearch(const float length_penalty = 0,
+                  const float coverage_penalty = 0,
+-                 std::function<bool(DecodingStepResult)> callback = nullptr);
++                 std::function<bool(DecodingStepResult)> callback = nullptr,
++                 std::function<bool()> should_stop = nullptr);
+ 
+     std::vector<DecodingResult>
+     search(layers::Decoder& decoder,
+@@ -133,6 +136,7 @@
+     const float _length_penalty;
+     const float _coverage_penalty;
+     const std::function<bool(DecodingStepResult)> _callback;
++    const std::function<bool()> _should_stop;
+   };
+ 
+ 
+@@ -163,6 +167,7 @@
+     std::vector<std::vector<size_t>> disable_sequences;
+     std::vector<std::shared_ptr<LogitsProcessor>> logits_processors;
+     std::function<bool(DecodingStepResult)> callback = nullptr;
++    std::function<bool()> should_stop = nullptr;
+   };
+ 
+   std::vector<DecodingResult>
+--- a/src/models/sequence_to_sequence.cc
++++ b/src/models/sequence_to_sequence.cc
+@@ -1,6 +1,7 @@
+ #include "ctranslate2/models/sequence_to_sequence.h"
+ 
+ #include <algorithm>
++#include <stdexcept>
+ 
+ #include "ctranslate2/decoding.h"
+ 
+@@ -317,10 +318,16 @@
+                                               options.max_input_length,
+                                               /*is_prefix=*/true);
+ 
++      // Open-ST：在不可中断的编码运算前后核验取消／截止。
++      if (options.should_stop && options.should_stop())
++        throw std::runtime_error("Decoding cancelled");
++
+       // Encode the sequence.
+       StorageView memory(_encoder->output_type(), device);
+       StorageView memory_lengths(DataType::INT32, device);
+       encode(source_ids, memory, memory_lengths);
++      if (options.should_stop && options.should_stop())
++        throw std::runtime_error("Decoding cancelled");
+ 
+       layers::DecoderState state = _decoder->initial_state();
+       state.emplace("memory", std::move(memory));
+@@ -335,6 +342,7 @@
+       // Decode.
+       DecodingOptions decoding_options;
+       decoding_options.beam_size = options.beam_size;
++      decoding_options.should_stop = options.should_stop;
+       decoding_options.patience = options.patience;
+       decoding_options.length_penalty = options.length_penalty;
+       decoding_options.coverage_penalty = options.coverage_penalty;
+--- a/src/decoding.cc
++++ b/src/decoding.cc
+@@ -4,6 +4,7 @@
+ #include <cmath>
+ #include <memory>
+ #include <numeric>
++#include <stdexcept>
+ 
+ #include "ctranslate2/ops/ops.h"
+ #include "dispatch.h"
+@@ -11,6 +12,12 @@
+ namespace ctranslate2 {
+ 
+   static const ops::Gather gather;
++
++  // Open-ST：异常退出整项请求，不把尚未完成的 beam 候选作为正常结果。
++  static void check_should_stop(const std::function<bool()>& should_stop) {
++    if (should_stop && should_stop())
++      throw std::runtime_error("Decoding cancelled");
++  }
+ 
+   static void gather_beam_flat(StorageView& data, const StorageView& indices, dim_t beam_size) {
+     merge_batch_beam(data);
+@@ -412,12 +419,14 @@
+                          const float length_penalty,
+                          const float coverage_penalty,
+                          const float prefix_bias_beta,
+-                         const float patience)
++                         const float patience,
++                         std::function<bool()> should_stop)
+     : _beam_size(beam_size)
+     , _length_penalty(length_penalty)
+     , _coverage_penalty(coverage_penalty)
+     , _prefix_bias_beta(prefix_bias_beta)
+     , _max_candidates(get_max_candidates(beam_size, patience))
++    , _should_stop(std::move(should_stop))
+   {
+   }
+ 
+@@ -491,6 +500,7 @@
+                                         use_hard_prefix ? prefix_ids : nullptr);
+ 
+     for (dim_t step = 0; step < max_step; ++step) {
++      check_should_stop(_should_stop);
+       const bool is_expanded = (!expand_after_first_step || step > 0);
+ 
+       // Compute log probs for the current step.
+@@ -501,6 +511,7 @@
+               state,
+               &logits,  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
+               (return_attention || _coverage_penalty != 0) ? &attention_step : nullptr);
++      check_should_stop(_should_stop);
+ 
+       const dim_t cur_batch_size = is_expanded ? logits.dim(0) / _beam_size : logits.dim(0);
+ 
+@@ -716,16 +727,19 @@
+         bias_towards_prefix = !all_beams_diverged_from_prefix(beams_diverged_from_prefix);
+     }
+ 
++    check_should_stop(_should_stop);
+     return results;
+   }
+ 
+ 
+   GreedySearch::GreedySearch(const float length_penalty,
+                              const float coverage_penalty,
+-                             std::function<bool(DecodingStepResult)> callback)
++                             std::function<bool(DecodingStepResult)> callback,
++                             std::function<bool()> should_stop)
+     : _length_penalty(length_penalty)
+     , _coverage_penalty(coverage_penalty)
+     , _callback(std::move(callback))
++    , _should_stop(std::move(should_stop))
+   {
+   }
+ 
+@@ -772,7 +786,8 @@
+ 
+         greedy = std::make_unique<GreedySearch>(_length_penalty,
+                                                 _coverage_penalty,
+-                                                std::move(hypothesis_callback));
++                                                std::move(hypothesis_callback),
++                                                _should_stop);
+       }
+ 
+       std::vector<DecodingResult> results = (greedy ? greedy.get() : this)->search(
+@@ -842,12 +857,14 @@
+     const dim_t max_step = get_max_step(max_length, return_prefix, prefix_ids);
+ 
+     for (dim_t step = 0; step < max_step; ++step) {
++      check_should_stop(_should_stop);
+       convert_to_original_word_ids(decoder, sample_from);
+       decoder(start_step + step,
+               sample_from.to(device),
+               state,
+               &logits,
+               gather_attention ? &attention_step_device : nullptr);
++      check_should_stop(_should_stop);
+ 
+       DisableTokens disable_tokens(logits);
+ 
+@@ -970,6 +987,7 @@
+       }
+     }
+ 
++    check_should_stop(_should_stop);
+     return results;
+   }
+ 
+@@ -1078,13 +1096,15 @@
+     if (options.beam_size == 1 && options.prefix_bias_beta == 0)
+       return std::make_unique<GreedySearch>(options.length_penalty,
+                                             options.coverage_penalty,
+-                                            options.callback);
++                                            options.callback,
++                                            options.should_stop);
+     else
+       return std::make_unique<BeamSearch>(options.beam_size,
+                                           options.length_penalty,
+                                           options.coverage_penalty,
+                                           options.prefix_bias_beta,
+-                                          options.patience);
++                                          options.patience,
++                                          options.should_stop);
+   }
+ 
+   static std::vector<std::shared_ptr<LogitsProcessor>>
+@@ -1184,7 +1204,7 @@
+     const auto logits_processors = make_logits_processors(options);
+ 
+     // Expand the next "num_hypotheses" candidate words using the beam search.
+-    BeamSearch beam(options.num_hypotheses);
++    BeamSearch beam(options.num_hypotheses, 0, 0, 0, 1, options.should_stop);
+     DecodingResult expansion_result = beam.search(decoder,
+                                                   state,
+                                                   BestSampler(),
+@@ -1309,6 +1329,7 @@
+          std::vector<std::vector<size_t>> start_tokens,
+          std::vector<size_t> end_ids,
+          DecodingOptions options) {
++    check_should_stop(options.should_stop);
+     validate_decoding_options(options, decoder.device());
+     const size_t batch_size = start_tokens.size();
+ 

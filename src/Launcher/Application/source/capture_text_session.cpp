@@ -208,6 +208,7 @@ void CaptureTextSession::Translate() noexcept
         TranslationSettings settings = this->impl_->ReadConfiguration();
         if (this->impl_->settings &&
             (this->impl_->settings->configuration.interfaces != settings.configuration.interfaces ||
+             this->impl_->settings->configuration.localQualityPresets != settings.configuration.localQualityPresets ||
              this->impl_->settings->configuration.proxyMode != settings.configuration.proxyMode ||
              this->impl_->settings->configuration.proxyAddress != settings.configuration.proxyAddress ||
              this->impl_->settings->options.sourceLanguage != settings.options.sourceLanguage ||

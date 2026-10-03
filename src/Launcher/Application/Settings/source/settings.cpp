@@ -87,7 +87,7 @@ class SettingsState final
 
             open_st::JsonFileError writeError;
             const bool persistenceAvailable = userFile.Write(
-                // 缺失时填入默认设置；已有文档仅补入新增资源链接字段，并检查安全写入前提。
+                // 缺失时填入默认设置；已有文档原子补入新增资源和本地档位字段，并检查安全写入前提。
                 // 入参：document 为 Common 锁内候选用户文档，缺失时填入捕获的默认文档。
                 // 返回：填充或保留后的文档结构有效为 true；结构无效为 false，取消提交。
                 [&defaultDocument](std::optional<nlohmann::json>& document)
@@ -109,6 +109,53 @@ class SettingsState final
                     if (!(*document)["settings"].contains(resourcesKey) &&
                         defaultDocument["settings"].contains(resourcesKey))
                         (*document)["settings"][resourcesKey] = defaultDocument["settings"][resourcesKey];
+                    constexpr std::string_view presetsKey = "translation.local_quality_presets";
+                    constexpr std::string_view interfacesKey = "translation.interfaces";
+                    nlohmann::json& userSettings = (*document)["settings"];
+                    const nlohmann::json& defaults = defaultDocument["settings"];
+                    if (!userSettings.contains(presetsKey) && defaults.contains(presetsKey))
+                        userSettings[presetsKey] = defaults[presetsKey];
+                    // 迁移仅复制唯一默认模板已声明的档位，不在设置模块维护领域默认值。
+                    // 缺失/歧义资源保持旧条目，交给宿主领域校验；显式用户值绝不修复覆盖。
+                    const nlohmann::json::const_iterator defaultProfiles = defaults.find(interfacesKey);
+                    const nlohmann::json::iterator userProfiles = userSettings.find(interfacesKey);
+                    if (defaultProfiles != defaults.end() && defaultProfiles->is_array() &&
+                        userProfiles != userSettings.end() && userProfiles->is_array())
+                    {
+                        const nlohmann::json* selected = nullptr;
+                        bool ambiguous = false;
+                        for (const nlohmann::json& profile : *defaultProfiles)
+                        {
+                            if (!profile.is_object() || !profile.contains("kind") ||
+                                profile["kind"] != "ctranslate2_local")
+                                continue;
+                            if (selected != nullptr)
+                                ambiguous = true;
+                            selected = &profile;
+                        }
+                        if (selected != nullptr && !ambiguous && selected->contains("configuration") &&
+                            (*selected)["configuration"].is_object() &&
+                            (*selected)["configuration"].contains("quality") &&
+                            (*selected)["configuration"]["quality"].is_string() &&
+                            !(*selected)["configuration"]["quality"].get_ref<const std::string&>().empty())
+                        {
+                            const nlohmann::json& quality = (*selected)["configuration"]["quality"];
+                            const nlohmann::json::const_iterator presets = defaults.find(presetsKey);
+                            std::size_t matches = 0;
+                            if (presets != defaults.end() && presets->is_array())
+                                for (const nlohmann::json& preset : *presets)
+                                    if (preset.is_object() && preset.contains("id") && preset["id"] == quality &&
+                                        preset.contains("beam_size") && preset["beam_size"].is_number_integer())
+                                        ++matches;
+                            if (matches == 1)
+                                for (nlohmann::json& profile : *userProfiles)
+                                    if (profile.is_object() && profile.contains("kind") &&
+                                        profile["kind"] == "ctranslate2_local" && profile.contains("configuration") &&
+                                        profile["configuration"].is_object() &&
+                                        !profile["configuration"].contains("quality"))
+                                        profile["configuration"]["quality"] = quality;
+                        }
+                    }
                     return true;
                 },
                 &writeError);

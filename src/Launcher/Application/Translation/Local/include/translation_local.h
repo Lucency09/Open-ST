@@ -1,6 +1,7 @@
 // 声明独立离线翻译引擎；不依赖窗口、网络、设置或父级提供方协议。
 #pragma once
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <stop_token>
@@ -29,6 +30,11 @@ enum class Error
 // 入参：root 为应用绝对资源根，不查询或改变任何引擎实例。
 // 返回：None 仅表示元数据匹配；缺失、类型/尺寸异常和查询失败分别返回对应分类。
 [[nodiscard]] Error QueryModelFiles(const std::filesystem::path& root) noexcept;
+// 由调用方配置传入的推理参数；本模块不定义档位名、默认档位或档位映射。
+struct Options
+{
+    std::size_t beamSize;
+};
 struct Result
 {
     Error error{Error::None};
@@ -57,11 +63,12 @@ class Engine final
     // 返回：不可调用。
     Engine& operator=(const Engine&) = delete;
     // 同步执行有界中英翻译，合作取消后实际停止才返回。
-    // 入参：text 为 UTF-8；source/target 为 zh-CN 或 en；deadline 含加载；stop 为取消。
-    // 返回：保留原有硬换行/空白行/缩进的完整译文或分类错误；整文与每行仍受同一模型 token 上限。
-    // auto 先识别全文语言；不支持的语种不加载模型，任一行失败均不截断或发布部分结果。
+    // 入参：text 为 UTF-8；source 可为 auto；target 为 zh-CN 或 en；options 为显式推理参数；deadline 含加载；stop
+    // 为取消。 返回：保留原有硬换行/空白行/缩进的完整译文或分类错误；整文与每行仍受同一模型 token 上限。 auto
+    // 先识别全文语言；不支持的语种不加载模型，任一行失败均不截断或发布部分结果。
     [[nodiscard]] Result Execute(std::string_view text, std::string_view source, std::string_view target,
-                                 std::chrono::steady_clock::time_point deadline, std::stop_token stop);
+                                 const Options& options, std::chrono::steady_clock::time_point deadline,
+                                 std::stop_token stop);
     // 给宿主唯一任务线程提供下次卸载时刻。
     // 入参：无。
     // 返回：末次活动后五分钟，无缓存时为 time_point::max。

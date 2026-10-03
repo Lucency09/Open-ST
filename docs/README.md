@@ -49,4 +49,4 @@ Debug 保留增量构建目录；Release 生成 `build/Release/`。`-Package` �
 
 当前默认同时启用 OCR 与翻译。首次缺少本地翻译模型时，使用 Windows x64 Python 3.12 显式运行 `python packaging/translation/convert_models.py --root .`；普通 CMake 配置只校验已有缓存，详见[依赖说明](dependencies.md)。
 
-**开发构建注意：当前 Release 脚本会替换整个 build/Release，包括运行后生成的 data。重建前需备份 data，构建后恢复；这与安装器升级保留数据是两个不同流程。**
+**开发构建约定：Release 是干净的发行输出目录，重建会替换整个 build/Release，包括运行后生成的 data；按用户确认不备份、不恢复。Debug 普通增量构建保留配置，不额外备份，也不执行 -Clean。安装器升级与独立便携运行目录的数据保留规则不变。**
