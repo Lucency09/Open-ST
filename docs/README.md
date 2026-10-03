@@ -4,17 +4,17 @@
 
 Open-ST 是一款 Windows 截图与标注工具，同时提供安装版和便携版。现已包含完全本地的中英日 OCR、fast/best 模型和可编辑结果；文本翻译支持有序在线接口与本地中英模型、自动识别、原文排布保留和连接诊断，图片翻译仍后置。
 
-当前源码版本为 **1.0.0**，目标平台为 Windows 10 22H2／Windows 11 x64。本次改版本不代表已经公开发布；下方现有下载仍为 v0.4.1，当前待办与验收范围见[实现进度](implementation_progress.md)。
+当前源码版本为 **1.0.0**，目标平台为 Windows 10 22H2／Windows 11 x64。本次改版本不代表已经公开发布；下方现有下载仍为 v1.0.0，当前待办与验收范围见[实现进度](implementation_progress.md)。
 
 ## 下载与使用
 
-从 [v0.4.1 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v0.4.1) 下载：
+从 [v1.0.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.0.0) 下载：
 
 - **Setup.exe**：支持当前用户／所有用户安装及自定义目录，缺少运行库时经用户确认后安装包内附带的微软运行库。
 - **ZIP**：完整解压到可写目录运行 Open-ST.exe；需另行安装[微软 VC++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
 - **SHA256SUMS.txt**：校验上述两件资产。程序和 Setup 未签名，哈希校验不等同发布者数字签名。
 
-已发布的 v0.4.1 修复安装更新时托盘无响应：安装器启动后自动关闭关于窗口，用户可正常从托盘退出。旧版升级到本版时，仍需先关闭旧关于窗口并退出；本地OCR继续包含。
+安装器启动后自动关闭关于窗口，用户可正常从托盘退出。旧版升级到本版时，仍需先关闭旧关于窗口并退出(托盘右键推书)；本地OCR继续包含。
 
 默认 Ctrl+Alt+Q 截图，Ctrl+C 或 Enter 复制，Ctrl+S 保存，Esc 分层取消。右键改为编辑标注属性，不再取消截图；文字编辑时 Enter 换行、Ctrl+Enter 确认。
 
