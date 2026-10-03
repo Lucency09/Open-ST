@@ -1317,12 +1317,12 @@ void App::CreateCaptureToolbar() noexcept
             {CaptureToolbarCommand::Undo, ToolbarIcon::Undo, "annotation.undo", 2},
             {CaptureToolbarCommand::Redo, ToolbarIcon::Redo, "annotation.redo", 2},
             {CaptureToolbarCommand::Style, ToolbarIcon::Style, "annotation.style.title", 2},
+#ifdef OPEN_ST_HAS_OCR
+            {CaptureToolbarCommand::Ocr, ToolbarIcon::Ocr, "ocr.title", 3},
+#endif
             {CaptureToolbarCommand::Pin, ToolbarIcon::Pin, "capture.toolbar.pin", 1},
             {CaptureToolbarCommand::Save, ToolbarIcon::Save, "capture.toolbar.save", 1},
             {CaptureToolbarCommand::Copy, ToolbarIcon::Copy, "capture.toolbar.copy", 1}};
-#ifdef OPEN_ST_HAS_OCR
-        buttons.push_back({CaptureToolbarCommand::Ocr, ToolbarIcon::Ocr, "ocr.title", 3});
-#endif
         const ToolbarResult result = this->captureToolbar_->Create(
             this->instance_, this->overlaySession_->ActivationWindow(), std::move(buttons),
             this->MakeToolbarTextResolver(), this->MakeToolbarCommandHandler());
