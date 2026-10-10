@@ -114,6 +114,7 @@ $configureArguments.Add('-DOPEN_ST_ALLOW_WARNINGS=' + $warnings)
 # 产品构建入口永远关闭测试基础设施。
 # testing/ 只能由专用测试入口加载，build.ps1 不提供任何开启测试的参数。
 $configureArguments.Add('-DOPEN_ST_BUILD_TESTS=OFF')
+$configureArguments.Add('-DOPEN_ST_BUILD_INSTALLER_HELPER=' + $(if ($Installer) { 'ON' } else { 'OFF' }))
 $configureArguments.Add('-DOPEN_ST_ENABLE_OCR=' + $ocr)
 $configureArguments.Add('-DOPEN_ST_ENABLE_TRANSLATION=' + $translation)
 
@@ -190,7 +191,9 @@ if ($Configuration -eq 'Release') {
             Remove-Item -LiteralPath $verifiedReleaseDir -Recurse -Force
         }
         Move-Item -LiteralPath $verifiedStagingDir -Destination $verifiedReleaseDir
-        Remove-Item -LiteralPath $verifiedWorkDir -Recurse -Force
+        if ($Installer) {
+            $installerTools | Add-Member -NotePropertyName CloseHelper -NotePropertyValue (Join-Path $verifiedWorkDir 'packaging/windows/open-st-close-application.exe')
+        }
 
         $releaseBytes = (Get-ChildItem -LiteralPath $verifiedReleaseDir -Recurse -File |
             Measure-Object -Property Length -Sum).Sum
@@ -207,4 +210,8 @@ if ($Configuration -eq 'Release') {
 # 两种包共用本次编译和同源基础清单，各自写入发行模式。
 if ($Package -or $Installer) {
     Publish-ReleaseArtifacts -Repository $projectRoot -Staging $releaseDir -Metadata $releaseMetadata -Portable ([bool]$Package) -Installer ([bool]$Installer) -Tools $installerTools
+}
+# 安装器编译完毕才释放助手所在中间目录；失败时保留诊断所需产物。
+if ($Configuration -eq 'Release') {
+    Remove-Item -LiteralPath $verifiedWorkDir -Recurse -Force
 }

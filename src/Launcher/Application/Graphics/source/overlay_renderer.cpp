@@ -6,6 +6,7 @@
 #include <display_color_state.h>
 #include <overlay_renderer.h>
 #include <selection_model.h>
+#include <sdr_selection_frame.h>
 #include <windows_util.h>
 
 #include "annotation_drawing.h"
@@ -25,6 +26,8 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <exception>
+#include <vector>
 
 using Microsoft::WRL::ComPtr;
 
@@ -102,6 +105,10 @@ struct OverlayRenderer::Impl final
     ComPtr<ID2D1DeviceContext> d2dContext;
     ComPtr<ID2D1Bitmap1> targetBitmap;
     ComPtr<ID2D1Bitmap1> frameBitmap;
+    ComPtr<ID2D1Bitmap1> selectionBitmap;
+    RectI previewSelection{};
+    RectI previewBounds{};
+    unsigned int maskOpacityPercent{48U};
     ComPtr<ID2D1SolidColorBrush> dimBrush;
     ComPtr<ID2D1SolidColorBrush> selectionBrush;
     ComPtr<ID2D1SolidColorBrush> handleFillBrush;
@@ -416,7 +423,7 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
         return false;
     }
     // 画刷颜色保持不透明黑，透明度单独设置，明确要求 SourceOver 合成得到“变暗”而非覆盖黑色。
-    this->impl_->dimBrush->SetOpacity(0.48F);
+    this->impl_->dimBrush->SetOpacity(static_cast<float>(this->impl_->maskOpacityPercent) / 100.0F);
 
     result = this->impl_->d2dContext->CreateSolidColorBrush(
         ColorFromRgb(ResolveSelectionBorderColor(configuredBorderColor), hdr, frame.uiWhiteScale),
@@ -438,6 +445,94 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     }
 
     return true;
+}
+
+// 更新遮罩深度，保持冻结底图和最终输出的 RGB 不变。
+// 入参：percent 为 0 至 90 的不透明百分比。
+// 返回：参数合法时 true，否则 false。
+bool OverlayRenderer::SetMaskOpacityPercent(unsigned int percent) noexcept
+{
+    if (!IsMaskOpacityPercent(percent))
+        return false;
+    this->impl_->maskOpacityPercent = percent;
+    if (this->impl_->dimBrush)
+        this->impl_->dimBrush->SetOpacity(static_cast<float>(percent) / 100.0F);
+    return true;
+}
+
+// 将正式输出上传为本屏选区位图，不借用后台返回结果的生命周期。
+// 入参：frame 为可空 SDR 底图；errorMessage 接收失败信息。
+// 返回：完整上传或清空时 true；失败时旧位图保持不变。
+bool OverlayRenderer::SetSelectionPreview(const SdrSelectionFrame* frame, std::wstring& errorMessage)
+try
+{
+    errorMessage.clear();
+    if (frame == nullptr)
+    {
+        this->impl_->selectionBitmap.Reset();
+        this->impl_->previewSelection = {};
+        this->impl_->previewBounds = {};
+        return true;
+    }
+    if (!frame->IsValid() || !this->impl_->d2dContext)
+    {
+        errorMessage = L"选区预览或覆盖渲染器无效。";
+        return false;
+    }
+    const RectI bounds = frame->Bounds();
+    const RectI output = this->impl_->frameBounds;
+    const RectI part{std::max(bounds.left, output.left), std::max(bounds.top, output.top),
+                     std::min(bounds.right, output.right), std::min(bounds.bottom, output.bottom)};
+    if (part.IsEmpty())
+        return this->SetSelectionPreview(nullptr, errorMessage);
+    const bool hdr = this->impl_->pixelFormat == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    const std::size_t pixelBytes = hdr ? 8U : 4U;
+    const std::size_t stride = static_cast<std::size_t>(part.Width()) * pixelBytes;
+    std::vector<std::uint8_t> pixels(stride * static_cast<std::size_t>(part.Height()));
+    // 字节输入只有256种通道值，避免滑动时逐像素重复执行sRGB幂函数。
+    std::array<std::uint16_t, 256> channels{};
+    if (hdr)
+        for (std::uint32_t value = 0U; value < channels.size(); ++value)
+            channels[value] = EncodeFloat16(UiChannel(value, true, this->impl_->uiWhiteScale));
+    for (int y = 0; y < part.Height(); ++y)
+    {
+        const std::uint8_t* source = frame->Pixels().data() +
+                                     static_cast<std::size_t>(part.top - frame->Bounds().top + y) * frame->Stride() +
+                                     static_cast<std::size_t>(part.left - frame->Bounds().left) * 4U;
+        std::uint8_t* target = pixels.data() + static_cast<std::size_t>(y) * stride;
+        if (!hdr)
+            std::memcpy(target, source, stride);
+        else
+        {
+            for (int x = 0; x < part.Width(); ++x)
+            {
+                const std::size_t input = static_cast<std::size_t>(x) * 4U;
+                const std::array<std::uint16_t, 4> rgba{
+                    channels[source[input + 2U]], channels[source[input + 1U]], channels[source[input]], 0x3C00U};
+                std::memcpy(target + static_cast<std::size_t>(x) * 8U, rgba.data(), 8U);
+            }
+        }
+    }
+    const D2D1_BITMAP_PROPERTIES1 properties = D2D1::BitmapProperties1(
+        D2D1_BITMAP_OPTIONS_NONE, D2D1::PixelFormat(this->impl_->pixelFormat, D2D1_ALPHA_MODE_IGNORE), 96.0F, 96.0F);
+    ComPtr<ID2D1Bitmap1> candidate;
+    const HRESULT result = this->impl_->d2dContext->CreateBitmap(
+        D2D1::SizeU(static_cast<UINT32>(part.Width()), static_cast<UINT32>(part.Height())), pixels.data(),
+        static_cast<UINT32>(stride), &properties, candidate.GetAddressOf());
+    if (FAILED(result))
+    {
+        errorMessage = FormatHResult(L"上传选区效果预览", result);
+        return false;
+    }
+    this->impl_->selectionBitmap = std::move(candidate);
+    this->impl_->previewSelection = frame->Bounds();
+    this->impl_->previewBounds = part;
+    return true;
+}
+catch (const std::exception&)
+{
+    errorMessage = L"无法分配选区预览资源。";
+    return false;
 }
 
 // 根据覆盖窗口客户区大小重建交换链绘制目标。
@@ -534,8 +629,20 @@ bool OverlayRenderer::DrawFrame(SelectionSnapshot snapshot, const AnnotationSnap
     this->impl_->d2dContext->DrawBitmap(this->impl_->frameBitmap.Get(), targetRectangle, 1.0F,
                                         D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR, sourceRectangle);
 
+    if (snapshot.hasSelection && !snapshot.candidateOnly && this->impl_->selectionBitmap &&
+        snapshot.rectangle.left == this->impl_->previewSelection.left &&
+        snapshot.rectangle.top == this->impl_->previewSelection.top &&
+        snapshot.rectangle.right == this->impl_->previewSelection.right &&
+        snapshot.rectangle.bottom == this->impl_->previewSelection.bottom)
+    {
+        const D2D1_RECT_F destination = ToClientRectangle(this->impl_->previewBounds, this->impl_->frameBounds);
+        this->impl_->d2dContext->DrawBitmap(this->impl_->selectionBitmap.Get(), destination, 1.0F,
+                                            D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    }
+
     const OutsideMaskLayout maskLayout =
-        BuildOutsideMaskLayout(this->impl_->frameBounds, snapshot.hasSelection, snapshot.rectangle);
+        BuildOutsideMaskLayout(this->impl_->frameBounds, snapshot.hasSelection && !snapshot.candidateOnly,
+                               snapshot.rectangle);
     for (std::size_t index = 0U; index < maskLayout.count; ++index)
     {
         const D2D1_RECT_F maskRectangle = ToClientRectangle(maskLayout.rectangles[index], this->impl_->frameBounds);
@@ -664,6 +771,9 @@ void OverlayRenderer::Reset() noexcept
     this->impl_->handleFillBrush.Reset();
     this->impl_->selectionBrush.Reset();
     this->impl_->dimBrush.Reset();
+    this->impl_->selectionBitmap.Reset();
+    this->impl_->previewSelection = {};
+    this->impl_->previewBounds = {};
     this->impl_->frameBitmap.Reset();
     this->impl_->ClearTarget();
     this->impl_->d2dContext.Reset();

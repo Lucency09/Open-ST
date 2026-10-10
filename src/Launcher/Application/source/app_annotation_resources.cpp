@@ -2,6 +2,7 @@
 #include "annotation_interaction_controller.h"
 #include "capture_annotation_state.h"
 #include "capture_overlay_session.h"
+#include "capture_visual_session.h"
 #include "overlay_input_queue.h"
 #include <annotation_mosaic_source.h>
 #include <app.h>
@@ -14,6 +15,10 @@ namespace open_st
 void App::InitializeAnnotationResources()
 {
     this->annotationSource_ = std::make_unique<AnnotationMosaicSource>(*this->frozenDesktopFrame_);
+    if (this->captureVisual_ &&
+        (!this->annotationSource_->SetBrightnessPercent(this->captureVisual_->Brightness()) ||
+         !this->annotationSource_->SetToneMappingOptions(this->captureVisual_->ToneMappingOptions())))
+        throw std::runtime_error("Invalid HDR brightness");
     if (!this->annotation_->SetPreviewPreparation(
             // 状态层给出真正目标选区，撤销和移动也不能借用旧裁剪。
             // 入参：document和selection为候选。返回：资源完整准备且会话仍有效时true。
@@ -33,7 +38,10 @@ bool App::PrepareAnnotationPreview(const AnnotationSnapshot& document, RectI sel
     try
     {
         std::wstring error;
-        ready = this->annotationSource_->Prepare(document, selection, error);
+        ready = (!this->captureVisual_ ||
+                 (this->annotationSource_->SetBrightnessPercent(this->captureVisual_->Brightness()) &&
+                  this->annotationSource_->SetToneMappingOptions(this->captureVisual_->ToneMappingOptions()))) &&
+                this->annotationSource_->Prepare(document, selection, error);
     }
     catch (...)
     {

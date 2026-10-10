@@ -6,6 +6,7 @@
 #include "settings_window_test_access.h"
 #include "translation_settings.h"
 #include <algorithm>
+#include <array>
 #include <log.h>
 #include <optional>
 #include <settings_window.h>
@@ -15,6 +16,38 @@
 
 namespace open_st
 {
+namespace
+{
+constexpr std::array<std::pair<std::string_view, std::string_view>, 2> CAPTURE_VISUAL_FIELDS{
+    {{"defaultHdrBrightness", "capture.hdr_brightness_percent"},
+     {"defaultMaskOpacity", "capture.mask_opacity_percent"}}};
+
+// 旧宿主没有领域校验接口时移除可选控件，不为其凭空构造默认值或绑定。
+// 入参：node为布局子树。返回：原位移除两行和说明，其余布局保持原样。
+void RemoveCaptureVisualControls(nlohmann::json& node)
+{
+    if (node.is_array())
+    {
+        for (auto entry = node.begin(); entry != node.end();)
+        {
+            const std::string id = entry->is_object() ? entry->value("id", std::string{}) : "";
+            if (id == "defaultHdrBrightnessRow" || id == "defaultMaskOpacityRow" || id == "captureDefaultsHelp")
+                entry = node.erase(entry);
+            else
+            {
+                RemoveCaptureVisualControls(*entry);
+                ++entry;
+            }
+        }
+    }
+    else if (node.is_object())
+    {
+        for (nlohmann::json& value : node)
+            if (value.is_structured())
+                RemoveCaptureVisualControls(value);
+    }
+}
+} // namespace
 class SettingsWindow::Impl final
 {
   public:
@@ -65,6 +98,8 @@ class SettingsWindow::Impl final
                     ++page;
             }
         }
+        if (!this->callbacks_.validCaptureVisualSetting)
+            RemoveCaptureVisualControls(layout);
         this->renderer_ = std::make_unique<WindowRenderer>();
         this->Require(this->renderer_->LoadLayout(layout));
         this->ready_ = this->OpenEditSession();
@@ -83,6 +118,14 @@ class SettingsWindow::Impl final
                     this->Require(
                         this->renderer_->SetFieldError(result.id, this->Text("settings.translation.invalid")));
                     return;
+                }
+                for (std::size_t index = 0; index < CAPTURE_VISUAL_FIELDS.size(); ++index)
+                {
+                    if (result.id == CAPTURE_VISUAL_FIELDS[index].first)
+                    {
+                        this->Require(this->renderer_->SetFieldError(result.id, this->CaptureVisualFieldError(index)));
+                        return;
+                    }
                 }
                 if (result.id == "ocrModel" || result.id == "ocrLanguage")
                 {
@@ -119,6 +162,7 @@ class SettingsWindow::Impl final
         // 返回：宿主当前语言的界面文本；启动项状态键由宿主状态回调提供。
         this->Require(this->renderer_->SetTextResolver([this](std::string_view key) { return this->Text(key); }));
         this->BindStorageControls();
+        this->BindCaptureVisualControls();
         this->BindOcrControls();
         if (this->callbacks_.translationAvailable)
         {
@@ -339,6 +383,7 @@ class SettingsWindow::Impl final
         this->hotkeyCleanupPending_ = false;
         this->recordingOriginal_.reset();
         this->integerInputInvalid_ = false;
+        this->captureInputInvalid_.fill(false);
         this->restoredDefaultsPending_ = false;
         this->ready_ = false;
         this->busy_ = false;
@@ -470,7 +515,76 @@ class SettingsWindow::Impl final
             jsonKeys.emplace_back(TRANSLATION_INTERFACES_KEY);
             jsonKeys.emplace_back(TRANSLATION_LOCAL_QUALITY_KEY);
         }
-        return this->editSession_.Open(strings, {"startup.enabled"}, {"export.jpeg_quality"}, jsonKeys);
+        std::vector<std::string> integers{"export.jpeg_quality"};
+        if (this->callbacks_.validCaptureVisualSetting)
+            for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                integers.emplace_back(key);
+        return this->editSession_.Open(strings, {"startup.enabled"}, integers, jsonKeys);
+    }
+
+    // 校验截图默认草稿；恢复全部的候选不受旧控件未完成文本影响。
+    // 入参：candidate为候选，includeInput决定是否检查本窗口输入状态。返回：领域规则全部通过。
+    bool CaptureVisualValid(const SettingsEditSession& candidate, bool includeInput = true) const
+    {
+        if (!this->callbacks_.validCaptureVisualSetting)
+            return true;
+        for (std::size_t index = 0; index < CAPTURE_VISUAL_FIELDS.size(); ++index)
+        {
+            const std::string_view key = CAPTURE_VISUAL_FIELDS[index].second;
+            const std::optional<std::int64_t> value = candidate.ReadInteger(key);
+            if ((includeInput && this->captureInputInvalid_[index]) || !value ||
+                !this->callbacks_.validCaptureVisualSetting(key, *value))
+                return false;
+        }
+        return true;
+    }
+
+    // 返回截图默认参数错误或显式修复提示，不夹取用户输入。
+    // 入参：index为固定字段索引。返回：本地化文本，合法且无需修复时为空。
+    std::wstring CaptureVisualFieldError(std::size_t index) const
+    {
+        const std::string_view key = CAPTURE_VISUAL_FIELDS[index].second;
+        const std::optional<std::int64_t> value = this->editSession_.ReadInteger(key);
+        if (!this->callbacks_.validCaptureVisualSetting || this->captureInputInvalid_[index] || !value ||
+            !this->callbacks_.validCaptureVisualSetting(key, *value))
+            return this->Text("capture.settings.invalid");
+        return this->editSession_.RequiresRepair(key) ? this->Text("settings.storage.repair_pending") : L"";
+    }
+
+    // 绑定截图默认的两个整数；与截图会话的即时预览不共享可变草稿。
+    // 入参：无。返回：无，范围和默认值由资源及宿主领域接口提供。
+    void BindCaptureVisualControls()
+    {
+        if (!this->callbacks_.validCaptureVisualSetting)
+            return;
+        for (std::size_t index = 0; index < CAPTURE_VISUAL_FIELDS.size(); ++index)
+        {
+            const std::string id(CAPTURE_VISUAL_FIELDS[index].first);
+            const std::string key(CAPTURE_VISUAL_FIELDS[index].second);
+            this->Require(this->renderer_->BindInteger(
+                id,
+                // 读取编辑会话中的整数，不覆盖尚未完成的原生文本。
+                // 入参：无。返回：有效值和字段错误。
+                [this, index, key]()
+                {
+                    const std::optional<std::int64_t> value = this->editSession_.ReadInteger(key);
+                    return RendererIntegerResult{value.has_value() && !this->captureInputInvalid_[index],
+                                                 value.value_or(0), this->CaptureVisualFieldError(index)};
+                },
+                // 无效数字也记录为未完成输入，禁止提交上次合法值。
+                // 入参：value为空表示解析失败。返回：接受状态和本地化错误。
+                [this, index, key](std::optional<std::int64_t> value)
+                {
+                    if (!this->ready_ || this->busy_)
+                        return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                    this->captureInputInvalid_[index] = !value.has_value();
+                    if (value && !this->editSession_.ChangeInteger(key, *value))
+                        return RendererChangeResult{false, this->Text("settings.operation_failed")};
+                    this->RefreshStorageErrors();
+                    this->UpdateButtons();
+                    return RendererChangeResult{true, this->CaptureVisualFieldError(index)};
+                }));
+        }
     }
 
     // 绑定 OCR 下拉草稿，领域选项及校验完全由宿主提供。
@@ -647,6 +761,9 @@ class SettingsWindow::Impl final
         std::vector<std::string> keys{"ui.language",           "startup.enabled",
                                       "capture.hotkey",        "capture.selection_border_color",
                                       "export.default_format", "export.jpeg_quality"};
+        if (this->callbacks_.validCaptureVisualSetting)
+            for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                keys.emplace_back(key);
         if (this->callbacks_.ocrAvailable)
         {
             keys.emplace_back("ocr.model");
@@ -692,6 +809,7 @@ class SettingsWindow::Impl final
         return language && startup && hotkey && this->callbacks_.hotkeyDecode(*hotkey) && color &&
                this->callbacks_.normalizeBorderColor(*color) && format && this->callbacks_.validImageFormat(*format) &&
                quality && this->callbacks_.validJpegQuality(*quality) && options.success && this->OcrValid(candidate) &&
+               this->CaptureVisualValid(candidate, false) &&
                TranslationSettingsError(candidate, this->callbacks_).empty() &&
                std::any_of(options.options.begin(), options.options.end(),
                            // 在当前资源选项中精确匹配候选语言。
@@ -749,6 +867,13 @@ class SettingsWindow::Impl final
                                   value.label;
                 }
             }
+        }
+        if (this->callbacks_.validCaptureVisualSetting)
+        {
+            result += L"\n" + this->Text("settings.capture.default_brightness") + L": " +
+                      std::to_wstring(*candidate.ReadInteger("capture.hdr_brightness_percent")) + L"%";
+            result += L"\n" + this->Text("settings.capture.default_mask") + L": " +
+                      std::to_wstring(*candidate.ReadInteger("capture.mask_opacity_percent")) + L"%";
         }
         if (this->callbacks_.translationAvailable)
             result += L"\n" + this->Text("settings.translation.restore_warning");
@@ -906,8 +1031,9 @@ class SettingsWindow::Impl final
         const std::optional<std::string> color = this->editSession_.ReadString("capture.selection_border_color");
         const std::optional<std::string> format = this->editSession_.ReadString("export.default_format");
         const std::optional<std::int64_t> quality = this->editSession_.ReadInteger("export.jpeg_quality");
-        return !this->integerInputInvalid_ && color && this->callbacks_.normalizeBorderColor(*color) && format &&
-               this->callbacks_.validImageFormat(*format) && quality && this->callbacks_.validJpegQuality(*quality);
+        return this->CaptureVisualValid(this->editSession_) && !this->integerInputInvalid_ && color &&
+               this->callbacks_.normalizeBorderColor(*color) && format && this->callbacks_.validImageFormat(*format) &&
+               quality && this->callbacks_.validJpegQuality(*quality);
     }
 
     // 查询需通过显式应用修复的原始类型错误，不把缺字段视为变更。
@@ -915,6 +1041,10 @@ class SettingsWindow::Impl final
     // 返回：本页任意字段待修复时为 true。
     bool StorageNeedsRepair() const noexcept
     {
+        if (this->callbacks_.validCaptureVisualSetting)
+            for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                if (this->editSession_.RequiresRepair(key))
+                    return true;
         return this->editSession_.RequiresRepair("capture.selection_border_color") ||
                this->editSession_.RequiresRepair("export.default_format") ||
                this->editSession_.RequiresRepair("export.jpeg_quality");
@@ -930,6 +1060,10 @@ class SettingsWindow::Impl final
         this->Require(
             this->renderer_->SetFieldError("defaultSaveFormat", this->StorageFieldError("export.default_format")));
         this->Require(this->renderer_->SetFieldError("jpegQuality", this->StorageFieldError("export.jpeg_quality")));
+        if (this->callbacks_.validCaptureVisualSetting)
+            for (std::size_t index = 0; index < CAPTURE_VISUAL_FIELDS.size(); ++index)
+                this->Require(this->renderer_->SetFieldError(std::string(CAPTURE_VISUAL_FIELDS[index].first),
+                                                             this->CaptureVisualFieldError(index)));
         this->RefreshOcrErrors();
         if (this->translationPanel_)
             this->translationPanel_->Refresh();
@@ -1021,6 +1155,9 @@ class SettingsWindow::Impl final
         this->Require(this->renderer_->SetEnabled("selectionBorderColor", this->ready_));
         this->Require(this->renderer_->SetEnabled("defaultSaveFormat", this->ready_));
         this->Require(this->renderer_->SetEnabled("jpegQuality", this->ready_));
+        if (this->callbacks_.validCaptureVisualSetting)
+            for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                this->Require(this->renderer_->SetEnabled(std::string(id), this->ready_));
         if (this->callbacks_.ocrAvailable)
         {
             this->Require(this->renderer_->SetEnabled("ocrModel", this->ready_));
@@ -1171,6 +1308,10 @@ class SettingsWindow::Impl final
             for (const char* key : {"capture.selection_border_color", "export.default_format", "export.jpeg_quality"})
                 if (commitSession.RequiresRepair(key))
                     requiredKeys.emplace_back(key);
+            if (this->callbacks_.validCaptureVisualSetting)
+                for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                    if (commitSession.RequiresRepair(key))
+                        requiredKeys.emplace_back(key);
             if (this->callbacks_.ocrAvailable)
             {
                 for (const char* key : {"ocr.model", "ocr.language"})
@@ -1270,6 +1411,7 @@ class SettingsWindow::Impl final
             if (restoreAll)
             {
                 this->integerInputInvalid_ = false;
+                this->captureInputInvalid_.fill(false);
                 this->languageErrorKey_.clear();
                 this->hotkeyErrorKey_.clear();
                 this->restoredDefaultsPending_ = true;
@@ -1395,6 +1537,10 @@ class SettingsWindow::Impl final
                     fields.emplace_back("export.default_format");
                 if (page == this->renderer_->GetControlPageId("jpegQuality"))
                     fields.emplace_back("export.jpeg_quality");
+                if (this->callbacks_.validCaptureVisualSetting)
+                    for (const auto& [id, key] : CAPTURE_VISUAL_FIELDS)
+                        if (page == this->renderer_->GetControlPageId(std::string(id)))
+                            fields.emplace_back(key);
                 if (this->callbacks_.ocrAvailable && page == this->renderer_->GetControlPageId("ocrModel"))
                 {
                     fields.emplace_back("ocr.model");
@@ -1460,6 +1606,12 @@ class SettingsWindow::Impl final
                         const std::optional<std::int64_t> value = candidate.ReadInteger(key);
                         valid = value && this->callbacks_.validJpegQuality(*value);
                     }
+                    if (this->callbacks_.validCaptureVisualSetting &&
+                        (key == "capture.hdr_brightness_percent" || key == "capture.mask_opacity_percent"))
+                    {
+                        const std::optional<std::int64_t> value = candidate.ReadInteger(key);
+                        valid = value && this->callbacks_.validCaptureVisualSetting(key, *value);
+                    }
                     if (key == TRANSLATION_INTERFACES_KEY)
                     {
                         const auto value = candidate.ReadJson(key);
@@ -1492,6 +1644,9 @@ class SettingsWindow::Impl final
                     return;
                 }
                 this->editSession_ = std::move(candidate);
+                for (std::size_t index = 0; index < CAPTURE_VISUAL_FIELDS.size(); ++index)
+                    if (std::find(fields.begin(), fields.end(), CAPTURE_VISUAL_FIELDS[index].second) != fields.end())
+                        this->captureInputInvalid_[index] = false;
                 if (std::find(fields.begin(), fields.end(), "export.jpeg_quality") != fields.end())
                     this->integerInputInvalid_ = false;
                 this->Require(this->renderer_->RefreshValues());
@@ -1515,7 +1670,8 @@ class SettingsWindow::Impl final
             // 返回：无返回值。
             [this]()
             {
-                if ((this->editSession_.IsDirty() || this->integerInputInvalid_) &&
+                if ((this->editSession_.IsDirty() || this->integerInputInvalid_ || this->captureInputInvalid_[0] ||
+                     this->captureInputInvalid_[1]) &&
                     !this->Confirm("settings.reload_confirm"))
                 {
                     return;
@@ -1527,6 +1683,7 @@ class SettingsWindow::Impl final
                     return;
                 }
                 this->integerInputInvalid_ = false;
+                this->captureInputInvalid_.fill(false);
                 if (this->pendingLanguage_.has_value() &&
                     this->editSession_.ReadString("ui.language") != this->pendingLanguage_)
                 {
@@ -1637,6 +1794,7 @@ class SettingsWindow::Impl final
     bool closeAfterBusy_{};
     bool hotkeyCleanupPending_{};
     bool integerInputInvalid_{};
+    std::array<bool, 2> captureInputInvalid_{};
     bool restoredDefaultsPending_{};
 };
 

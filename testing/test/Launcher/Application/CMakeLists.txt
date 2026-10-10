@@ -20,6 +20,8 @@ endif()
 add_executable(open_st_application_tests source/capture_overlay_session_tests.cpp source/capture_completion_tests.cpp
     source/diagnostic_text_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/simple_message_window_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/capture_visual_session_tests.cpp)
+target_sources(open_st_application_tests PRIVATE source/hdr_export_consistency_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/overlay_paint_batch_tests.cpp
     source/app_overlay_render_tests.cpp)
 target_sources(open_st_application_tests PRIVATE source/annotation_integration_tests.cpp)
@@ -34,7 +36,9 @@ target_sources(open_st_application_tests PRIVATE source/log_maintenance_task_tes
 target_sources(open_st_application_tests PRIVATE source/capture_selection_input_tests.cpp
     source/window_selection_integration_tests.cpp)
 target_link_libraries(open_st_application_tests PRIVATE OpenST::Hotkeys OpenST::Export OpenST::Common OpenST::Settings)
+target_link_libraries(open_st_application_tests PRIVATE windowscodecs ole32 dxgi)
 target_include_directories(open_st_application_tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Export/private"
     "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Settings/private"
     "${PROJECT_SOURCE_DIR}/src/Common/private")
 target_compile_definitions(open_st_application_tests PRIVATE OPEN_ST_TEST_SOURCE_ROOT="${PROJECT_SOURCE_DIR}")

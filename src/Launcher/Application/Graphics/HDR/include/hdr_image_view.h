@@ -24,5 +24,7 @@ struct HdrImageView final
     std::size_t stride{};
     std::span<const std::uint8_t> pixels;
     HdrPixelFormat format{HdrPixelFormat::Rgba16FloatScRgb};
+    // 冻结帧的有效 SDR 参考白，单位 nit；缺失或非正有限值拒绝转换。
+    float sdrWhiteLevelNits{};
 };
 } // namespace open_st

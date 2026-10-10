@@ -179,6 +179,19 @@ struct CaptureToolbar::Impl
         };
         switch (this->specs[index].icon)
         {
+        case ToolbarIcon::Settings:
+        {
+            const POINT gear[] = {point(6, 0), point(10, 0), point(10, 3), point(12, 4), point(14, 2),
+                                  point(16, 6), point(13, 7), point(13, 9), point(16, 10), point(14, 14),
+                                  point(12, 12), point(10, 13), point(10, 16), point(6, 16), point(6, 13),
+                                  point(4, 12), point(2, 14), point(0, 10), point(3, 9), point(3, 7),
+                                  point(0, 6), point(2, 2), point(4, 4), point(6, 3)};
+            Polygon(draw.hDC, gear, static_cast<int>(std::size(gear)));
+            const POINT first = point(5, 5);
+            const POINT last = point(11, 11);
+            Ellipse(draw.hDC, first.x, first.y, last.x, last.y);
+            break;
+        }
         case ToolbarIcon::Ocr:
             line(1, 5, 1, 1);
             line(1, 1, 5, 1);

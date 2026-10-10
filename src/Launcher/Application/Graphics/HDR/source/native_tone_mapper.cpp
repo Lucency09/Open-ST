@@ -1,5 +1,6 @@
 // 文件职责：实现 HDR 像素解码及 Windows 原生效果色调映射，验证效果属性并回读 SDR 输出。
 
+#include <adaptive_shoulder_effect.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <log.h>
 #include <native_tone_mapper.h>
+#include <native_tone_mapper_test_access.h>
 #include <sstream>
 #include <wrl/client.h>
 
@@ -53,12 +55,11 @@ template <typename T> bool SetChecked(ID2D1Effect* effect, UINT32 property, T va
     return true;
 }
 
-// 将借用 HDR 图像解码为紧凑 FP16/scRGB，并统计内容峰值用于原生色调映射。
-// 入参：image：HDR 原始像素、尺寸和字节行跨度；linear：输出参数，接收 FP16 RGBA 通道；peakNits：输出参数，接收最大正 RGB 亮度，单位
-// nit；error：输出参数，接收输入或颜色异常诊断。
-// 返回：完成全部像素解码时为 true；尺寸、格式或通道非法时为 false，linear 可能包含尚未完成的数据。
-bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& linear, float& peakNits,
-            std::wstring& error)
+// 将借用 HDR 图像解码为紧凑 FP16/scRGB；不统计选区峰值。
+// 入参：image：HDR 原始像素、尺寸和字节行跨度；linear：输出参数，接收 FP16 RGBA
+// 通道；error：输出参数，接收输入或颜色异常诊断。 返回：完成全部像素解码时为 true；尺寸、格式或通道非法时为
+// false，linear 可能包含尚未完成的数据。
+bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& linear, std::wstring& error)
 {
     const bool fp16 = image.format == open_st::HdrPixelFormat::Rgba16FloatScRgb;
     const std::size_t pixelBytes = fp16 ? 8U : 4U;
@@ -75,11 +76,9 @@ bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& line
         return false;
     }
     linear.resize(static_cast<std::size_t>(image.width) * image.height * 4U);
-    peakNits = 0.0F;
     if (fp16)
     {
-        // binary16 的非负有限位模式按数值单调排列；直接扫描避免逐像素解码再编码的额外成本。
-        std::uint16_t peakBits{};
+        // 直接检查 binary16 指数位拒绝 NaN/Inf，避免逐像素解码再编码。
         for (std::uint32_t y = 0U; y < image.height; ++y)
         {
             std::uint16_t* destination = linear.data() + static_cast<std::size_t>(y) * image.width * 4U;
@@ -95,15 +94,10 @@ bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& line
                         error = L"HDR 图像包含非有限 RGB 分量。";
                         return false;
                     }
-                    if ((bits & 0x8000U) == 0U && bits > peakBits)
-                    {
-                        peakBits = bits;
-                    }
                 }
                 destination[offset + 3U] = 0x3C00U;
             }
         }
-        peakNits = open_st::DecodeFloat16(peakBits) * 80.0F;
         return true;
     }
     for (std::uint32_t y = 0; y < image.height; ++y)
@@ -121,7 +115,6 @@ bool Decode(const open_st::HdrImageView& image, std::vector<std::uint16_t>& line
                 error = L"HDR 图像包含非有限 RGB 分量。";
                 return false;
             }
-            peakNits = std::max(peakNits, std::max({rgb.red, rgb.green, rgb.blue}) * 80.0F);
             const std::size_t index = (static_cast<std::size_t>(y) * image.width + x) * 4U;
             linear[index] = open_st::EncodeFloat16(rgb.red);
             linear[index + 1U] = open_st::EncodeFloat16(rgb.green);
@@ -145,14 +138,15 @@ class NativeToneMapper::Impl final
     ComPtr<ID2D1Device> device;
     ComPtr<ID2D1DeviceContext> context;
     ComPtr<ID2D1Effect> tone;
-    ComPtr<ID2D1Effect> white;
     ComPtr<ID2D1Effect> color;
     ComPtr<ID2D1ColorContext> sourceColor;
     ComPtr<ID2D1ColorContext> destinationColor;
     DWORD threadId{};
+    unsigned int brightnessPercent{100U};
     bool initialized{};
     bool attempted{};
     bool warpAttempted{};
+    bool forceWarp{};
     std::wstring initializationError;
 
     // 断开效果图对单张图像的引用并释放图像资源，降低转换后的驻留内存。
@@ -185,7 +179,6 @@ class NativeToneMapper::Impl final
     bool InitializeDriver(D3D_DRIVER_TYPE driver, std::wstring& error)
     {
         this->color.Reset();
-        this->white.Reset();
         this->tone.Reset();
         this->sourceColor.Reset();
         this->destinationColor.Reset();
@@ -221,10 +214,9 @@ class NativeToneMapper::Impl final
             error = L"HDR 设备不支持 FP16 效果精度。";
             return false;
         }
-        if (!Check(this->context->CreateEffect(CLSID_D2D1HdrToneMap, this->tone.GetAddressOf()), L"创建 HDR Tone Map",
-                   error) ||
-            !Check(this->context->CreateEffect(CLSID_D2D1WhiteLevelAdjustment, this->white.GetAddressOf()),
-                   L"创建 White Level", error) ||
+        if (!Check(hdr_detail::RegisterAdaptiveShoulderEffect(this->factory.Get()), L"注册 HDR 肩部效果", error) ||
+            !Check(this->context->CreateEffect(hdr_detail::CLSID_ADAPTIVE_SHOULDER, this->tone.GetAddressOf()),
+                   L"创建 HDR 肩部效果", error) ||
             !Check(this->context->CreateEffect(CLSID_D2D1ColorManagement, this->color.GetAddressOf()),
                    L"创建 Color Management", error) ||
             !Check(this->context->CreateColorContext(D2D1_COLOR_SPACE_SCRGB, nullptr, 0U,
@@ -236,11 +228,7 @@ class NativeToneMapper::Impl final
         {
             return false;
         }
-        if (!SetChecked(this->tone.Get(), D2D1_HDRTONEMAP_PROP_DISPLAY_MODE, D2D1_HDRTONEMAP_DISPLAY_MODE_SDR, error) ||
-            !SetChecked(this->tone.Get(), D2D1_HDRTONEMAP_PROP_OUTPUT_MAX_LUMINANCE, 203.0F, error) ||
-            !SetChecked(this->white.Get(), D2D1_WHITELEVELADJUSTMENT_PROP_INPUT_WHITE_LEVEL, 80.0F, error) ||
-            !SetChecked(this->white.Get(), D2D1_WHITELEVELADJUSTMENT_PROP_OUTPUT_WHITE_LEVEL, 203.0F, error) ||
-            !SetChecked(this->color.Get(), D2D1_COLORMANAGEMENT_PROP_QUALITY, D2D1_COLORMANAGEMENT_QUALITY_BEST,
+        if (!SetChecked(this->color.Get(), D2D1_COLORMANAGEMENT_PROP_QUALITY, D2D1_COLORMANAGEMENT_QUALITY_BEST,
                         error) ||
             !SetChecked(this->color.Get(), D2D1_COLORMANAGEMENT_PROP_ALPHA_MODE,
                         D2D1_COLORMANAGEMENT_ALPHA_MODE_PREMULTIPLIED, error) ||
@@ -252,7 +240,7 @@ class NativeToneMapper::Impl final
         {
             return false;
         }
-        for (ID2D1Effect* effect : {this->tone.Get(), this->white.Get(), this->color.Get()})
+        for (ID2D1Effect* effect : {this->tone.Get(), this->color.Get()})
         {
             if (!SetChecked(effect, static_cast<UINT32>(D2D1_PROPERTY_PRECISION), D2D1_BUFFER_PRECISION_16BPC_FLOAT,
                             error))
@@ -260,8 +248,7 @@ class NativeToneMapper::Impl final
                 return false;
             }
         }
-        this->white->SetInputEffect(0U, this->tone.Get());
-        this->color->SetInputEffect(0U, this->white.Get());
+        this->color->SetInputEffect(0U, this->tone.Get());
         return true;
     }
 
@@ -286,8 +273,10 @@ class NativeToneMapper::Impl final
         }
         this->threadId = GetCurrentThreadId();
         this->attempted = true;
-        this->initialized = this->InitializeDriver(D3D_DRIVER_TYPE_HARDWARE, error);
-        if (!this->initialized)
+        this->warpAttempted = this->forceWarp;
+        this->initialized =
+            this->InitializeDriver(this->forceWarp ? D3D_DRIVER_TYPE_WARP : D3D_DRIVER_TYPE_HARDWARE, error);
+        if (!this->initialized && !this->warpAttempted)
         {
             OPEN_ST_LOG_WARNING("HDR hardware initialization failed; trying WARP once.");
             this->warpAttempted = true;
@@ -309,6 +298,15 @@ class NativeToneMapper::Impl final
 // 入参：无。
 // 返回：无返回值；构造后的对象尚未建立图形设备，内存分配失败可抛出异常。
 NativeToneMapper::NativeToneMapper() : impl_(std::make_unique<Impl>()) {}
+// 在首次建图形设备前强制 WARP，完整运行同一生产效果链。
+// 入参：mapper 为未初始化转换器。返回：未初始化时设置成功，否则失败。
+bool NativeToneMapperTestAccess::ForceWarp(NativeToneMapper& mapper) noexcept
+{
+    if (mapper.impl_->attempted)
+        return false;
+    mapper.impl_->forceWarp = true;
+    return true;
+}
 // 释放色调映射效果、设备及仍被效果引用的单张图像。
 // 入参：无。
 // 返回：无返回值；析构完成对应资源清理。
@@ -323,6 +321,18 @@ void NativeToneMapper::ReleaseImageResources() noexcept
 {
     this->impl_->ReleaseImages();
 }
+// 设置本实例后续转换的亮度，设备属性在所属线程下一次转换时统一写入。
+// 入参：percent 为 25 至 200 的亮度百分比。
+// 返回：范围及设备线程合法时 true；失败保持旧值。
+bool NativeToneMapper::SetBrightnessPercent(unsigned int percent) noexcept
+{
+    if (!IsHdrBrightnessPercent(percent) ||
+        (this->impl_->threadId != 0U && this->impl_->threadId != GetCurrentThreadId()))
+        return false;
+    this->impl_->brightnessPercent = percent;
+    return true;
+}
+
 // 建立并预热 HDR 色调映射资源，避免第一次选区输出承担全部初始化成本。
 // 入参：errorMessage：输出参数，失败时接收初始化或预热原因。
 // 返回：设备及微小图像预热成功时为 true；受控回退后仍失败或分配异常时为 false。
@@ -331,8 +341,8 @@ try
 {
     const std::array<std::uint8_t, 8> black{};
     std::vector<std::uint8_t> result;
-    const HdrImageView image{1U, 1U, 8U, black, HdrPixelFormat::Rgba16FloatScRgb};
-    if (this->Convert(image, result, errorMessage))
+    const HdrImageView image{1U, 1U, 8U, black, HdrPixelFormat::Rgba16FloatScRgb, 80.0F};
+    if (this->Convert(image, {HDR_MIN_HIGHLIGHT_CEILING_NITS}, result, errorMessage))
     {
         return true;
     }
@@ -349,7 +359,7 @@ try
             this->impl_->initializationError = errorMessage;
             return false;
         }
-        return this->Convert(image, result, errorMessage);
+        return this->Convert(image, {HDR_MIN_HIGHLIGHT_CEILING_NITS}, result, errorMessage);
     }
     return false;
 }
@@ -364,16 +374,35 @@ catch (const std::exception&)
 }
 
 // 通过 Windows 原生效果将借用 HDR 图像转换为紧凑 SDR/sRGB 输出。
-// 入参：image：只在调用期间借用的 HDR 图像视图；bgra：输出参数，接收紧凑 BGRA8 字节且 alpha 为 255；errorMessage：输出参数，接收失败诊断。
-// 返回：完成解码、原生映射和 GPU 回读时为 true；失败为 false，bgra 清空，不发布部分图像。
-bool NativeToneMapper::Convert(const HdrImageView& image, std::vector<std::uint8_t>& bgra, std::wstring& errorMessage)
+// 入参：image：含冻结参考白的借用 HDR 图像；options：本次绝对高光上限；bgra：输出参数，接收紧凑 BGRA8 字节且 alpha 为
+// 255；errorMessage：输出参数，接收失败诊断。 返回：完成解码、原生映射和 GPU 回读时为 true；失败为 false，bgra
+// 清空，不发布部分图像。
+bool NativeToneMapper::Convert(const HdrImageView& image, const HdrToneMappingOptions& options,
+                               std::vector<std::uint8_t>& bgra, std::wstring& errorMessage)
 try
 {
     bgra.clear();
     errorMessage.clear();
     std::vector<std::uint16_t> linear;
-    float peakNits{};
-    if (!Decode(image, linear, peakNits, errorMessage) || !this->impl_->Initialize(errorMessage))
+    if (!IsHdrHighlightCeilingNits(options.highlightCeilingNits) || !std::isfinite(image.sdrWhiteLevelNits) ||
+        image.sdrWhiteLevelNits <= 0.0F)
+    {
+        errorMessage = L"HDR 高光上限或冻结参考白无效。";
+        return false;
+    }
+    const D2D1_VECTOR_4F parameters{
+        80.0F / image.sdrWhiteLevelNits, static_cast<float>(this->impl_->brightnessPercent) / 100.0F,
+        std::max(2.0F, static_cast<float>(options.highlightCeilingNits) / image.sdrWhiteLevelNits), 0.0F};
+    // 数值虽有限但不可表示的派生参数不得进入 GPU；按最大合法 FP16 分量覆盖两个乘法阶段。
+    const double maximumScaled =
+        65504.0 * static_cast<double>(parameters.x) * std::max(1.0, static_cast<double>(parameters.y));
+    if (!std::isfinite(parameters.x) || !std::isfinite(parameters.z) ||
+        maximumScaled > static_cast<double>(std::numeric_limits<float>::max()))
+    {
+        errorMessage = L"HDR 参考白无法形成有限着色器参数。";
+        return false;
+    }
+    if (!Decode(image, linear, errorMessage) || !this->impl_->Initialize(errorMessage))
     {
         return false;
     }
@@ -389,10 +418,14 @@ try
             this->mapper.ReleaseImageResources();
         }
     } guard{*this};
-    const float inputPeak = std::max(80.0F, peakNits);
-    OPEN_ST_LOG_DEBUG("HDR content peak nits=", peakNits, ", effect input peak nits=", inputPeak);
-    if (!SetChecked(this->impl_->tone.Get(), D2D1_HDRTONEMAP_PROP_INPUT_MAX_LUMINANCE, inputPeak, errorMessage))
+    D2D1_VECTOR_4F accepted{};
+    if (!Check(this->impl_->tone->SetValue(0U, parameters), L"设置 HDR 肩部参数", errorMessage) ||
+        !Check(this->impl_->tone->GetValue(0U, &accepted), L"校验 HDR 肩部参数", errorMessage))
+        return false;
+    if (accepted.x != parameters.x || accepted.y != parameters.y || accepted.z != parameters.z ||
+        accepted.w != parameters.w)
     {
+        errorMessage = L"HDR 肩部效果未接受转换参数。";
         return false;
     }
     const D2D1_SIZE_U size = D2D1::SizeU(image.width, image.height);

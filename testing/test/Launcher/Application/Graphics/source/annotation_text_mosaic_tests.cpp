@@ -102,6 +102,7 @@ TEST(AnnotationMosaicTest, four_block_sizes_use_full_frozen_grid_averages)
     const FrozenDesktopFrame desktop = Gradient();
     AnnotationMosaicSource source(desktop);
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     for (unsigned block : {4U, 8U, 16U, 32U})
     {
         const AnnotationSnapshot snapshot = Snapshot({Mosaic({0, 0}, {64, 32}, block)});
@@ -127,6 +128,7 @@ TEST(AnnotationMosaicTest, cross_output_block_and_crop_keep_desktop_anchored_gri
     const FrozenDesktopFrame desktop({-3, -2, 5, 2}, std::move(planes));
     AnnotationMosaicSource source(desktop);
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     const AnnotationSnapshot snapshot = Snapshot({Mosaic({-3, -2}, {8, 4}, 4)});
@@ -147,6 +149,7 @@ TEST(AnnotationMosaicTest, desktop_gap_counts_as_black_in_block_average)
     planes.push_back(Solid({0, 0, 4, 4}, 100));
     const FrozenDesktopFrame desktop({-4, 0, 4, 4}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {-4, 0, 4, 4}, Snapshot({Mosaic({-4, 0}, {8, 4}, 4)}), output, error));
@@ -162,6 +165,7 @@ TEST(AnnotationMosaicTest, moving_resamples_frozen_position_and_respects_object_
     const FrozenDesktopFrame desktop = Gradient();
     AnnotationMosaicSource source(desktop);
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     AnnotationObject mosaic = Mosaic({0, 0}, {16, 16});
     SdrSelectionFrame output;
     std::wstring error;
@@ -190,6 +194,7 @@ TEST(AnnotationMosaicTest, erasures_reveal_underlying_pixels_and_remove_hit_regi
         std::make_shared<const std::vector<AnnotationEraseMask>>(std::vector<AnnotationEraseMask>{{stroke, {}}});
     const AnnotationSnapshot snapshot = Snapshot({mosaic});
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {0, 0, 64, 32}, snapshot, output, error));
@@ -210,11 +215,20 @@ TEST(AnnotationMosaicTest, hdr_and_sdr_share_one_converted_block_average)
     for (std::size_t index = 0; index < bytes.size(); index += 8)
         std::memcpy(bytes.data() + index, color.data(), 8);
     std::vector<CapturedOutputPlane> planes;
-    planes.emplace_back(RectI{0, 0, 2, 4}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
-                        OutputColorMetadata{}, std::move(bytes));
+    planes.emplace_back(
+        RectI{0, 0, 2, 4}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
+        []
+        {
+            OutputColorMetadata m{};
+            m.hasSdrWhiteLevel = true;
+            m.sdrWhiteLevelNits = 80.0F;
+            return m;
+        }(),
+        std::move(bytes));
     planes.push_back(Solid({2, 0, 8, 4}, 20, 60, 100));
     const FrozenDesktopFrame desktop({0, 0, 8, 4}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame base;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {0, 0, 8, 4}, base, error)) << error;
@@ -243,6 +257,7 @@ TEST(AnnotationMosaicTest, failed_preparation_preserves_previous_candidate_and_r
     ASSERT_TRUE(source.Prepare(valid, {0, 0, 4, 4}, error));
     EXPECT_FALSE(source.Prepare(Snapshot({Mosaic({0, 0}, {20000, 20000}, 4)}), {0, 0, 20000, 20000}, error));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     ASSERT_TRUE(renderer.Render(desktop, {0, 0, 4, 4}, valid, output, error, &source));
     EXPECT_EQ(Pixel(output, 0, 0)[2], 13U);
@@ -276,6 +291,7 @@ TEST(AnnotationTextTest, multilingual_glyph_output_hit_and_local_erase_share_geo
     AnnotationObject object = Text(u"中文\n日本語", 24);
     AnnotationSnapshot snapshot = Snapshot({object});
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {0, 0, 128, 96}, snapshot, output, error)) << error;
@@ -316,6 +332,7 @@ TEST(AnnotationTextTest, spaces_are_not_hits_and_long_lines_do_not_soft_wrap)
     planes.push_back(Solid({0, 0, 128, 96}, 255, 255, 255));
     const FrozenDesktopFrame desktop({0, 0, 128, 96}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     const AnnotationSnapshot spaced = Snapshot({Text(u"I     I", 32)});
@@ -337,5 +354,119 @@ TEST(AnnotationTextTest, spaces_are_not_hits_and_long_lines_do_not_soft_wrap)
                                 error));
     for (int x = 0; x < 128; ++x)
         EXPECT_EQ(Pixel(output, x, 65), (std::array<std::uint8_t, 4>{255, 255, 255, 255}));
+}
+
+// 验证重用马赛克来源时亮度变化清除旧色样，100%往返恢复完全相同输出。
+// 入参：无。返回：断言已有来源和临时来源保持一致，SDR部分不受影响。
+TEST(AnnotationMosaicTest, brightness_invalidates_reused_color_tiles)
+{
+    std::vector<std::uint8_t> bytes(8U * 4U * 8U);
+    const std::array<std::uint16_t, 4> color{EncodeFloat16(1.0F), EncodeFloat16(0.5F), EncodeFloat16(0.25F),
+                                             EncodeFloat16(1.0F)};
+    for (std::size_t offset = 0; offset < bytes.size(); offset += 8U)
+        std::memcpy(bytes.data() + offset, color.data(), 8U);
+    std::vector<CapturedOutputPlane> planes;
+    planes.emplace_back(
+        RectI{0, 0, 8, 4}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
+        []
+        {
+            OutputColorMetadata m{};
+            m.hasSdrWhiteLevel = true;
+            m.sdrWhiteLevelNits = 80.0F;
+            return m;
+        }(),
+        std::move(bytes));
+    const FrozenDesktopFrame desktop({0, 0, 8, 4}, std::move(planes));
+    AnnotationMosaicSource source(desktop);
+    const AnnotationSnapshot annotations = Snapshot({Mosaic({0, 0}, {8, 4}, 4)});
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+    SdrSelectionFrame neutral, dark, fresh, restored;
+    std::wstring error;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, neutral, error, &source)) << error;
+    ASSERT_TRUE(renderer.SetBrightnessPercent(25U));
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, dark, error, &source)) << error;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, fresh, error)) << error;
+    EXPECT_LT(Pixel(dark, 1, 1)[2], Pixel(neutral, 1, 1)[2]);
+    EXPECT_TRUE(std::equal(dark.Pixels().begin(), dark.Pixels().end(), fresh.Pixels().begin(), fresh.Pixels().end()));
+    EXPECT_FALSE(source.SetBrightnessPercent(0U));
+    ASSERT_TRUE(renderer.SetBrightnessPercent(100U));
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, restored, error, &source)) << error;
+    EXPECT_TRUE(std::equal(neutral.Pixels().begin(), neutral.Pixels().end(), restored.Pixels().begin(),
+                           restored.Pixels().end()));
+}
+
+// 验证共享底图只补算网格边界的冻结像素，替换与亮度改变后旧色样全部失效。
+// 入参：无。返回：断言来源寿命、边界块均值及清理后的原始取样。
+TEST(AnnotationMosaicTest, shared_preview_supplies_tiles_and_preserves_boundary_sampling)
+{
+    std::vector<CapturedOutputPlane> planes;
+    planes.push_back(Solid({0, 0, 8, 4}, 20));
+    const FrozenDesktopFrame desktop({0, 0, 8, 4}, std::move(planes));
+    AnnotationMosaicSource source(desktop);
+    const RectI selection{2, 0, 6, 4};
+    const AnnotationSnapshot annotations = Snapshot({Mosaic({2, 0}, {4, 4}, 4)});
+    std::shared_ptr<const SdrSelectionFrame> base =
+        std::make_shared<const SdrSelectionFrame>(selection, std::vector<std::uint8_t>(4U * 4U * 4U, 80U));
+    const std::weak_ptr<const SdrSelectionFrame> first = base;
+    ASSERT_TRUE(source.SetSelectionPreview(base));
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+    SdrSelectionFrame output;
+    std::wstring error;
+    ASSERT_TRUE(renderer.RenderFromPreview(*base, annotations, output, error, &source)) << error;
+    EXPECT_EQ(Pixel(output, 1, 1)[2], 50U);
+    base = std::make_shared<const SdrSelectionFrame>(selection, std::vector<std::uint8_t>(64U, 180U));
+    EXPECT_FALSE(first.expired());
+    ASSERT_TRUE(source.SetSelectionPreview(base));
+    EXPECT_TRUE(first.expired());
+    ASSERT_TRUE(renderer.RenderFromPreview(*base, annotations, output, error, &source)) << error;
+    EXPECT_EQ(Pixel(output, 1, 1)[2], 100U);
+    ASSERT_TRUE(source.SetBrightnessPercent(25U));
+    ASSERT_TRUE(renderer.RenderFromPreview(*base, annotations, output, error, &source)) << error;
+    EXPECT_EQ(Pixel(output, 1, 1)[2], 20U);
+    EXPECT_FALSE(source.SetSelectionPreview(std::make_shared<const SdrSelectionFrame>()));
+    ASSERT_TRUE(source.SetSelectionPreview(nullptr));
+}
+// 验证策略变更释放共享底图，重新取样与独立正式输出保持一致。
+// 入参：无。返回：断言异参底图不保留，非法策略保持当前来源。
+TEST(AnnotationMosaicTest, policy_invalidates_shared_preview_and_color_tiles)
+{
+    std::vector<std::uint8_t> pixels(8U * 4U * 8U);
+    const std::array<std::uint16_t, 4> channels{EncodeFloat16(15.0F), EncodeFloat16(10.0F), EncodeFloat16(5.0F),
+                                                EncodeFloat16(1.0F)};
+    for (std::size_t offset = 0; offset < pixels.size(); offset += 8U)
+        std::memcpy(pixels.data() + offset, channels.data(), 8U);
+    OutputColorMetadata metadata{};
+    metadata.hasSdrWhiteLevel = true;
+    metadata.sdrWhiteLevelNits = 80.0F;
+    std::vector<CapturedOutputPlane> planes;
+    planes.emplace_back(RectI{0, 0, 8, 4}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb, metadata,
+                        std::move(pixels));
+    FrozenDesktopFrame desktop({0, 0, 8, 4}, std::move(planes));
+    AnnotationMosaicSource source(desktop);
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+    ASSERT_TRUE(source.SetToneMappingOptions({4000U}));
+    std::wstring error;
+    SdrSelectionFrame base;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), base, error)) << error;
+    auto shared = std::make_shared<const SdrSelectionFrame>(std::move(base));
+    const std::weak_ptr<const SdrSelectionFrame> weak = shared;
+    ASSERT_TRUE(source.SetSelectionPreview(shared));
+    const auto annotations = Snapshot({Mosaic({0, 0}, {8, 4}, 4)});
+    ASSERT_TRUE(source.Prepare(annotations, desktop.Bounds(), error)) << error;
+    shared.reset();
+    ASSERT_FALSE(weak.expired());
+    EXPECT_FALSE(source.SetToneMappingOptions({0U}));
+    EXPECT_FALSE(weak.expired());
+    ASSERT_TRUE(source.SetToneMappingOptions({1000U}));
+    EXPECT_TRUE(weak.expired());
+    ASSERT_TRUE(renderer.SetToneMappingOptions({1000U}));
+    SdrSelectionFrame reused, fresh;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, reused, error, &source)) << error;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), annotations, fresh, error)) << error;
+    EXPECT_TRUE(
+        std::equal(reused.Pixels().begin(), reused.Pixels().end(), fresh.Pixels().begin(), fresh.Pixels().end()));
 }
 } // namespace open_st

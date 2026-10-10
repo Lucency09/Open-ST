@@ -267,7 +267,7 @@ function Publish-ReleaseArtifacts {
             }
             $include = Join-Path $work 'files.iss'
             Write-ReleaseText $include ($fileLines -join "`n")
-            & $Tools.Compiler "/DAppVersion=$($Metadata.version)" "/DGeneratedFiles=$include" "/DOutputPath=$work" "/DRedistPath=$($Tools.Redist)" "/DRedistVersion=$($Tools.RedistVersion)" (Join-Path $Repository 'packaging/windows/setup.iss')
+            & $Tools.Compiler "/DAppVersion=$($Metadata.version)" "/DGeneratedFiles=$include" "/DOutputPath=$work" "/DRedistPath=$($Tools.Redist)" "/DRedistVersion=$($Tools.RedistVersion)" "/DCloseHelperPath=$($Tools.CloseHelper)" (Join-Path $Repository 'packaging/windows/setup.iss')
             if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $work "$name-Setup.exe"))) {
                 throw "安装器编译失败，退出码 $LASTEXITCODE。已暂存：$($outputs -join ', ')；未发布本次产物。"
             }

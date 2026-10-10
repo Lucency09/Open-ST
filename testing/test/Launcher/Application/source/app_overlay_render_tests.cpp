@@ -1,10 +1,17 @@
 // 验证真实 App 重绘批次的快照、重入、延迟回收及退出；图形边界使用 fake，不显示窗口或输出图像。
 
 #include "capture_overlay_session.h"
+#include "capture_visual_session.h"
 
 #include <app.h>
+#include <algorithm>
+#include <annotation_mosaic_source.h>
+#include <sdr_selection_frame.h>
+#include <selection_output_renderer.h>
 #include <array>
 #include <gtest/gtest.h>
+#include <frozen_desktop_frame.h>
+#include <utility>
 #include <selection_model.h>
 #include <stdexcept>
 #include <vector>
@@ -141,6 +148,83 @@ struct AppOverlayTestAccess final
     static bool Invalidated(const App& app)
     {
         return app.overlayInvalidated_;
+    }
+
+    // 在隐藏遮罩会话中挂接自造HDR像素，并经真实输出入口等待底图。
+    // 入参：app为测试应用，action仅记录是否误输出。返回：成功进入延迟输出为true。
+    static bool DeferHdrOutput(App& app, std::function<void()> action)
+    {
+        const RectI bounds{0, 0, 1, 1};
+        OutputColorMetadata metadata{};
+        metadata.displayColorSpace = CapturedColorSpace::ScRgb;
+        metadata.maximumLuminance = 1000.0F;
+        metadata.sdrWhiteLevelNits = 80.0F;
+        metadata.hasSdrWhiteLevel = true;
+        std::vector<CapturedOutputPlane> planes;
+        planes.emplace_back(bounds, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb, metadata,
+                            std::vector<std::uint8_t>{0, 0x3c, 0, 0x3c, 0, 0x3c, 0, 0x3c});
+        app.frozenDesktopFrame_ = std::make_shared<FrozenDesktopFrame>(bounds, std::move(planes));
+        if (!app.frozenDesktopFrame_->IsValid())
+            return false;
+        app.annotationSource_ = std::make_unique<AnnotationMosaicSource>(*app.frozenDesktopFrame_);
+        app.outputRenderer_ = std::make_unique<SelectionOutputRenderer>();
+        const HWND notification = app.messageWindow_;
+        app.captureVisual_ = std::make_unique<CaptureVisualSession>(
+            // 仅投递到本测试的隐藏消息窗口，沿正式消息路径推进异步退出。
+            // 入参：无。返回：无。
+            [notification]() { (void)PostMessageW(notification, WM_APP + 20, 0, 0); });
+        app.captureVisual_->Begin(app.frozenDesktopFrame_, {100, 70, {4000U}}, []() {});
+        app.selectionModel_->SetBounds(bounds);
+        if (!ChangeSelection(app, bounds))
+            return false;
+        return app.DeferCaptureOutput(std::move(action));
+    }
+
+    // 检查真实完成忙状态；不绕过输出回调来伪造状态变化。
+    // 入参：app为测试应用。返回：完成入口仍被占用为true。
+    static bool CompletionBusy(const App& app)
+    {
+        return app.completionBusy_;
+    }
+
+    // 经正式复制/保存共用的图像入口生成空标注输出，并逐字节核对当前已发布底图。
+    // 入参：app为本测试应用，error接收失败信息。返回：输出与预览完全一致时为true。
+    static bool GenerateMatchesPreview(App& app, std::wstring& error)
+    {
+        const SdrSelectionFrame* preview = app.captureVisual_ ? app.captureVisual_->Preview() : nullptr;
+        if (!preview || !preview->IsValid())
+            return false;
+        SdrSelectionFrame output;
+        if (!app.GenerateAnnotatedSelection(app.selectionModel_->Snapshot().rectangle, {}, output, error))
+            return false;
+        const RectI bounds = output.Bounds();
+        return bounds.left == 0 && bounds.top == 0 && bounds.right == 1 && bounds.bottom == 1 &&
+               output.Pixels().size() == preview->Pixels().size() &&
+               std::equal(output.Pixels().begin(), output.Pixels().end(), preview->Pixels().begin());
+    }
+
+    // 查询等待动作是否仍拥有执行资格。
+    // 入参：app为测试应用。返回：真实会话仍保留动作时为true。
+    static bool HasDeferred(const App& app)
+    {
+        return app.captureVisual_ && app.captureVisual_->HasDeferredOutput();
+    }
+
+    // 经过正式预览回收入口处理失效，不消费桌面绘制或系统剪贴板。
+    // 入参：app为测试应用。返回：无。
+    static void DrainPreview(App& app)
+    {
+        app.DrainCaptureVisualPreview();
+    }
+
+    // 使用完整应用消息边界驱动取消后的回收，覆盖普通线程分派路径。
+    // 入参：app为测试应用。返回：无。
+    static void MessageBoundary(App& app)
+    {
+        MSG message{};
+        message.hwnd = app.messageWindow_;
+        message.message = WM_NULL;
+        (void)app.ProcessApplicationMessage(message);
     }
 
     // 从真实消息窗口发出退出请求，覆盖窗口过程重入路径。
@@ -539,5 +623,93 @@ TEST_F(AppOverlayRenderTest, exit_waits_for_outer_batch_before_posting_quit)
     {
         EXPECT_FALSE(IsWindow(window));
     }
+}
+
+// 验证HDR输出等待期间显示器变化会取消动作并回收遮罩，不会被完成忙状态卡住。
+// 入参：无。返回：回调未执行，模型/窗口/完成资格均清理。
+TEST_F(AppOverlayRenderTest, deferred_hdr_output_display_change_cancels_before_publication)
+{
+    unsigned outputs{};
+    ASSERT_TRUE(Access::DeferHdrOutput(*this->app_, [&outputs]() { ++outputs; }));
+    ASSERT_TRUE(Access::CompletionBusy(*this->app_));
+    ASSERT_TRUE(Access::HasDeferred(*this->app_));
+    SendMessageW(this->windows_[0], WM_DISPLAYCHANGE, 0, 0);
+    Access::DrainPreview(*this->app_);
+    EXPECT_EQ(outputs, 0U);
+    EXPECT_FALSE(Access::CompletionBusy(*this->app_));
+    EXPECT_FALSE(Access::HasDeferred(*this->app_));
+    EXPECT_EQ(Access::Session(*this->app_), nullptr);
+    EXPECT_FALSE(Access::HasModel(*this->app_));
+    for (HWND window : this->windows_)
+        EXPECT_FALSE(IsWindow(window));
+}
+
+// 验证用户关闭遮罩时，真实消息分派边界丢弃等待输出并释放本次截图。
+// 入参：无。返回：未调用输出且不残留完成busy或悬空模型。
+TEST_F(AppOverlayRenderTest, deferred_hdr_output_overlay_close_discards_pending_action)
+{
+    unsigned outputs{};
+    ASSERT_TRUE(Access::DeferHdrOutput(*this->app_, [&outputs]() { ++outputs; }));
+    ASSERT_TRUE(Access::HasDeferred(*this->app_));
+    SendMessageW(this->windows_[0], WM_CLOSE, 0, 0);
+    Access::MessageBoundary(*this->app_);
+    EXPECT_EQ(outputs, 0U);
+    EXPECT_FALSE(Access::CompletionBusy(*this->app_));
+    EXPECT_FALSE(Access::HasDeferred(*this->app_));
+    EXPECT_EQ(Access::Session(*this->app_), nullptr);
+    EXPECT_FALSE(Access::HasModel(*this->app_));
+    for (HWND window : this->windows_)
+        EXPECT_FALSE(IsWindow(window));
+}
+
+// 验证安装器等发出的真实退出消息会取消等待输出，并等后台收尾后推进WM_QUIT。
+// 入参：无。返回：消费本测试退出消息，避免污染后续测试。
+TEST_F(AppOverlayRenderTest, deferred_hdr_output_application_exit_drains_worker_without_export)
+{
+    unsigned outputs{};
+    ASSERT_TRUE(Access::DeferHdrOutput(*this->app_, [&outputs]() { ++outputs; }));
+    Access::RequestExit(*this->app_);
+    Access::DrainPreview(*this->app_);
+    EXPECT_EQ(outputs, 0U);
+    EXPECT_FALSE(Access::CompletionBusy(*this->app_));
+    EXPECT_FALSE(Access::HasDeferred(*this->app_));
+    EXPECT_EQ(Access::Session(*this->app_), nullptr);
+    EXPECT_FALSE(Access::HasModel(*this->app_));
+    MSG quit{};
+    EXPECT_TRUE(this->WaitForQuit(5000, quit));
+    EXPECT_EQ(quit.message, static_cast<UINT>(WM_QUIT));
+    EXPECT_EQ(outputs, 0U);
+}
+
+// 验证等待最新HDR底图后仅执行一次正式输出，并与用户看到的共享底图逐字节一致。
+// 入参：无。返回：不访问剪贴板或文件，只核对内存图像与完成资格。
+TEST_F(AppOverlayRenderTest, deferred_hdr_output_success_exports_published_preview_exactly_once)
+{
+    unsigned outputs{};
+    bool matches = false;
+    std::wstring error;
+    ASSERT_TRUE(Access::DeferHdrOutput(*this->app_,
+                                       [this, &outputs, &matches, &error]()
+                                       {
+                                           ++outputs;
+                                           matches = Access::GenerateMatchesPreview(*this->app_, error);
+                                       }));
+    EXPECT_EQ(outputs, 0U);
+    ASSERT_TRUE(Access::CompletionBusy(*this->app_));
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    while (outputs == 0 && GetTickCount64() < deadline)
+    {
+        Access::DrainPreview(*this->app_);
+        if (outputs == 0)
+            Sleep(2);
+    }
+    ASSERT_EQ(outputs, 1U);
+    EXPECT_TRUE(matches) << error;
+    EXPECT_FALSE(Access::CompletionBusy(*this->app_));
+    EXPECT_FALSE(Access::HasDeferred(*this->app_));
+    EXPECT_NE(Access::Session(*this->app_), nullptr);
+    EXPECT_TRUE(Access::HasModel(*this->app_));
+    Access::DrainPreview(*this->app_);
+    EXPECT_EQ(outputs, 1U);
 }
 } // namespace

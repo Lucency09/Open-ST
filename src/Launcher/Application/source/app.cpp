@@ -10,6 +10,7 @@
 #include "capture_text_session.h"
 #include "app_translation_state.h"
 #include "capture_toolbar_monitor.h"
+#include "capture_visual_session.h"
 #include "diagnostic_text.h"
 #include "log_maintenance_task.h"
 #include "overlay_input_queue.h"
@@ -298,6 +299,7 @@ App::~App()
         this->settingsWindow_->Close();
         this->settingsWindow_.reset();
     }
+    this->captureVisual_.reset(); // 消息窗口与日志存活到后台线程安全结束。
     ShutdownSettings();
     ShutdownUiText();
     this->CloseOverlay();
@@ -335,6 +337,8 @@ bool App::ProcessApplicationMessage(MSG& message)
         if (this->textSession_->Process(message))
             return true;
     }
+    if (this->captureVisual_ && this->captureVisual_->Process(message))
+        return true;
     if (this->settingsWindow_ != nullptr && this->settingsWindow_->ProcessDialogMessage(message))
     {
         this->DrainLogMaintenance();
@@ -347,6 +351,7 @@ bool App::ProcessApplicationMessage(MSG& message)
     this->DrainAnnotationText();
     if (this->overlayInvalidated_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy())
         this->CloseOverlay();
+    this->DrainCaptureVisualPreview();
     this->ReportAnnotationFailure();
     this->DrainLogMaintenance();
     this->ReportDataReadWarnings();
@@ -703,9 +708,20 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         this->DispatchPinCommand(static_cast<PinCommand>(wParam), static_cast<std::uint64_t>(lParam));
         return 0;
     }
+    if (message == WM_APP + 20 || (message == WM_TIMER && wParam == 20))
+    {
+        this->DrainCaptureVisualPreview();
+        if (this->captureVisual_ && !this->captureVisual_->HasWork() && !this->overlaySession_)
+            KillTimer(this->messageWindow_, 20);
+        if (this->shuttingDown_)
+            this->UpdateCaptureGate();
+        return 0;
+    }
     if (message == WM_CLOSE)
     {
         this->shuttingDown_ = true;
+        if (this->captureVisual_ && this->captureVisual_->HasDeferredOutput())
+            this->completionBusy_ = false;
         if (this->textSession_)
             this->textSession_->Shutdown();
         this->ShutdownTranslation();
@@ -1094,11 +1110,14 @@ void App::UpdateCaptureGate() noexcept
         this->pinModalHeld_ = false;
         this->pinManager_->EndModal();
     }
+    if (this->captureVisual_)
+        this->captureVisual_->SetInteractive(!paused);
     this->InvalidateToolbarCommands();
     if (this->shuttingDown_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy() &&
         !this->dialogActive_ && !this->settingsBusy_ && !this->welcoming_ &&
         (!this->pinManager_ || !this->pinManager_->IsBusy()) &&
-        (!this->textSession_ || this->textSession_->ShutdownComplete()) && this->TranslationShutdownComplete())
+        (!this->textSession_ || this->textSession_->ShutdownComplete()) && this->TranslationShutdownComplete() &&
+        (!this->captureVisual_ || !this->captureVisual_->HasWork()))
         PostQuitMessage(0);
 }
 
@@ -1120,7 +1139,7 @@ bool App::CanSubmitToolbarCommand() const noexcept
 // 返回：预订及消息投递成功时 true；状态无效、已有请求或投递失败时 false，并撤销失败预订。
 bool App::PostToolbarCommand(CaptureToolbarCommand command, std::uint64_t token) noexcept
 {
-    if (command < CaptureToolbarCommand::Cancel || command > CaptureToolbarCommand::Ocr)
+    if (!IsCaptureToolbarCommand(command))
     {
         return false;
     }
@@ -1169,6 +1188,9 @@ void App::DispatchToolbarCommand(CaptureToolbarCommand command, std::uint64_t to
     case CaptureToolbarCommand::Pin:
         this->PinSelection();
         break;
+    case CaptureToolbarCommand::Settings:
+        this->ShowCaptureSettings();
+        break;
     case CaptureToolbarCommand::Ocr:
         this->ProcessSelectionText();
         break;
@@ -1189,6 +1211,7 @@ void App::InvalidateToolbarCommands(bool updateMonitor) noexcept
         this->toolbarGate_->Invalidate();
         this->toolbarGate_->SetInputBarrier(GetTickCount());
     }
+    this->RefreshCaptureVisualPreview();
     this->RefreshCaptureToolbar(updateMonitor);
 }
 
@@ -1317,6 +1340,7 @@ void App::CreateCaptureToolbar() noexcept
             {CaptureToolbarCommand::Undo, ToolbarIcon::Undo, "annotation.undo", 2},
             {CaptureToolbarCommand::Redo, ToolbarIcon::Redo, "annotation.redo", 2},
             {CaptureToolbarCommand::Style, ToolbarIcon::Style, "annotation.style.title", 2},
+            {CaptureToolbarCommand::Settings, ToolbarIcon::Settings, "capture.settings.title", 3},
 #ifdef OPEN_ST_HAS_OCR
             {CaptureToolbarCommand::Ocr, ToolbarIcon::Ocr, "ocr.title", 3},
 #endif
@@ -1330,7 +1354,14 @@ void App::CreateCaptureToolbar() noexcept
         {
             // 业务窗口顺序由 App 指定；动态查询覆盖结果窗口关闭与重开。
             this->captureToolbar_->SetUpperWindowQuery(
-                [this]() { return this->textSession_ ? this->textSession_->ResultWindowHandle() : nullptr; });
+                // 动态查询当前上层业务窗口，不保存过期句柄。
+                // 入参：无。返回：借用上层窗口或空。
+                [this]()
+                {
+                    if (this->captureVisual_ && this->captureVisual_->Window())
+                        return this->captureVisual_->Window();
+                    return this->textSession_ ? this->textSession_->ResultWindowHandle() : nullptr;
+                });
             return;
         }
         OPEN_ST_LOG_WARNING("Failed to create capture toolbar. detail=",
@@ -1446,6 +1477,32 @@ try
     this->selectionModel_->SetBounds(bounds);
     this->InitializeWindowSelection();
     this->overlaySession_ = std::make_unique<CaptureOverlaySession>();
+    const std::optional<CaptureVisualDefaults> visualDefaults = ReadCaptureVisualDefaults();
+    if (!visualDefaults)
+    {
+        this->CloseOverlay();
+        this->ShowCaptureError("capture.error.hdr_tone_mapping_invalid");
+        return;
+    }
+    if (!this->captureVisual_)
+    {
+        const HWND notificationWindow = this->messageWindow_;
+        this->captureVisual_ = std::make_unique<CaptureVisualSession>(
+            // 后台只投递消息，不接触App可变状态。
+            // 入参：无。返回：无。
+            [notificationWindow]() { (void)PostMessageW(notificationWindow, WM_APP + 20, 0, 0); });
+    }
+    if (SetTimer(this->messageWindow_, 20, 100, nullptr) == 0)
+        throw std::runtime_error("Cannot establish visual preview completion timer");
+    this->captureVisual_->Begin(this->frozenDesktopFrame_, *visualDefaults,
+                                // 临时参数改变时请求新的会话预览，不写默认文件。
+                                // 入参：无。返回：无。
+                                [this]()
+                                {
+                                    this->RefreshCaptureVisualPreview();
+                                    if (this->overlaySession_)
+                                        this->overlaySession_->Invalidate();
+                                });
     this->InitializeAnnotationResources();
     if (this->toolbarGate_ == nullptr)
     {
@@ -1489,7 +1546,10 @@ try
         output.renderer = std::make_unique<OverlayRenderer>();
         const bool initialized = output.renderer->Initialize(output.window, previewFrame, borderColor, captureError);
         if (initialized)
+        {
             output.renderer->SetMosaicSource(this->annotationSource_.get());
+            (void)output.renderer->SetMaskOpacityPercent(this->captureVisual_->Mask());
+        }
         if (!initialized || !output.renderer->Render(this->SelectionForDrawing(), captureError))
         {
             OPEN_ST_LOG_ERROR("Failed to prepare a capture output renderer. detail=",
@@ -1964,6 +2024,8 @@ void App::CancelSelectionOrClose() noexcept
 // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
 void App::CloseOverlay() noexcept
 {
+    if (this->captureVisual_ && this->captureVisual_->HasDeferredOutput())
+        this->completionBusy_ = false;
     if (this->textSession_)
         this->textSession_->EndCapture();
     this->CancelAnnotationPropertyRequest();
@@ -1972,6 +2034,8 @@ void App::CloseOverlay() noexcept
         this->overlayInvalidated_ = true;
         return;
     }
+    if (this->captureVisual_)
+        this->captureVisual_->End();
     this->overlayInput_->Reset();
     (void)this->annotationInteraction_->CloseSession();
     if (this->toolbarGate_ != nullptr)
@@ -2050,6 +2114,10 @@ try
     {
         return;
     }
+    // 输出动作只在最新底图发布后执行，期间统一暂停输入。
+    // 入参：无。返回：无。
+    if (this->DeferCaptureOutput([this, save]() { this->CompleteSelection(save); }))
+        return;
     // 在模态业务忙状态变化后同步截图准入门禁。
     // 入参：无显式入参；捕获存活中的 App 指针。
     // 返回：无返回值；调用 UpdateCaptureGate 发布最新状态及代次。

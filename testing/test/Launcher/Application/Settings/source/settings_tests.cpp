@@ -17,6 +17,7 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -663,6 +664,56 @@ TEST_F(SettingsTest, provider_resources_are_backfilled_once_without_overwriting_
     this->WriteRaw(userPath, actual.dump());
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
     EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), actual);
+}
+
+// 迁移HDR策略只补缺项，默认值来自资源且保留已有亮度与未知对象成员。
+// 入参：无。返回：隔离磁盘配置断言。
+TEST_F(SettingsTest, hdr_mapping_backfills_missing_object_and_member)
+{
+    const nlohmann::json policy{{"highlight_ceiling_nits", 6000}};
+    const nlohmann::json defaults{{"schemaVersion", 1}, {"settings", {{"capture.hdr_tone_mapping", policy}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    nlohmann::json original{{"schemaVersion", 1}, {"settings", {{"capture.hdr_brightness_percent", 150}}}};
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    original["settings"]["capture.hdr_tone_mapping"] = policy;
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    open_st::ShutdownSettings();
+    original["settings"]["capture.hdr_tone_mapping"] = {{"future_key", "keep"}};
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    original["settings"]["capture.hdr_tone_mapping"]["highlight_ceiling_nits"] = 6000;
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+}
+
+// 显式策略与高光上限即使非法也不被迁移覆盖，由HDR领域报告错误。
+// 入参：无。返回：逐种原始JSON类型的持久化保护断言。
+TEST_F(SettingsTest, hdr_mapping_migration_preserves_explicit_invalid_values)
+{
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const nlohmann::json defaults{{"schemaVersion", 1},
+                                  {"settings", {{"capture.hdr_tone_mapping", {{"highlight_ceiling_nits", 4000}}}}}};
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    const std::vector<nlohmann::json> values{nullptr,
+                                             "bad",
+                                             17,
+                                             nlohmann::json::array(),
+                                             {{"highlight_ceiling_nits", nullptr}},
+                                             {{"highlight_ceiling_nits", "4000"}},
+                                             {{"highlight_ceiling_nits", 4000.5}},
+                                             {{"highlight_ceiling_nits", 999}},
+                                             {{"highlight_ceiling_nits", 10001}},
+                                             {{"highlight_ceiling_nits", 8000}}};
+    for (const nlohmann::json& policy : values)
+    {
+        SCOPED_TRACE(policy.dump());
+        open_st::ShutdownSettings();
+        const nlohmann::json original{{"schemaVersion", 1}, {"settings", {{"capture.hdr_tone_mapping", policy}}}};
+        this->WriteRaw(userPath, original.dump());
+        ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+        EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    }
 }
 
 // 旧本地条目只填缺失档位，源于资源模板且重启后保持，凭据和额外字段不丢失。

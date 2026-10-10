@@ -38,6 +38,9 @@ target_sources(open_st_application
         private/capture_text_session.h
         private/text_result_window.h
         private/about_window.h
+        source/app_visual.cpp
+        source/capture_visual_session.cpp
+        private/capture_visual_session.h
         source/app_overlay_render.cpp
         source/app_annotation.cpp
         source/app_annotation_properties.cpp

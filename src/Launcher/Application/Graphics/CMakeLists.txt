@@ -17,6 +17,7 @@ target_sources(open_st_graphics
         private/annotation_text_geometry.h
         private/annotation_drawing.h
         source/selection_output_renderer.cpp
+        source/selection_preview_worker.cpp
         source/desktop_preview.cpp
         source/outside_mask_layout.cpp
         source/overlay_renderer.cpp
@@ -33,6 +34,7 @@ target_sources(open_st_graphics
             include/annotation_mosaic_source.h
             include/sdr_selection_frame.h
             include/selection_output_renderer.h
+            include/selection_preview_worker.h
             include/desktop_preview.h
             include/overlay_renderer.h
             include/selection_model.h

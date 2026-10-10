@@ -20,6 +20,7 @@ class TranslationClient;
 struct AppTranslationState;
 class FrozenDesktopFrame;
 class CaptureOverlaySession;
+class CaptureVisualSession;
 struct CaptureOverlayOutput;
 class SelectionModel;
 class WindowSelectionSnapshot;
@@ -380,6 +381,18 @@ class App final
     void RenderOverlays(
         HWND window,
         const std::function<bool(CaptureOverlayOutput&, const SelectionSnapshot&, std::wstring&)>& drawOutput);
+    // 将输出动作延期到最新底图发布，期间统一暂停截图输入。
+    // 入参：action 为唯一完成动作。返回：已保留并等待时为 true。
+    bool DeferCaptureOutput(std::function<void()> action);
+    // 请求本次参数下的最新HDR底图并更新遮罩，窗口绘制前调用。
+    // 入参：无。返回：无，失败标记会话失效。
+    void RefreshCaptureVisualPreview() noexcept;
+    // 在消息边界接收最新底图并同步全部输出及马赛克来源。
+    // 入参：无。返回：无，旧版本不会发布。
+    void DrainCaptureVisualPreview() noexcept;
+    // 打开工具栏截图设置面板，不写全局默认。
+    // 入参：无。返回：无。
+    void ShowCaptureSettings() noexcept;
     // 结束当前截图会话并释放覆盖窗口及相关资源。
     // 入参：无。
     // 返回：无返回值；完成、模态或渲染忙状态下先标记失效，待同步调用结束后清理；其余情况立即释放。
@@ -470,8 +483,9 @@ class App final
 
     // frozen frame、renderer 和 selection 仅在一次截图会话中存在；renderer 不把预览帧当作输出源。
     // App 对外头文件使用前置声明，避免把 DirectX 头传播给依赖 application 的模块。
-    std::unique_ptr<FrozenDesktopFrame> frozenDesktopFrame_;
+    std::shared_ptr<FrozenDesktopFrame> frozenDesktopFrame_;
     std::unique_ptr<CaptureOverlaySession> overlaySession_;
+    std::unique_ptr<CaptureVisualSession> captureVisual_;
     std::unique_ptr<SelectionModel> selectionModel_;
     std::unique_ptr<WindowSelectionSnapshot> windowSelection_;
     std::unique_ptr<CaptureSelectionInput> selectionInput_;

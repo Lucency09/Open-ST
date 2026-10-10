@@ -74,6 +74,10 @@ void App::PinSelection()
 {
     if (!this->CanSubmitToolbarCommand() || !this->frozenDesktopFrame_ || !this->outputRenderer_ || !this->pinManager_)
         return;
+    // 等待同一最新底图，不与后台重复转换。
+    // 入参：无。返回：无。
+    if (this->DeferCaptureOutput([this]() { this->PinSelection(); }))
+        return;
     PinId id{};
     bool prepared = false;
     {

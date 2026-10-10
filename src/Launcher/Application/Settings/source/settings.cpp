@@ -113,6 +113,17 @@ class SettingsState final
                     constexpr std::string_view interfacesKey = "translation.interfaces";
                     nlohmann::json& userSettings = (*document)["settings"];
                     const nlohmann::json& defaults = defaultDocument["settings"];
+                    // HDR策略仅补缺失对象或子字段；显式非法值保留给调用方报告，未知字段不丢失。
+                    constexpr std::string_view hdrKey = "capture.hdr_tone_mapping";
+                    constexpr std::string_view ceilingKey = "highlight_ceiling_nits";
+                    const nlohmann::json::const_iterator hdrDefault = defaults.find(hdrKey);
+                    if (hdrDefault != defaults.end() && hdrDefault->is_object() && hdrDefault->contains(ceilingKey))
+                    {
+                        if (!userSettings.contains(hdrKey))
+                            userSettings[hdrKey] = *hdrDefault;
+                        else if (userSettings[hdrKey].is_object() && !userSettings[hdrKey].contains(ceilingKey))
+                            userSettings[hdrKey][ceilingKey] = (*hdrDefault)[ceilingKey];
+                    }
                     if (!userSettings.contains(presetsKey) && defaults.contains(presetsKey))
                         userSettings[presetsKey] = defaults[presetsKey];
                     // 迁移仅复制唯一默认模板已声明的档位，不在设置模块维护领域默认值。

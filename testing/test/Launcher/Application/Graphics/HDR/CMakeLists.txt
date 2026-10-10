@@ -9,8 +9,9 @@ gtest_discover_tests(
     PROPERTIES LABELS "hdr;graphics;unit" TIMEOUT 15
 )
 
-add_executable(open_st_hdr_native_tests source/native_tone_mapper_tests.cpp)
-target_link_libraries(open_st_hdr_native_tests PRIVATE OpenST::HDR GTest::gtest_main)
+add_executable(open_st_hdr_native_tests source/native_tone_mapper_tests.cpp source/adaptive_candidate_tests.cpp)
+target_link_libraries(open_st_hdr_native_tests PRIVATE OpenST::HDR GTest::gtest_main d3dcompiler d3d11 d2d1 dxgi)
+target_include_directories(open_st_hdr_native_tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Launcher/Application/Graphics/HDR/private")
 gtest_discover_tests(
     open_st_hdr_native_tests
     TEST_PREFIX "hdr."

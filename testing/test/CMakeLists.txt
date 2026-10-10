@@ -6,3 +6,4 @@ include(GoogleTest)
 
 add_subdirectory(Common)
 add_subdirectory(Launcher)
+add_subdirectory(packaging)

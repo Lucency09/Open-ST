@@ -24,7 +24,7 @@ endif()
 
 # 声明项目名称、当前版本和使用的编程语言。
 # VERSION 会提供 PROJECT_VERSION 等变量，并用于生成程序内显示的版本号。
-project(OpenST VERSION 1.0.0 LANGUAGES CXX)
+project(OpenST VERSION 1.1.0 LANGUAGES CXX)
 
 # 让 CMake 在构建目录生成 compile_commands.json，供 IDE（C/C++ 插件 / clangd）解析
 # include 路径与编译宏。对产品构建和测试构建同时生效，且不影响任何编译行为。
@@ -70,6 +70,12 @@ configure_file(config/version.rc.in generated/open_st/version.rc @ONLY)
 
 # 进入源码模块索引。具体 .cpp/.h 必须由各模块自己的 CMakeLists.txt 管理。
 add_subdirectory(src)
+
+# 安装器专用进程维护助手仅由发行构建显式开启，不进入产品文件清单。
+option(OPEN_ST_BUILD_INSTALLER_HELPER "构建安装器进程维护助手" OFF)
+if(OPEN_ST_BUILD_INSTALLER_HELPER)
+    add_subdirectory(packaging/windows)
+endif()
 
 # 普通产品构建完全不加载 CTest、测试或 Mock。
 # 只有 OPEN_ST_BUILD_TESTS=ON 时才进入 testing/；Mock 必须先于测试加载。

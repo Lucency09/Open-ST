@@ -145,6 +145,11 @@
         "id": "quality",
         "beam_size": 4
       }
-    ]
+    ],
+    "capture.hdr_brightness_percent": 100,
+    "capture.mask_opacity_percent": 70,
+    "capture.hdr_tone_mapping": {
+      "highlight_ceiling_nits": 4000
+    }
   }
 }

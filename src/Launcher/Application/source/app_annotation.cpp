@@ -2,6 +2,8 @@
 #include "annotation_style_dialog.h"
 #include "capture_annotation_state.h"
 #include "capture_overlay_session.h"
+#include "capture_visual_session.h"
+#include <annotation_mosaic_source.h>
 #include <app.h>
 #include <array>
 #include <capture_toolbar.h>
@@ -265,11 +267,44 @@ bool App::GenerateAnnotatedSelection(RectI selection, const AnnotationSnapshot& 
             }
         } guard{this->annotationPreparing_};
         this->annotationPreparing_ = true;
-        rendered = this->outputRenderer_->Render(*this->frozenDesktopFrame_, selection, annotations, frame, error,
-                                                 this->annotationSource_.get());
+        if (this->captureVisual_ &&
+            (!this->outputRenderer_->SetBrightnessPercent(this->captureVisual_->Brightness()) ||
+             !this->outputRenderer_->SetToneMappingOptions(this->captureVisual_->ToneMappingOptions()) ||
+             (this->annotationSource_ &&
+              !this->annotationSource_->SetToneMappingOptions(this->captureVisual_->ToneMappingOptions())) ||
+             (this->annotationSource_ &&
+              !this->annotationSource_->SetBrightnessPercent(this->captureVisual_->Brightness()))))
+            return false;
+        if (this->captureVisual_ && this->captureVisual_->HasHdr(selection))
+        {
+            const SdrSelectionFrame* preview = this->captureVisual_->Preview();
+            if (preview == nullptr || preview->Bounds().left != selection.left ||
+                preview->Bounds().top != selection.top || preview->Bounds().right != selection.right ||
+                preview->Bounds().bottom != selection.bottom ||
+                (this->annotationSource_ &&
+                 !this->annotationSource_->SetSelectionPreview(this->captureVisual_->SharedPreview())))
+            {
+                frame = {};
+                error = L"最新HDR截图效果尚未完成。";
+                return false;
+            }
+            rendered = this->outputRenderer_->RenderFromPreview(*preview, annotations, frame, error,
+                                                                this->annotationSource_.get());
+        }
+        else
+        {
+            if (this->annotationSource_)
+                (void)this->annotationSource_->SetSelectionPreview({});
+            rendered = this->outputRenderer_->Render(*this->frozenDesktopFrame_, selection, annotations, frame, error,
+                                                     this->annotationSource_.get());
+        }
     }
     if (this->overlaySession_)
+    {
+        if (this->captureVisual_ && !this->captureVisual_->Preview())
+            (void)this->overlaySession_->SetSelectionPreview(nullptr, error);
         this->overlaySession_->Invalidate();
+    }
     if (!rendered || this->overlayInvalidated_ || this->shuttingDown_)
     {
         frame = {};

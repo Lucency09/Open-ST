@@ -3,12 +3,14 @@
 #include "json_file_test_access.h"
 #include "settings_internal.h"
 #include "settings_window_test_access.h"
+#include <algorithm>
 #include <array>
 #include <commctrl.h>
 #include <file_lease.h>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iostream>
 #include <iterator>
 #include <settings.h>
 #include <settings_window.h>
@@ -99,6 +101,119 @@ struct BusyMessageProbe
     }
 };
 thread_local BusyMessageProbe* BusyMessageProbe::current{};
+
+// 观察主设置窗口真实鼠标拖动产生的原生通知，不伪造 HSCROLL 或直接设置滑块值。
+struct SliderDragProbe final
+{
+    HWND slider{}, parent{};
+    POINT savedCursor{};
+    int sizes{}, captureChanges{}, tracks{}, callbackPixels{1000000};
+    int shows{}, positions{}, erases{};
+    bool forwardChanges{true}, cursorSaved{};
+    // 为滑块及其实际视口安装本线程子类。
+    // 入参：control 为正式滑块；forward 为是否执行正式宿主链。返回：观察器随对象清理。
+    explicit SliderDragProbe(HWND control, bool forward = true)
+        : slider(control), parent(GetParent(control)), forwardChanges(forward)
+    {
+        this->cursorSaved = GetCursorPos(&this->savedCursor) != FALSE;
+        EXPECT_TRUE(this->cursorSaved);
+        EXPECT_TRUE(SetWindowSubclass(this->slider, Observe, 971, reinterpret_cast<DWORD_PTR>(this)));
+        EXPECT_TRUE(SetWindowSubclass(this->parent, Observe, 971, reinterpret_cast<DWORD_PTR>(this)));
+    }
+    // 删除观察器并释放可能因断言提前退出遗留的捕获。
+    // 入参：无。返回：无。
+    ~SliderDragProbe()
+    {
+        if (GetCapture() == this->slider)
+            ReleaseCapture();
+        RemoveWindowSubclass(this->slider, Observe, 971);
+        RemoveWindowSubclass(this->parent, Observe, 971);
+        if (this->cursorSaved)
+            SetCursorPos(this->savedCursor.x, this->savedCursor.y);
+    }
+    // 同步真实鼠标位置后发送原生输入，避免捕获时队列中真实移动覆盖测试坐标。
+    // 入参：message/flags 为原生鼠标消息，x/y 为滑块客户坐标。返回：无。
+    void Mouse(UINT message, WPARAM flags, int x, int y) const
+    {
+        ASSERT_TRUE(this->cursorSaved);
+        POINT screen{x, y};
+        ASSERT_TRUE(ClientToScreen(this->slider, &screen));
+        ASSERT_EQ(WindowFromPoint(screen), this->slider);
+        ASSERT_TRUE(SetCursorPos(screen.x, screen.y));
+        SendMessageW(this->slider, message, flags, MAKELPARAM(x, y));
+    }
+    // 统计原生拖动中的尺寸、捕获变化及 thumbtrack，保持正式消息链原样执行。
+    // 入参：窗口消息及借用观察对象。返回：原子类链结果。
+    static LRESULT CALLBACK Observe(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data)
+    {
+        auto& probe = *reinterpret_cast<SliderDragProbe*>(data);
+        if (window == probe.slider && message == WM_SIZE)
+            ++probe.sizes;
+        if (window == probe.slider && message == WM_CAPTURECHANGED)
+            ++probe.captureChanges;
+        if (window == probe.slider && message == WM_SHOWWINDOW)
+            ++probe.shows;
+        if (window == probe.slider && message == WM_WINDOWPOSCHANGING)
+            ++probe.positions;
+        if (window == probe.slider && message == WM_ERASEBKGND)
+            ++probe.erases;
+        const bool tracking = window == probe.parent && message == WM_HSCROLL &&
+                              reinterpret_cast<HWND>(lParam) == probe.slider && LOWORD(wParam) == TB_THUMBTRACK;
+        if (tracking)
+            ++probe.tracks;
+        const bool nativeOnly = !probe.forwardChanges && window == probe.parent && message == WM_HSCROLL &&
+                                reinterpret_cast<HWND>(lParam) == probe.slider;
+        const LRESULT result = nativeOnly ? 0 : DefSubclassProc(window, message, wParam, lParam);
+        if (tracking)
+            probe.callbackPixels = std::min(probe.callbackPixels, probe.SliderPixels());
+        return result;
+    }
+    // 读取整个滑条客户区栅格，包含尚未重绘的新旧 thumb 位置，避免把绘制时序当成消失。
+    // 入参：thumbOnly 为是否仅统计当前 thumb。返回：非背景像素数；DC 或位图不可用时为零。
+    int SliderPixels(bool thumbOnly = false) const
+    {
+        RECT client{};
+        GetClientRect(this->slider, &client);
+        const HDC dc = GetDC(this->slider);
+        if (dc == nullptr)
+            return 0;
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = client.right;
+        info.bmiHeader.biHeight = -client.bottom;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        void* data{};
+        const HBITMAP bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &data, nullptr, 0);
+        const HDC memory = CreateCompatibleDC(dc);
+        int pixels = 0;
+        if (bitmap != nullptr && memory != nullptr)
+        {
+            const HGDIOBJ previous = SelectObject(memory, bitmap);
+            if (BitBlt(memory, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY))
+            {
+                GdiFlush();
+                const auto* colors = static_cast<const DWORD*>(data);
+                const DWORD background = colors[0] & 0xFFFFFF;
+                RECT sample = client;
+                if (thumbOnly)
+                    SendMessageW(this->slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&sample));
+                for (LONG y = std::max(0L, sample.top); y < std::min(client.bottom, sample.bottom); ++y)
+                    for (LONG x = std::max(0L, sample.left); x < std::min(client.right, sample.right); ++x)
+                        if ((colors[y * client.right + x] & 0xFFFFFF) != background)
+                            ++pixels;
+            }
+            SelectObject(memory, previous);
+        }
+        if (memory != nullptr)
+            DeleteDC(memory);
+        if (bitmap != nullptr)
+            DeleteObject(bitmap);
+        ReleaseDC(this->slider, dc);
+        return pixels;
+    }
+};
 
 // 驱动新增/编辑模态表单确认，仅读写本测试线程的隔离窗口。
 struct ProfileConfirmationDriver
@@ -195,6 +310,7 @@ class SettingsWindowTest : public testing::Test
             "resources/default_settings.json",
             R"({"schemaVersion":1,"settings":{"ui.language":"en-US","startup.enabled":true,)"
             R"("onboarding.completed":false,"capture.hotkey":"Ctrl+Alt+Q",)"
+            R"("capture.hdr_brightness_percent":100,"capture.mask_opacity_percent":70,)"
             R"("capture.selection_border_color":"#000000","export.default_format":"jpeg","export.jpeg_quality":95,"ocr.model":"fast","ocr.language":"chi_sim+eng+jpn"}})");
         this->Write(
             "data/settings.json",
@@ -392,6 +508,17 @@ class SettingsWindowTest : public testing::Test
         // 入参：value 为质量值。
         // 返回：1 到 100 含端点为 true。
         callbacks.validJpegQuality = [](std::int64_t value) { return value >= 1 && value <= 100; };
+        if (this->captureVisualAvailable_)
+        {
+            // 模拟领域范围，只在截图默认专项中开放新控件；旧宿主绑定保持不变。
+            // 入参：key和值来自编辑会话。返回：范围和动态领域状态均允许。
+            callbacks.validCaptureVisualSetting = [this](std::string_view key, std::int64_t value)
+            {
+                return this->captureVisualValid_ &&
+                       (key == "capture.hdr_brightness_percent" ? value >= 25 && value <= 200
+                                                                : value >= 0 && value <= 90);
+            };
+        }
         callbacks.translationAvailable = this->translationAvailable_;
         // 提供固定测试领域选项，不链接真实 Translation 或联网。
         // 入参：key 为领域设置键。返回：测试允许值。
@@ -712,6 +839,8 @@ class SettingsWindowTest : public testing::Test
     bool translationAvailable_{};
     bool translationValid_{true};
     unsigned translationIdentity_{}, translationApplied_{};
+    bool captureVisualAvailable_{};
+    bool captureVisualValid_{true};
     bool ocrAvailable_{};
     bool ocrValid_{true};
     std::wstring maintenanceText_{L"maintenance idle"};
@@ -2182,4 +2311,295 @@ TEST_F(SettingsWindowTest, other_page_defaults_do_not_reset_local_quality_catalo
     const auto actual = open_st::GetJsonSetting("translation.local_quality_presets");
     ASSERT_TRUE(actual);
     EXPECT_EQ(*actual, expected);
+}
+
+// 验证旧宿主未提供截图领域接口时新默认控件不参与绑定。
+// 入参：无。返回：通过真实布局断言可选行被移除。
+TEST_F(SettingsWindowTest, capture_defaults_unsupported_host_omits_optional_controls)
+{
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    EXPECT_EQ(this->Control(L"Edit", L"100"), nullptr);
+    EXPECT_EQ(this->Control(L"Edit", L"70"), nullptr);
+}
+
+// 验证两个默认参数只在应用时保存，重开窗口读取同一配置。
+// 入参：无。返回：真实控件与设置文件值保持一致。
+TEST_F(SettingsWindowTest, capture_defaults_apply_and_reopen_use_configured_integers)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND brightness = this->Control(L"Edit", L"100");
+    const HWND opacity = this->Control(L"Edit", L"70");
+    ASSERT_NE(brightness, nullptr);
+    ASSERT_NE(opacity, nullptr);
+    SetWindowTextW(brightness, L"85");
+    SetWindowTextW(opacity, L"80");
+    this->Pump();
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 85);
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.mask_opacity_percent"), 80);
+    this->window_.Close();
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    EXPECT_NE(this->Control(L"Edit", L"85"), nullptr);
+    EXPECT_NE(this->Control(L"Edit", L"80"), nullptr);
+}
+
+// 在主设置正式绑定链中连续拖动三项滑块，覆盖无滚动和滚动视口且不写真实用户设置。
+// 入参：无。返回：原生捕获、thumbtrack、滑块几何及可见性在每次移动后保持有效。
+TEST_F(SettingsWindowTest, capture_defaults_native_drag_preserves_thumb_and_capture)
+{
+    this->PrepareTranslation();
+    this->ocrAvailable_ = true;
+    this->captureVisualAvailable_ = true;
+    const HWND window = this->Open();
+    ASSERT_NE(window, nullptr);
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    this->SelectPage(2);
+    const HWND viewport = FindWindowExW(window, nullptr, L"OpenST.WindowRendererPage", nullptr);
+    ASSERT_NE(viewport, nullptr);
+    for (const int height : {900, 340})
+    {
+        ASSERT_TRUE(SetWindowPos(window, HWND_TOP, 20, 20, 760, height, SWP_NOACTIVATE));
+        this->Pump();
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+        for (HWND combo = FindWindowExW(viewport, nullptr, WC_COMBOBOXW, nullptr); combo != nullptr;
+             combo = FindWindowExW(viewport, combo, WC_COMBOBOXW, nullptr))
+            if (IsWindowVisible(combo))
+            {
+                RECT collapsed{}, dropped{};
+                GetWindowRect(combo, &collapsed);
+                SendMessageW(combo, CB_GETDROPPEDCONTROLRECT, 0, reinterpret_cast<LPARAM>(&dropped));
+                std::cout << "combo geometry: collapsed=" << collapsed.bottom - collapsed.top
+                          << " dropped=" << dropped.bottom - dropped.top << '\n';
+            }
+        int sliderCount = 0;
+        for (HWND slider = FindWindowExW(viewport, nullptr, TRACKBAR_CLASSW, nullptr); slider != nullptr;
+             slider = FindWindowExW(viewport, slider, TRACKBAR_CLASSW, nullptr))
+        {
+            ++sliderCount;
+            SCOPED_TRACE(height);
+            SendMessageW(viewport, WM_VSCROLL, MAKEWPARAM(SB_TOP, 0), 0);
+            RECT original{}, client{}, thumb{}, channel{}, viewportClient{};
+            ASSERT_TRUE(GetWindowRect(slider, &original));
+            MapWindowPoints(nullptr, viewport, reinterpret_cast<POINT*>(&original), 2);
+            ASSERT_TRUE(GetClientRect(viewport, &viewportClient));
+            if (original.bottom > viewportClient.bottom)
+            {
+                SendMessageW(viewport, WM_VSCROLL, MAKEWPARAM(SB_BOTTOM, 0), 0);
+                this->Pump();
+            }
+            SCROLLINFO scroll{sizeof(scroll), SIF_ALL};
+            ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &scroll));
+            SCOPED_TRACE(scroll.nPos);
+            if (height == 340)
+                EXPECT_GT(scroll.nMax + 1, static_cast<int>(scroll.nPage));
+            else
+                EXPECT_LE(scroll.nMax + 1, static_cast<int>(scroll.nPage));
+            ASSERT_TRUE(GetWindowRect(slider, &original));
+            ASSERT_TRUE(GetClientRect(slider, &client));
+            RECT visibleClient = client;
+            MapWindowPoints(slider, viewport, reinterpret_cast<POINT*>(&visibleClient), 2);
+            ASSERT_GE(visibleClient.left, viewportClient.left);
+            ASSERT_GE(visibleClient.top, viewportClient.top);
+            ASSERT_LE(visibleClient.right, viewportClient.right);
+            ASSERT_LE(visibleClient.bottom, viewportClient.bottom);
+            SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+            SendMessageW(slider, TBM_GETCHANNELRECT, 0, reinterpret_cast<LPARAM>(&channel));
+            const int y = (thumb.top + thumb.bottom) / 2;
+            int start = (thumb.left + thumb.right) / 2;
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            {
+                // 同一原生控件先绕过宿主变更通知，确认其自身拖动不会清空整个轨道。
+                SliderDragProbe native(slider, false);
+                const int baseline = native.SliderPixels();
+                ASSERT_GT(baseline, 0);
+                native.Mouse(WM_LBUTTONDOWN, MK_LBUTTON, start, y);
+                ASSERT_EQ(GetCapture(), slider);
+                native.Mouse(WM_MOUSEMOVE, MK_LBUTTON, (channel.left + channel.right) / 2, y);
+                EXPECT_GT(native.tracks, 0);
+                EXPECT_GT(native.callbackPixels, baseline / 2);
+                native.Mouse(WM_LBUTTONUP, 0, (channel.left + channel.right) / 2, y);
+                this->Pump();
+            }
+            SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&thumb));
+            start = (thumb.left + thumb.right) / 2;
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            SliderDragProbe probe(slider);
+            const int initialPixels = probe.SliderPixels();
+            ASSERT_GT(initialPixels, 0);
+            probe.Mouse(WM_LBUTTONDOWN, MK_LBUTTON, start, y);
+            ASSERT_EQ(GetCapture(), slider);
+            LRESULT previous = SendMessageW(slider, TBM_GETPOS, 0, 0);
+            int pumpedThumbPixels = 1000000;
+            for (int step = 1; step <= 6; ++step)
+            {
+                const int x = channel.left + (channel.right - channel.left) * (7 - step) / 8;
+                probe.Mouse(WM_MOUSEMOVE, MK_LBUTTON, x, y);
+                this->Pump();
+                const LRESULT value = SendMessageW(slider, TBM_GETPOS, 0, 0);
+                EXPECT_NE(value, previous);
+                previous = value;
+                RECT actual{}, currentThumb{}, currentClient{};
+                ASSERT_TRUE(GetWindowRect(slider, &actual));
+                ASSERT_TRUE(GetClientRect(slider, &currentClient));
+                SendMessageW(slider, TBM_GETTHUMBRECT, 0, reinterpret_cast<LPARAM>(&currentThumb));
+                EXPECT_TRUE(EqualRect(&original, &actual));
+                EXPECT_TRUE(EqualRect(&client, &currentClient));
+                EXPECT_GT(currentThumb.right, currentThumb.left);
+                EXPECT_GT(currentThumb.bottom, currentThumb.top);
+                EXPECT_GE(currentThumb.left, currentClient.left);
+                EXPECT_GE(currentThumb.top, currentClient.top);
+                EXPECT_LE(currentThumb.right, currentClient.right);
+                EXPECT_LE(currentThumb.bottom, currentClient.bottom);
+                EXPECT_EQ(GetCapture(), slider);
+                EXPECT_TRUE(IsWindowVisible(slider));
+                EXPECT_GT(probe.SliderPixels(), 0);
+                const int thumbPixels = probe.SliderPixels(true);
+                EXPECT_GT(thumbPixels, 0);
+                pumpedThumbPixels = std::min(pumpedThumbPixels, thumbPixels);
+                SCROLLINFO currentScroll{sizeof(currentScroll), SIF_POS};
+                ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &currentScroll));
+                EXPECT_EQ(currentScroll.nPos, scroll.nPos);
+            }
+            EXPECT_GT(probe.tracks, 0);
+            std::cout << "native drag: height=" << height << " scroll=" << scroll.nPos
+                      << " tracks=" << probe.tracks << " sizes=" << probe.sizes
+                      << " captureChanges=" << probe.captureChanges << " initialPixels=" << initialPixels
+                      << " callbackPixels=" << probe.callbackPixels << " shows=" << probe.shows
+                      << " positions=" << probe.positions << " erases=" << probe.erases
+                      << " pumpedThumbPixels=" << pumpedThumbPixels << '\n';
+            EXPECT_GT(probe.callbackPixels, initialPixels / 2)
+                << "slider pixels disappeared inside the production change callback";
+            EXPECT_EQ(probe.sizes, 0) << "unchanged layout resized the active native slider";
+            EXPECT_EQ(probe.captureChanges, 0);
+            probe.Mouse(WM_LBUTTONUP, 0, start, y);
+            EXPECT_NE(GetCapture(), slider);
+        }
+        EXPECT_EQ(sliderCount, 3);
+    }
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.mask_opacity_percent"), 70);
+}
+
+// 验证未完成数字阻止整个提交，文案刷新保留文本，取消不保存另一字段草稿。
+// 入参：无。返回：按钮及持久化值符合事务边界。
+TEST_F(SettingsWindowTest, capture_defaults_invalid_input_blocks_batch_and_cancel_preserves_file)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND brightness = this->Control(L"Edit", L"100");
+    const HWND opacity = this->Control(L"Edit", L"70");
+    ASSERT_NE(brightness, nullptr);
+    ASSERT_NE(opacity, nullptr);
+    SetWindowTextW(brightness, L"80");
+    SetWindowTextW(opacity, L"70.");
+    this->Pump();
+    this->window_.RefreshTexts();
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+    EXPECT_NE(this->Control(L"Edit", L"70."), nullptr);
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.mask_opacity_percent"), 70);
+}
+
+// 验证语义越界不会静默夹取，本页恢复只修改草稿。
+// 入参：无。返回：取消后原始异常配置仍在。
+TEST_F(SettingsWindowTest, capture_defaults_page_restore_does_not_commit_or_clamp)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_TRUE(open_st::SetIntegerSetting("capture.hdr_brightness_percent", 999));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    EXPECT_NE(this->Control(L"Edit", L"999"), nullptr);
+    EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+    this->Click("settings.restore_page_defaults");
+    EXPECT_NE(this->Control(L"Edit", L"100"), nullptr);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->Click("settings.cancel");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 999);
+}
+
+// 验证错误类型回退资源值但不自行写盘，显式应用完成类型修复。
+// 入参：无。返回：最终JSON为整数，未知字段保留。
+TEST_F(SettingsWindowTest, capture_defaults_wrong_types_require_explicit_repair)
+{
+    this->captureVisualAvailable_ = true;
+    this->Write("data/settings.json", R"({"schemaVersion":1,"settings":{"capture.hdr_brightness_percent":false,)"
+                                      R"("capture.mask_opacity_percent":"70","unknown":42}})");
+    ASSERT_NE(this->Open(), nullptr);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))), FALSE);
+    this->Click("settings.apply");
+    nlohmann::json document;
+    std::ifstream input(this->root_ / "data/settings.json");
+    input >> document;
+    EXPECT_EQ(document["settings"]["capture.hdr_brightness_percent"], 100);
+    EXPECT_TRUE(document["settings"]["capture.mask_opacity_percent"].is_number_integer());
+    EXPECT_EQ(document["settings"]["unknown"], 42);
+}
+
+// 验证只有未完成数字也会触发重新加载确认，取消确认不丢编辑文本。
+// 入参：无。返回：确认后清空无效状态且读取持久化值。
+TEST_F(SettingsWindowTest, capture_defaults_reload_confirms_invalid_only_input)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND opacity = this->Control(L"Edit", L"70");
+    ASSERT_NE(opacity, nullptr);
+    SetWindowTextW(opacity, L"-");
+    this->Pump();
+    this->confirm_ = false;
+    const int before = this->confirmationCount_;
+    this->Click("settings.reload");
+    EXPECT_EQ(this->confirmationCount_, before + 1);
+    EXPECT_NE(this->Control(L"Edit", L"-"), nullptr);
+    this->confirm_ = true;
+    this->Click("settings.reload");
+    EXPECT_NE(this->Control(L"Edit", L"70"), nullptr);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+}
+
+// 验证恢复全部用独立默认候选，成功提交后清除两项未完成数字状态。
+// 入参：无。返回：默认值落盘且确认按钮恢复。
+TEST_F(SettingsWindowTest, capture_defaults_restore_all_replaces_invalid_draft_after_confirmation)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_TRUE(open_st::SetIntegerSetting("capture.hdr_brightness_percent", 85));
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND opacity = this->Control(L"Edit", L"70");
+    ASSERT_NE(opacity, nullptr);
+    SetWindowTextW(opacity, L"70.");
+    this->SelectPage(3);
+    this->confirm_ = false;
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 85);
+    this->confirm_ = true;
+    this->Click("settings.maintenance.restore_all");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.mask_opacity_percent"), 70);
+    EXPECT_NE(this->Control(L"Edit", L"70"), nullptr);
+    EXPECT_NE(IsWindowEnabled(this->Control(L"Button", this->Text("settings.ok"))), FALSE);
+}
+
+// 验证点击应用时重新查询领域规则，不依赖编辑阶段曾经通过的结果。
+// 入参：无。返回：领域拒绝后整批草稿均不落盘。
+TEST_F(SettingsWindowTest, capture_defaults_recheck_domain_before_apply)
+{
+    this->captureVisualAvailable_ = true;
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(2);
+    const HWND brightness = this->Control(L"Edit", L"100");
+    ASSERT_NE(brightness, nullptr);
+    SetWindowTextW(brightness, L"85");
+    this->Pump();
+    this->captureVisualValid_ = false;
+    this->Click("settings.apply");
+    EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
 }

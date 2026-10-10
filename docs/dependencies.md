@@ -27,6 +27,10 @@ SentencePiece 使用 baseline 的 0.2.0 端口；Windows 端口只提供静态�
 
 两份实际使用的原始归档均自带 CC-BY-4.0；不能套用 Hugging Face 英→中重打包模型的 Apache-2.0 元数据。每份模型的原始 LICENSE/README、统一 NOTICE 及转换清单随资源进入发行视图；运行验证使用编译生成的白名单，不把随包 JSON 作为信任来源。引擎及内嵌组件的完整许可保存在 `licenses/translation/`。本地模型、许可、推理预算和实际性能验收仍须依照设计逐项完成，构建成功不代替发布验收。
 
+## HDR构建工具
+
+HLSL源码位于resources/shaders，HDR模块的CMakeLists.txt保留编译逻辑。HDR模块使用当前Windows SDK中的fxc，在模块局部CMake内把自定义像素着色器编译成构建目录中的C++字节码头并嵌入程序。SDK选择沿用当前VS/SDK环境，不写入本机绝对路径。无新增vcpkg包，运行期不要求fxc、外部HLSL或CSO文件；产品继续仅链接既有Windows图形库。
+
 ## 当前 baseline
 
 `builtin-baseline` 固定为 `4334d8b4c8916018600212ab4dd4bbdc343065d1`（vcpkg 2025.09.17 端口集合）。固定 baseline 是为了让当前 Visual Studio 随附的 vcpkg 工具稳定解析 manifest 并复现 GoogleTest 1.17；升级必须作为显式变更验证，不能无说明跟随最新 HEAD。
@@ -68,3 +72,13 @@ SentencePiece 使用 baseline 的 0.2.0 端口；Windows 端口只提供静态�
 # 独立解析测试依赖，只构建并运行本次涉及的模块
 .\scripts\test.ps1 translation_local
 ```
+
+### 着色器编译阶段与缓存选择（2026-10-11）
+
+区分两层编译：构建时fxc将HLSL编译成通用DirectX字节码并嵌入EXE；运行时Direct2D/显卡驱动加载字节码，并可能针对当前硬件生成或优化机器指令。游戏首次启动显示的“编译着色器”可能主要发生在驱动/管线层，也可能包含动态源码或变体编译，不能仅凭进度提示判断阶段。
+
+Open-ST当前只有固定着色器，亮度、参考白和高光范围通过常量参数传入，不需要生成新源码。维持“构建期字节码＋运行期加载及预热”更合适：提前发现编译错误，不让用户承担HLSL编译和编译器部署；把源码编译挪到首次启动并不能消除驱动编译。程序不自行保存GPU机器码缓存，底层是否持久化缓存、跨启动是否命中由运行时/驱动决定，当前没有承诺或验证。
+
+若后续支持用户自定义着色器、动态变体，或测得驱动编译造成明显卡顿，再针对相应层设计编译/缓存管理。通用字节码不绑定开发机显卡厂商；AMD/Intel/NVIDIA的兼容性仍以所需图形能力和实机验证为准。
+
+依据：[微软D3D11编译文档](https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3dx11compilefromfile)、[微软Shader Cache说明](https://github.com/microsoft/DirectX-Specs/blob/master/d3d/ShaderCache.md)。后者为D3D12缓存接口说明，此处只引用其编译阶段区分，不表示本项目使用D3D12缓存API。

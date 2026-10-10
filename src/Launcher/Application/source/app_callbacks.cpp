@@ -1,6 +1,7 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
 #include "capture_storage_options.h"
+#include "capture_visual_session.h"
 #include "capture_text_session.h"
 #include "diagnostic_text.h"
 #include "app_translation_state.h"
@@ -488,6 +489,10 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     // 入参：value 为 JPEG 质量。
     // 返回：合法为 true。
     callbacks.validJpegQuality = [](std::int64_t value) { return IsJpegQualitySetting(value); };
+    // 通过唯一领域校验入口适配截图默认参数。
+    // 入参：key为设置键，value为整数。返回：合法为true。
+    callbacks.validCaptureVisualSetting = [](std::string_view key, std::int64_t value)
+    { return IsCaptureVisualSetting(key, value); };
     // 为子窗口提供指定键的当前语言文本。
     // 入参：key：布局或工具栏请求的本地化文本键。
     // 返回：GetUiText 返回的本地化宽字符串。

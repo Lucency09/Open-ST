@@ -46,6 +46,7 @@ TEST(SelectionOutputTest, negative_coordinates_preserve_sdr_bytes)
         SdrPlane({-3, -2, 0, 0}, {1, 2, 3, 0, 4, 5, 6, 1, 7, 8, 9, 2, 10, 11, 12, 3, 13, 14, 15, 4, 16, 17, 18, 5}));
     FrozenDesktopFrame desktop({-3, -2, 0, 0}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {-2, -2, 0, 0}, output, error));
@@ -65,6 +66,7 @@ TEST(SelectionOutputTest, cross_monitor_gap_is_opaque_black)
     planes.push_back(SdrPlane({1, 0, 2, 1}, {50, 60, 70, 80}));
     FrozenDesktopFrame desktop({-1, 0, 2, 1}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {-1, 0, 2, 1}, output, error));
@@ -85,6 +87,7 @@ TEST(SelectionOutputTest, invalid_selection_clears_previous_output)
          {1, 0, 0, 1},
          {(std::numeric_limits<int>::min)(), 0, (std::numeric_limits<int>::max)(), 1}}};
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     for (const RectI selection : selections)
     {
         SdrSelectionFrame output = PreviousOutput();
@@ -97,8 +100,8 @@ TEST(SelectionOutputTest, invalid_selection_clears_previous_output)
 }
 
 // 验证只拒绝与选区相交的重叠输出，远处重叠不会阻止无歧义裁切。
-// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，overlapping_outputs_rejected_only_inside_selection 为用例名。
-// 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
+// 入参：无运行时形参；宏参数 SelectionOutputTest 为测试套件，overlapping_outputs_rejected_only_inside_selection
+// 为用例名。 返回：无返回值；断言向 GoogleTest 报告该用例通过或失败。
 TEST(SelectionOutputTest, overlapping_outputs_rejected_only_inside_selection)
 {
     std::vector<CapturedOutputPlane> planes;
@@ -106,6 +109,7 @@ TEST(SelectionOutputTest, overlapping_outputs_rejected_only_inside_selection)
     planes.push_back(SdrPlane({1, 0, 2, 1}, {9, 10, 11, 12}));
     FrozenDesktopFrame desktop({0, 0, 2, 1}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output = PreviousOutput();
     std::wstring error;
     EXPECT_FALSE(renderer.Render(desktop, {0, 0, 2, 1}, output, error));
@@ -127,6 +131,7 @@ TEST(SelectionOutputTest, sdr_rgb10_quantizes_channels)
                         OutputColorMetadata{}, std::move(pixels));
     FrozenDesktopFrame desktop({0, 0, 2, 1}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output;
     std::wstring error;
     ASSERT_TRUE(renderer.Render(desktop, {0, 0, 2, 1}, output, error));
@@ -145,6 +150,7 @@ TEST(SelectionOutputTest, unknown_color_discards_partial_output)
     FrozenDesktopFrame desktop({0, 0, 2, 1}, std::move(planes));
     ASSERT_TRUE(desktop.IsValid());
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output = PreviousOutput();
     std::wstring error;
     EXPECT_FALSE(renderer.Render(desktop, {0, 0, 2, 1}, output, error));
@@ -165,6 +171,7 @@ TEST(SelectionOutputTest, non_finite_hdr_discards_output)
                         OutputColorMetadata{}, std::move(pixels));
     FrozenDesktopFrame desktop({0, 0, 1, 1}, std::move(planes));
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     SdrSelectionFrame output = PreviousOutput();
     std::wstring error;
     EXPECT_FALSE(renderer.Render(desktop, {0, 0, 1, 1}, output, error));
@@ -220,17 +227,26 @@ TEST_F(SelectionOutputIntegrationTest, mixed_sdr_hdr_matches_standalone_roi)
     std::vector<std::uint8_t> expectedHdr;
     std::wstring error;
     ASSERT_TRUE(referenceMapper.Convert(
-        {2U, 2U, 24U, std::span<const std::uint8_t>(hdr).subspan(24U), HdrPixelFormat::Rgba16FloatScRgb}, expectedHdr,
-        error))
+        {2U, 2U, 24U, std::span<const std::uint8_t>(hdr).subspan(24U), HdrPixelFormat::Rgba16FloatScRgb, 80.0F},
+        {4000U}, expectedHdr, error))
         << error;
     ASSERT_EQ(expectedHdr.size(), 16U);
     std::vector<CapturedOutputPlane> planes;
     planes.push_back(SdrPlane({-2, -1, 0, 2}, sdr));
-    planes.emplace_back(RectI{0, -1, 3, 2}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
-                        OutputColorMetadata{}, std::move(hdr));
+    planes.emplace_back(
+        RectI{0, -1, 3, 2}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
+        []
+        {
+            OutputColorMetadata m{};
+            m.hasSdrWhiteLevel = true;
+            m.sdrWhiteLevelNits = 80.0F;
+            return m;
+        }(),
+        std::move(hdr));
     FrozenDesktopFrame desktop({-2, -1, 3, 2}, std::move(planes));
     ASSERT_TRUE(desktop.IsValid());
     SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
     ASSERT_TRUE(renderer.Prepare(error)) << error;
     SdrSelectionFrame output;
     ASSERT_TRUE(renderer.Render(desktop, {-1, 0, 2, 2}, output, error)) << error;
@@ -245,6 +261,93 @@ TEST_F(SelectionOutputIntegrationTest, mixed_sdr_hdr_matches_standalone_roi)
         std::memcpy(expected.data() + row * 12U + 4U, expectedHdr.data() + row * 8U, 8U);
     }
     EXPECT_EQ(Bytes(output), expected);
+}
+
+// 验证HDR亮度参数不影响SDR分块任何原始字节。
+// 入参：无。返回：断言各档输出与原始BGRX完全一致。
+TEST(SelectionOutputTest, hdr_brightness_keeps_sdr_bytes_unchanged)
+{
+    const std::vector<std::uint8_t> pixels{1, 64, 255, 17, 128, 200, 42, 0};
+    std::vector<CapturedOutputPlane> planes;
+    planes.push_back(SdrPlane({0, 0, 2, 1}, pixels));
+    FrozenDesktopFrame desktop({0, 0, 2, 1}, std::move(planes));
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+    std::wstring error;
+    for (const unsigned int ceiling : {1000U, 4000U, 10000U})
+        for (const unsigned int brightness : {25U, 100U, 200U})
+        {
+            ASSERT_TRUE(renderer.SetToneMappingOptions({ceiling}));
+            ASSERT_TRUE(renderer.SetBrightnessPercent(brightness));
+            SdrSelectionFrame output;
+            ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), output, error)) << error;
+            EXPECT_EQ(Bytes(output), pixels);
+        }
+}
+// 验证冻结参考白缺失、非法值及未传策略都拒绝发布。
+// 入参：无。返回：断言失败清空输出。
+TEST(SelectionOutputTest, rejects_missing_white_and_missing_policy)
+{
+    for (const auto [present, white] :
+         std::array<std::pair<bool, float>, 5>{{{false, 80.0F},
+                                                {true, 0.0F},
+                                                {true, -1.0F},
+                                                {true, std::numeric_limits<float>::infinity()},
+                                                {true, 80.0F}}})
+    {
+        OutputColorMetadata metadata{};
+        metadata.hasSdrWhiteLevel = present;
+        metadata.sdrWhiteLevelNits = white;
+        std::vector<CapturedOutputPlane> planes;
+        planes.emplace_back(RectI{0, 0, 1, 1}, CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb,
+                            metadata, std::vector<std::uint8_t>{0, 0x3c, 0, 0x3c, 0, 0x3c, 0, 0x3c});
+        FrozenDesktopFrame desktop({0, 0, 1, 1}, std::move(planes));
+        SelectionOutputRenderer renderer;
+        if (!(present && white == 80.0F))
+            ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+        SdrSelectionFrame output = PreviousOutput();
+        std::wstring error;
+        EXPECT_FALSE(renderer.Render(desktop, desktop.Bounds(), output, error));
+        EXPECT_FALSE(output.IsValid());
+    }
+}
+
+// 验证跨屏不同参考白各自映射，改变选区裁切不改变相同像素结果。
+// 入参：无。返回：断言逐plane正式HDR接口结果与裁切拼接一致。
+TEST_F(SelectionOutputIntegrationTest, per_plane_white_and_crop_match_explicit_mapper)
+{
+    const std::array<std::uint16_t, 4> channels{EncodeFloat16(5.0F), EncodeFloat16(2.0F), EncodeFloat16(1.0F),
+                                                EncodeFloat16(1.0F)};
+    std::vector<std::uint8_t> pixels(16U);
+    std::memcpy(pixels.data(), channels.data(), 8U);
+    std::memcpy(pixels.data() + 8U, channels.data(), 8U);
+    std::vector<CapturedOutputPlane> planes;
+    std::vector<std::uint8_t> expected;
+    NativeToneMapper mapper;
+    std::wstring error;
+    for (unsigned int index = 0; index < 2U; ++index)
+    {
+        const float white = index == 0U ? 80.0F : 240.0F;
+        OutputColorMetadata metadata{};
+        metadata.hasSdrWhiteLevel = true;
+        metadata.sdrWhiteLevelNits = white;
+        planes.emplace_back(RectI{static_cast<int>(index * 2U), 0, static_cast<int>(index * 2U + 2U), 1},
+                            CapturedPixelFormat::Rgba16FloatScRgb, CapturedColorSpace::ScRgb, metadata, pixels);
+        std::vector<std::uint8_t> converted;
+        ASSERT_TRUE(
+            mapper.Convert({2U, 1U, 16U, pixels, HdrPixelFormat::Rgba16FloatScRgb, white}, {4000U}, converted, error))
+            << error;
+        expected.insert(expected.end(), converted.begin(), converted.end());
+    }
+    FrozenDesktopFrame desktop({0, 0, 4, 1}, std::move(planes));
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetToneMappingOptions({4000U}));
+    SdrSelectionFrame full, crop;
+    ASSERT_TRUE(renderer.Render(desktop, desktop.Bounds(), full, error)) << error;
+    EXPECT_EQ(Bytes(full), expected);
+    ASSERT_TRUE(renderer.Render(desktop, {1, 0, 3, 1}, crop, error)) << error;
+    EXPECT_EQ(Bytes(crop), (std::vector<std::uint8_t>(expected.begin() + 4, expected.begin() + 12)));
+    EXPECT_NE(expected[0], expected[8]);
 }
 } // namespace
 } // namespace open_st

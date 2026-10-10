@@ -58,6 +58,8 @@ struct SelectionSnapshot final
     std::array<SelectionHandlePosition, 8> handles{};
     bool hasSelection{};
     bool showHandles{};
+    // 仅由宿主的绘制副本标记窗口候选；正式选区模型始终保持false。
+    bool candidateOnly{};
 };
 
 // 纯 C++ 选区状态机；输入、边界和输出均使用虚拟桌面物理像素。

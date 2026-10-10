@@ -16,6 +16,15 @@ class AnnotationMosaicSource;
 class SelectionOutputRenderer final
 {
   public:
+    // 设置 HDR 输出亮度，不改变原生冻结像素或 SDR 内容。
+    // 入参：percent 为 25 至 200 的百分比；100 保持原有效果。
+    // 返回：参数有效时 true；无效时 false 并保留原值。
+    [[nodiscard]] bool SetBrightnessPercent(unsigned int percent) noexcept;
+
+    // 保存本次截图显式策略，非法参数保留旧值。
+    // 入参：options 为策略。返回：合法为 true。
+    [[nodiscard]] bool SetToneMappingOptions(HdrToneMappingOptions options) noexcept;
+
     // 建立并预热 HDR 色调映射资源，避免第一次选区输出承担全部初始化成本。
     // 入参：errorMessage：输出参数，失败时接收初始化或预热原因。
     // 返回：设备及微小图像预热成功时为 true；受控回退后仍失败或分配异常时为 false。
@@ -33,6 +42,13 @@ class SelectionOutputRenderer final
     [[nodiscard]] bool Render(const FrozenDesktopFrame& desktop, RectI selection, const AnnotationSnapshot& annotations,
                               SdrSelectionFrame& output, std::wstring& errorMessage,
                               AnnotationMosaicSource* source = nullptr);
+    // 在已生成的SDR底图上仅合成一次标注，不再次执行HDR转换。
+    // 入参：base 为不可变底图；annotations 为快照；output 为结果且不能与base同一对象；
+    // errorMessage 为诊断；source 为已同步亮度及底图的可选马赛克来源。
+    // 返回：完整合成成功为true；失败清空结果，空标注逐字节复制底图。
+    [[nodiscard]] bool RenderFromPreview(const SdrSelectionFrame& base, const AnnotationSnapshot& annotations,
+                                         SdrSelectionFrame& output, std::wstring& errorMessage,
+                                         AnnotationMosaicSource* source = nullptr);
     // 释放本次图像转换使用的大块资源，同时保留可复用转换设备。
     // 入参：无。
     // 返回：无返回值；效果图不再引用单张图像，图像缓存被释放，可再次执行转换。
@@ -40,5 +56,7 @@ class SelectionOutputRenderer final
 
   private:
     NativeToneMapper toneMapper_;
+    unsigned int brightnessPercent_{100U};
+    HdrToneMappingOptions toneMappingOptions_{};
 };
 } // namespace open_st

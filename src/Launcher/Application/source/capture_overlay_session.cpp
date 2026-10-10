@@ -436,4 +436,36 @@ void CaptureOverlaySession::Close() noexcept
     this->closePending_ = false;
     this->invalidationFailed_ = false;
 }
+// 同步选区外暗层，合法参数不会改变任何冻结像素。
+// 入参：percent 为遮罩百分比。返回：整批接受为 true。
+bool CaptureOverlaySession::SetMaskOpacityPercent(unsigned percent) noexcept
+{
+    for (const auto& output : this->outputs_)
+        if (output->renderer && !output->renderer->SetMaskOpacityPercent(percent))
+            return false;
+    return true;
+}
+// 先撤销旧版本，再完整上传新版本，失败后所有屏保持无结果预览。
+// 入参：frame 为SDR底图或空；error 为诊断。返回：所有输出准备成功为 true。
+bool CaptureOverlaySession::SetSelectionPreview(const SdrSelectionFrame* frame, std::wstring& error)
+{
+    for (const auto& output : this->outputs_)
+        if (output->renderer)
+            (void)output->renderer->SetSelectionPreview(nullptr, error);
+    if (frame == nullptr)
+        return true;
+    for (const auto& output : this->outputs_)
+    {
+        if (output->renderer && !output->renderer->SetSelectionPreview(frame, error))
+        {
+            const std::wstring failure = error;
+            for (const auto& reset : this->outputs_)
+                if (reset->renderer)
+                    (void)reset->renderer->SetSelectionPreview(nullptr, error);
+            error = failure;
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace open_st

@@ -4,21 +4,21 @@
 
 Open-ST is a Windows screenshot and annotation tool with an installer and a portable ZIP. Offline Chinese, English and Japanese OCR is included, with editable results and fast/best models. Text translation supports ordered online providers and local Chinese/English models, with automatic source-language detection, line-layout preservation, and connection diagnostics. Image translation remains planned.
 
-The current source version is **1.0.0**, targeting Windows 10 22H2 and Windows 11 x64. This version change does not publish a release. Existing downloads below remain v1.0.0; see the [current progress](docs/implementation_progress.md) for remaining work and acceptance limits.
+The current version is **1.1.0**, targeting Windows 10 22H2 and Windows 11 x64. See the [current progress](docs/implementation_progress.md) for remaining work and acceptance limits.
 
 ## Download and use
 
-Download from [v1.0.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.0.0):
+Download from [v1.1.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.1.0):
 
 - **Setup.exe**: current-user or all-users installation and a custom local directory. A verified Microsoft VC++ x64 runtime installer is included and runs only after confirmation when required.
 - **ZIP**: extract the complete archive into a writable folder and run Open-ST.exe. The [Microsoft VC++ x64 runtime](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) is required separately.
 - **SHA256SUMS.txt**: checksums for both packages. Open-ST and Setup are unsigned; checksums are not publisher signatures.
 
-After the installer starts, it automatically closes the window and users can exit from the tray normally. When upgrading from the old version to this version, you still need to close the daily information window and exit (right-click on the tray to push the book) first; Local OCR continues to package.
+Setup automatically closes verified instances of the target installation before updating. Save your work first; unsaved screenshots and edits are not prompted for. Both packages include offline OCR and Chinese/English translation models without separate model downloads.
 
 Default keys: Ctrl+Alt+Q captures, Ctrl+C or Enter copies, Ctrl+S saves, and Esc cancels by layer. Right-click edits an annotation's properties; it no longer cancels capture. Text editing uses Enter for a new line and Ctrl+Enter to finish.
 
-Before upgrading, exit all instances using the target directory and back up data. Installation preserves data by default. To move from an older portable copy to Setup, install into a new directory and migrate data explicitly. For all-users uninstall, other accounts must disable their own startup entries beforehand.
+Back up data before upgrading. Exit the program before manually replacing a portable copy; Setup handles matching running instances automatically. Installation preserves data by default. To move from an older portable copy to Setup, install into a new directory and migrate data explicitly. For all-users uninstall, other accounts must disable their own startup entries beforehand.
 
 Current-user installation and repair were exercised on Windows 11. Windows 10 and all-users/multi-account scenarios have remaining manual acceptance work. The existing pinned-window redundant-position-request test remains failing; complex annotation cold builds may be slow. See the release notes for details.
 

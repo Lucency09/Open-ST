@@ -4,6 +4,7 @@
 
 #include <annotation.h>
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -12,10 +13,19 @@
 
 namespace open_st
 {
+inline constexpr unsigned int MAX_CAPTURE_MASK_OPACITY_PERCENT = 90U;
+// 发布选区外遮罩深度的合法范围，供设置和绘制入口共同校验。
+// 入参：percent 为有符号百分比。返回：0至上限之间为true。
+[[nodiscard]] constexpr bool IsMaskOpacityPercent(std::int64_t percent) noexcept
+{
+    return percent >= 0 && percent <= MAX_CAPTURE_MASK_OPACITY_PERCENT;
+}
+
 struct SelectionSnapshot;
 struct OutputPreviewFrame;
 struct OverlayRendererTestAccess;
 class AnnotationMosaicSource;
+class SdrSelectionFrame;
 
 // 使用 D3D11 + DXGI 交换链 + Direct2D 1.1 设备上下文呈现截图覆盖窗口。
 // Windows/DirectX COM 对象隐藏在 Impl 中，避免把大量系统头暴露给调用模块。
@@ -46,6 +56,15 @@ class OverlayRenderer final
     // 返回：窗口、预览、显示身份和图形资源全部有效时为 true；输入校验或初始化失败时为 false。
     [[nodiscard]] bool Initialize(HWND window, const OutputPreviewFrame& frame,
                                   std::optional<std::string_view> configuredBorderColor, std::wstring& errorMessage);
+
+    // 更新仅作用于选区外的遮罩深度。
+    // 入参：percent 为 0 至 90 的不透明百分比。
+    // 返回：合法时 true；非法时保留旧深度并返回 false。
+    [[nodiscard]] bool SetMaskOpacityPercent(unsigned int percent) noexcept;
+    // 上传本屏选区交集的正式 SDR 底图，HDR 目标只进行一次显示参考白适配。
+    // 入参：frame 为调用期间借用的未标注结果；nullptr 清空；errorMessage 接收错误。
+    // 返回：上传完成时 true；失败保留旧预览，调用结束后不保留 frame 借用。
+    [[nodiscard]] bool SetSelectionPreview(const SdrSelectionFrame* frame, std::wstring& errorMessage);
 
     // 根据覆盖窗口客户区大小重建交换链绘制目标。
     // 入参：width、height：新的客户区物理像素宽高；errorMessage：输出参数，失败时写入诊断。

@@ -13,6 +13,7 @@
 
 namespace open_st
 {
+class SdrSelectionFrame;
 // 每屏窗口仅拥有呈现资源；原生冻结帧和全局选区由 App 统一拥有。
 struct CaptureOverlayOutput final
 {
@@ -78,6 +79,12 @@ class CaptureOverlaySession final
     [[nodiscard]] OverlayPaintResult Paint(HWND trigger,
                                            const std::function<bool(CaptureOverlayOutput&, std::wstring&)>& drawOutput,
                                            const std::function<bool()>& shouldStop, std::wstring& error);
+    // 同步全部屏幕的遮罩深度，不影响选区像素。
+    // 入参：percent 为0至90百分比。返回：所有渲染器接受时为 true。
+    bool SetMaskOpacityPercent(unsigned percent) noexcept;
+    // 完整准备全部屏幕的新底图；任何失败清空整批预览。
+    // 入参：frame 为借用SDR底图或空；error 接收失败。返回：整批准备成功为 true。
+    bool SetSelectionPreview(const SdrSelectionFrame* frame, std::wstring& error);
     // 解除当前截图会话占用的鼠标捕获。
     // 入参：无。
     // 返回：无返回值；其他窗口持有的鼠标捕获保持不变。

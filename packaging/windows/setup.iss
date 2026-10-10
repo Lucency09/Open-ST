@@ -45,6 +45,7 @@ Name: "{autodesktop}\Open-ST"; Filename: "{app}\Open-ST.exe"; Tasks: desktopicon
 
 [Files]
 Source: "{#RedistPath}"; DestName: "vc_redist.x64.exe"; Flags: dontcopy
+Source: "{#CloseHelperPath}"; DestName: "open-st-close-application.exe"; Flags: dontcopy
 #include GeneratedFiles
 
 [Run]
@@ -398,6 +399,29 @@ begin
   if BackupFolder <> '' then SuppressibleMsgBox('Modified resources were backed up to:' + #13#10 + BackupFolder, mbInformation, MB_OK, IDOK);
 end;
 
+// 最终安装前以原始交互用户运行窄的退出助手，不借用提升权限关闭其他账户的实例。
+// 入参：无；目标固定为已经通过安装身份校验的{app}。
+// 返回：失败抛异常阻止覆盖；不触碰ZIP和卸载流程。
+procedure CloseTargetApplication;
+var Code: Integer; Parameters: String;
+begin
+  if not FileExists(ExpandConstant('{app}\Open-ST.exe')) then exit;
+  ExtractTemporaryFile('open-st-close-application.exe');
+  Parameters := '--directory "' + RemoveBackslashUnlessRoot(ExpandConstant('{app}')) + '"';
+  if not ExecAsOriginalUser(ExpandConstant('{tmp}\open-st-close-application.exe'), Parameters,
+    '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    RaiseException('Cannot start application shutdown as the original Windows user. No files were replaced.');
+  case Code of
+    0: Log('Target application shutdown completed.');
+    10: RaiseException('The application shutdown target is not a verified local installation directory.');
+    11: RaiseException('Cannot verify the original interactive user/session, or the installation is in use by another user/session. No files were replaced.');
+    12: RaiseException('Cannot inspect or close the target application with the original user permissions. No files were replaced.');
+    13: RaiseException('The target application did not terminate. No files were replaced.');
+  else
+    RaiseException('Application shutdown helper failed. Code: ' + IntToStr(Code));
+  end;
+end;
+
 // 在用户确认实际安装后取得维护资格，前置失败保持程序文件不变。
 // 入参：NeedsRestart 为运行库重启结果。
 // 返回：空为继续，文本为立即失败提示。
@@ -407,11 +431,16 @@ begin
   try
     Log('Validating installation identity and version.');
     ValidateDestination;
-    Log('Acquiring installation maintenance lease.');
-    AcquireMaintenance;
     Log('Checking the required runtime.');
     Result := EnsureRuntime(NeedsRestart);
     if Result = '' then begin
+      Log('Closing this installation for the original interactive user.');
+      CloseTargetApplication;
+      // 等待退出期间安装状态可能变化，取得维护资格前重新检查；首次创建目录后不重复认领校验。
+      ValidateDestination;
+      Log('Acquiring installation maintenance lease.');
+      AcquireMaintenance;
+      if not NewInstallation then ValidateDestination;
       Log('Checking modified resources for backup.');
       BackupModifiedResources;
       Log('Installation preparation completed.');

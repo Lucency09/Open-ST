@@ -36,7 +36,7 @@ void App::InitializeWindowSelection()
 
 // 生成独立的绘制视图，正式模型始终保留原来的选区资格。
 // 入参：无。
-// 返回：正式模型快照，或只带边框和外部遮罩的候选副本。
+// 返回：正式模型快照，或带边框但保持全屏暗层的候选副本。
 SelectionSnapshot App::SelectionForDrawing() const noexcept
 {
     SelectionSnapshot snapshot = this->selectionModel_ ? this->selectionModel_->Snapshot() : SelectionSnapshot{};
@@ -45,6 +45,7 @@ SelectionSnapshot App::SelectionForDrawing() const noexcept
         const RECT rectangle = *this->windowCandidate_;
         snapshot.rectangle = {rectangle.left, rectangle.top, rectangle.right, rectangle.bottom};
         snapshot.hasSelection = true;
+        snapshot.candidateOnly = true;
         snapshot.showHandles = false;
     }
     if (this->IsAnnotationToolActive())

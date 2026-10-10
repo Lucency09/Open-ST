@@ -3,6 +3,7 @@
 
 #include <annotation.h>
 #include <geometry.h>
+#include <native_tone_mapper.h>
 #include <memory>
 #include <string>
 
@@ -12,6 +13,7 @@ struct ID2D1Geometry;
 namespace open_st
 {
 class FrozenDesktopFrame;
+class SdrSelectionFrame;
 
 class AnnotationMosaicSource final
 {
@@ -32,6 +34,20 @@ class AnnotationMosaicSource final
     // 入参：未命名对象为拟复制来源。
     // 返回：已删除。
     AnnotationMosaicSource& operator=(const AnnotationMosaicSource&) = delete;
+    // 设置 HDR 输出亮度，不改变原生冻结像素或 SDR 内容。
+    // 入参：percent 为 25 至 200 的百分比；100 保持原有效果。
+    // 返回：参数有效时 true；无效时 false 并保留原值。
+    [[nodiscard]] bool SetBrightnessPercent(unsigned int percent) noexcept;
+
+    // 同步显式策略并清除底图、色样与位图缓存。
+    // 入参：options 为策略。返回：线程与参数合法为 true。
+    [[nodiscard]] bool SetToneMappingOptions(HdrToneMappingOptions options) noexcept;
+
+    // 共享同一会话当前亮度下的后台SDR底图，避免重复转换已覆盖的像素。
+    // 入参：frame 为不可变共享底图；nullptr 清除。调用前须同步亮度。
+    // 返回：线程及底图边界合法时 true；变化会清除旧色样缓存，失败保持原值。
+    [[nodiscard]] bool SetSelectionPreview(std::shared_ptr<const SdrSelectionFrame> frame) noexcept;
+
     // 在发布候选前准备其需要的全部马赛克 tile，失败保持此前已准备候选不变。
     // 入参：annotations 为候选文档；selection 为候选正式裁剪；error 接收诊断。
     // 返回：完整准备成功为 true；非法或超预算输入不发布部分候选。

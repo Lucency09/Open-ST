@@ -22,6 +22,22 @@ namespace
 using renderer_detail::EditUtf8;
 using renderer_detail::EditWide;
 using renderer_detail::ReadEditText;
+// 下拉框实际折叠高度由字体决定，仅在位置、宽度或请求的展开高度变化时布局。
+// 入参：window 为下拉框，x/y/width/height 为父客户区目标；lastHeight 记录上次展开高度请求。
+// 返回：无；每次请求改变仍使用原有 MoveWindow 行为，避免拖动邻接滑块时反复擦除父背景。
+void PlaceComboIfChanged(HWND window, int x, int y, int width, int height, int& lastHeight)
+{
+    RECT current{};
+    if (lastHeight == height && GetWindowRect(window, &current))
+    {
+        MapWindowPoints(nullptr, GetParent(window), reinterpret_cast<POINT*>(&current), 2);
+        if (current.left == x && current.top == y && current.right - current.left == width)
+            return;
+    }
+    if (MoveWindow(window, x, y, width, height, TRUE))
+        lastHeight = height;
+}
+
 // 严格解析十进制整数并验证布局范围，不夹取或改写原始输入。
 // 入参：text 为编辑内容；minimum、maximum 为允许的数值边界。
 // 返回：完整可表示且在范围内的整数；空、未完成或非法输入返回空值。
@@ -78,6 +94,7 @@ struct WindowRenderer::Impl
         renderer_detail::FormEditState editState;
         HWND slider{};
         std::int64_t sliderValue{};
+        int dropdownHeight{};
         HWND label{};
         HWND errorWindow{};
         std::wstring text;
@@ -622,7 +639,7 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
                           this->TextHeight(control.text, std::max(1, actualWidth - this->Scale(24))) + this->Scale(4));
     if (node.type == NodeType::Button || node.type == NodeType::Swatch)
         height = std::max(this->Scale(28), height + this->Scale(10));
-    if (place)
+    if (place && (node.type != NodeType::Select || control.label != nullptr))
     {
         const HWND textWindow = control.label != nullptr ? control.label : control.window;
         MoveWindow(textWindow, x, y - this->scroll, actualWidth, height, TRUE);
@@ -631,12 +648,17 @@ int WindowRenderer::Impl::ArrangeNode(const Node& node, int x, int y, int width,
     {
         const int fieldY = y + height + this->Scale(4);
         if (place)
-            MoveWindow(control.window, x, fieldY - this->scroll, actualWidth,
-                       this->Scale(node.type == NodeType::Select ? 180 : 28), TRUE);
+        {
+            if (node.type == NodeType::Select)
+                PlaceComboIfChanged(control.window, x, fieldY - this->scroll, actualWidth, this->Scale(180),
+                                    control.dropdownHeight);
+            else
+                MoveWindow(control.window, x, fieldY - this->scroll, actualWidth, this->Scale(28), TRUE);
+        }
         height += this->Scale(32);
     }
     else if (node.type == NodeType::Select && place)
-        MoveWindow(control.window, x, y - this->scroll, actualWidth, this->Scale(180), TRUE);
+        PlaceComboIfChanged(control.window, x, y - this->scroll, actualWidth, this->Scale(180), control.dropdownHeight);
     const int errorHeight = this->TextHeight(control.error, actualWidth);
     if (place && control.errorWindow != nullptr)
         MoveWindow(control.errorWindow, x, y + height - this->scroll, actualWidth, errorHeight, TRUE);
@@ -1875,7 +1897,10 @@ LRESULT WindowRenderer::Impl::Message(HWND target, UINT message, WPARAM wParam, 
         this->viewport = nullptr;
         this->statusWindow = nullptr;
         for (auto& [id, control] : this->controls)
+        {
             control.window = control.slider = control.label = control.errorWindow = nullptr;
+            control.dropdownHeight = 0;
+        }
         SetWindowLongPtrW(target, GWLP_USERDATA, 0);
         break;
     default:

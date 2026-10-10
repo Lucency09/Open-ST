@@ -1,5 +1,6 @@
 // 文件职责：验证共享标注几何的透明度、裁剪、圆角和跨屏输出像素。
 #include <array>
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <limits>
 #include <selection_output_renderer.h>
@@ -198,5 +199,27 @@ TEST(AnnotationOutputTest, outline_interior_and_object_order)
     EXPECT_NEAR(Pixel(output, 16, 16)[0U], 128, 1);
     EXPECT_EQ(Pixel(output, 16, 16)[1U], 0U);
     EXPECT_NEAR(Pixel(output, 16, 16)[2U], 127, 1);
+}
+
+// 验证已转换底图不会再次调亮度，空标注保留四字节，半透明标注只合成一次。
+// 入参：无。返回：断言输出像素与一次source-over的结果。
+TEST(AnnotationOutputTest, ready_preview_is_copied_or_annotated_exactly_once)
+{
+    const SdrSelectionFrame base({0, 0, 20, 20}, std::vector<std::uint8_t>(20U * 20U * 4U, 100U));
+    SelectionOutputRenderer renderer;
+    ASSERT_TRUE(renderer.SetBrightnessPercent(25U));
+    SdrSelectionFrame output;
+    std::wstring error;
+    ASSERT_TRUE(renderer.RenderFromPreview(base, {}, output, error));
+    EXPECT_TRUE(std::equal(base.Pixels().begin(), base.Pixels().end(), output.Pixels().begin(), output.Pixels().end()));
+    AnnotationObject object{1U, AnnotationKind::FilledRectangle, {4.0, 4.0}, {10.0, 10.0}};
+    object.style.transparency = 50U;
+    ASSERT_TRUE(renderer.RenderFromPreview(base, Snapshot(object), output, error));
+    EXPECT_EQ(Pixel(output, 1, 1), (std::array<std::uint8_t, 4U>{100U, 100U, 100U, 100U}));
+    EXPECT_NEAR(Pixel(output, 8, 8)[0], 50U, 1);
+    EXPECT_NEAR(Pixel(output, 8, 8)[2], 178U, 1);
+    const SdrSelectionFrame invalid;
+    EXPECT_FALSE(renderer.RenderFromPreview(invalid, {}, output, error));
+    EXPECT_FALSE(output.IsValid());
 }
 } // namespace open_st

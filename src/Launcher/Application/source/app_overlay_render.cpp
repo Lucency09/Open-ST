@@ -30,6 +30,7 @@ void App::RenderOverlays(
         return;
     }
 
+    this->RefreshCaptureVisualPreview();
     this->overlayRendering_ = true;
     OverlayPaintResult result = OverlayPaintResult::Failed;
     std::wstring error;

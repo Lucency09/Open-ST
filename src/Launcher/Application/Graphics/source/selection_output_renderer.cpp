@@ -22,6 +22,27 @@ open_st::RectI Intersection(open_st::RectI a, open_st::RectI b) noexcept
 } // namespace
 namespace open_st
 {
+// 设置后续 HDR 分块的转换亮度，SDR 分块仍逐字节复制。
+// 入参：percent 为亮度百分比。
+// 返回：参数合法并被底层接受时 true，否则保持旧值。
+bool SelectionOutputRenderer::SetBrightnessPercent(unsigned int percent) noexcept
+{
+    if (!this->toneMapper_.SetBrightnessPercent(percent))
+        return false;
+    this->brightnessPercent_ = percent;
+    return true;
+}
+
+// 保存会话显式策略，不维护业务默认。
+// 入参：options 为策略。返回：合法为 true。
+bool SelectionOutputRenderer::SetToneMappingOptions(HdrToneMappingOptions options) noexcept
+{
+    if (!IsHdrHighlightCeilingNits(options.highlightCeilingNits))
+        return false;
+    this->toneMappingOptions_ = options;
+    return true;
+}
+
 // 建立并预热 HDR 色调映射资源，避免第一次选区输出承担全部初始化成本。
 // 入参：errorMessage：输出参数，失败时接收初始化或预热原因。
 // 返回：设备及微小图像预热成功时为 true；受控回退后仍失败或分配异常时为 false。
@@ -98,6 +119,11 @@ try
         const bool quantize = plane.Format() == CapturedPixelFormat::Rgb10A2Unorm && sdr;
         if (!copyBgra && !quantize)
         {
+            if (!plane.ColorMetadata().hasSdrWhiteLevel)
+            {
+                errorMessage = L"HDR来源缺少冻结的SDR参考白亮度。";
+                return false;
+            }
             HdrPixelFormat format{};
             if (plane.Format() == CapturedPixelFormat::Rgba16FloatScRgb &&
                 plane.PixelColorSpace() == CapturedColorSpace::ScRgb)
@@ -120,8 +146,9 @@ try
                 return false;
             }
             if (!this->toneMapper_.Convert({static_cast<std::uint32_t>(part.Width()),
-                                            static_cast<std::uint32_t>(part.Height()), plane.Stride(), source, format},
-                                           converted, errorMessage))
+                                            static_cast<std::uint32_t>(part.Height()), plane.Stride(), source, format,
+                                            plane.ColorMetadata().sdrWhiteLevelNits},
+                                           this->toneMappingOptions_, converted, errorMessage))
             {
                 return false;
             }
@@ -197,7 +224,10 @@ try
         temporary = std::make_unique<AnnotationMosaicSource>(desktop);
         source = temporary.get();
     }
-    if (mosaic && (!source->IsFor(desktop) || !source->Prepare(annotations, selection, errorMessage)))
+    if (mosaic && (!source->IsFor(desktop) || !source->SetBrightnessPercent(this->brightnessPercent_) ||
+                   (this->toneMappingOptions_.highlightCeilingNits != 0U &&
+                    !source->SetToneMappingOptions(this->toneMappingOptions_)) ||
+                   !source->Prepare(annotations, selection, errorMessage)))
     {
         if (errorMessage.empty())
             errorMessage = L"马赛克来源不属于当前冻结会话。";
@@ -220,6 +250,42 @@ catch (const std::exception&)
 {
     output = {};
     this->ReleaseImageResources();
+    errorMessage = L"无法分配标注输出资源。";
+    return false;
+}
+// 使用后台底图完成标注，不在UI线程重新转换HDR像素。
+// 入参：base为底图，annotations为快照，output为结果，errorMessage为诊断，source为同步后的马赛克来源。
+// 返回：完整结果为true；不发布部分图像。
+bool SelectionOutputRenderer::RenderFromPreview(const SdrSelectionFrame& base, const AnnotationSnapshot& annotations,
+                                                SdrSelectionFrame& output, std::wstring& errorMessage,
+                                                AnnotationMosaicSource* source)
+try
+{
+    errorMessage.clear();
+    if (&base == &output)
+    {
+        errorMessage = L"选区预览与输出不能共用同一个对象。";
+        return false;
+    }
+    output = {};
+    if (!base.IsValid())
+    {
+        errorMessage = L"正式输出缺少有效的选区预览底图。";
+        return false;
+    }
+    if (source && !source->Prepare(annotations, base.Bounds(), errorMessage))
+        return false;
+    std::vector<std::uint8_t> pixels;
+    if (!annotations || annotations->empty())
+        pixels.assign(base.Pixels().begin(), base.Pixels().end());
+    else if (!CompositeAnnotations(base.Bounds(), annotations, base.Pixels(), pixels, errorMessage, source))
+        return false;
+    output = SdrSelectionFrame(base.Bounds(), std::move(pixels));
+    return output.IsValid();
+}
+catch (const std::exception&)
+{
+    output = {};
     errorMessage = L"无法分配标注输出资源。";
     return false;
 }

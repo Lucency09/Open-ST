@@ -8,6 +8,7 @@
 #include <frozen_desktop_frame.h>
 #include <overlay_renderer.h>
 #include <selection_model.h>
+#include <sdr_selection_frame.h>
 
 #include <array>
 #include <cstddef>
@@ -385,4 +386,100 @@ TEST_F(OverlayRendererIntegrationTest, uses_injected_border_color_without_retain
         }
     }
     EXPECT_TRUE(foundConfiguredColor);
+}
+
+// 验证选区效果底图只替换选区，清空和过期矩形恢复原图，遮罩深度独立生效。
+// 入参：无。返回：断言真实SDR目标回读像素。
+TEST_F(OverlayRendererIntegrationTest, selection_preview_and_mask_are_independent)
+{
+    HiddenWindow window(8, 8);
+    ASSERT_NE(window.Get(), nullptr);
+    open_st::OutputPreviewFrame source;
+    source.bounds = {0, 0, 8, 8};
+    source.pixelFormat = open_st::CapturedPixelFormat::Bgra8Unorm;
+    source.stride = 32U;
+    source.pixels.assign(256U, 200U);
+    open_st::OverlayRenderer renderer;
+    std::wstring error;
+    ASSERT_TRUE(renderer.Initialize(window.Get(), source, std::nullopt, error)) << error;
+    ASSERT_TRUE(renderer.SetMaskOpacityPercent(70U));
+    EXPECT_FALSE(renderer.SetMaskOpacityPercent(91U));
+    open_st::SelectionSnapshot selection;
+    selection.hasSelection = true;
+    selection.rectangle = {2, 2, 7, 7};
+    open_st::SdrSelectionFrame preview(selection.rectangle, std::vector<std::uint8_t>(100U, 80U));
+    ASSERT_TRUE(renderer.SetSelectionPreview(&preview, error)) << error;
+    open_st::OutputPreviewFrame result;
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_EQ(result.pixels[4U * 32U + 4U * 4U], 80U);
+    EXPECT_NEAR(result.pixels[0], 60U, 1);
+    selection.rectangle = {1, 1, 7, 7};
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_EQ(result.pixels[4U * 32U + 4U * 4U], 200U);
+    ASSERT_TRUE(renderer.SetSelectionPreview(nullptr, error));
+    ASSERT_TRUE(renderer.SetMaskOpacityPercent(0U));
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_EQ(result.pixels[0], 200U);
+}
+
+// 验证正式SDR底图进入HDR预览只做一次sRGB解码和参考白适配，并由GPU自有存储持有。
+// 入参：无。返回：断言GPU回读半浮点亮度。
+TEST_F(OverlayRendererIntegrationTest, selection_preview_adapts_sdr_white_once)
+{
+    HiddenWindow window(4, 4);
+    ASSERT_NE(window.Get(), nullptr);
+    open_st::OutputPreviewFrame source;
+    source.bounds = {0, 0, 4, 4};
+    source.pixelFormat = open_st::CapturedPixelFormat::Rgba16FloatScRgb;
+    source.stride = 32U;
+    source.uiWhiteScale = 3.0F;
+    source.pixels.assign(128U, 0U);
+    open_st::OverlayRenderer renderer;
+    std::wstring error;
+    ASSERT_TRUE(renderer.Initialize(window.Get(), source, std::nullopt, error)) << error;
+    const open_st::SelectionSnapshot selection = UnobstructedSelection();
+    {
+        open_st::SdrSelectionFrame preview(selection.rectangle, std::vector<std::uint8_t>(200U * 200U * 4U, 128U));
+        ASSERT_TRUE(renderer.SetSelectionPreview(&preview, error)) << error;
+    }
+    open_st::OutputPreviewFrame result;
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    std::uint16_t half{};
+    std::memcpy(&half, result.pixels.data(), sizeof(half));
+    EXPECT_NEAR(open_st::DecodeFloat16(half), open_st::SrgbToLinear(128.0F / 255.0F) * 3.0F, 0.001F);
+}
+
+// 验证全屏候选仍整体压暗且保留轮廓，只有正式选择才揭开遮罩并使用结果底图。
+// 入参：无。返回：断言GPU实际像素区分候选与正式选区。
+TEST_F(OverlayRendererIntegrationTest, fullscreen_candidate_keeps_mask_until_confirmed)
+{
+    HiddenWindow window(8, 8);
+    ASSERT_NE(window.Get(), nullptr);
+    open_st::OutputPreviewFrame source;
+    source.bounds = {0, 0, 8, 8};
+    source.pixelFormat = open_st::CapturedPixelFormat::Bgra8Unorm;
+    source.stride = 32U;
+    source.pixels.assign(256U, 200U);
+    open_st::OverlayRenderer renderer;
+    std::wstring error;
+    ASSERT_TRUE(renderer.Initialize(window.Get(), source, "#FF0000", error)) << error;
+    ASSERT_TRUE(renderer.SetMaskOpacityPercent(70U));
+    open_st::SelectionSnapshot selection;
+    selection.hasSelection = true;
+    selection.rectangle = source.bounds;
+    selection.candidateOnly = true;
+    const open_st::SdrSelectionFrame preview(source.bounds, std::vector<std::uint8_t>(256U, 80U));
+    ASSERT_TRUE(renderer.SetSelectionPreview(&preview, error));
+    open_st::OutputPreviewFrame result;
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_NEAR(result.pixels[4U * 32U + 4U * 4U], 60U, 1);
+    EXPECT_EQ(result.pixels[2U], 255U);
+    EXPECT_EQ(result.pixels[0U], 0U);
+    selection.candidateOnly = false;
+    ASSERT_TRUE(renderer.SetSelectionPreview(nullptr, error));
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_EQ(result.pixels[4U * 32U + 4U * 4U], 200U);
+    ASSERT_TRUE(renderer.SetSelectionPreview(&preview, error));
+    ASSERT_TRUE(open_st::OverlayRendererTestAccess::DrawAndRead(renderer, selection, result, error)) << error;
+    EXPECT_EQ(result.pixels[4U * 32U + 4U * 4U], 80U);
 }

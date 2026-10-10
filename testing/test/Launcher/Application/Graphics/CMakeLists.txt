@@ -22,6 +22,7 @@ gtest_discover_tests(
 add_executable(
     open_st_graphics_tests
     source/selection_output_renderer_tests.cpp
+    source/selection_preview_worker_tests.cpp
     source/annotation_output_tests.cpp
     source/annotation_hit_test_tests.cpp
     source/annotation_erasure_tests.cpp

@@ -155,6 +155,8 @@ TEST_F(WindowSelectionIntegrationTest, candidate_is_drawing_only_and_cannot_subm
 {
     ASSERT_TRUE(Access::Move(*this->app_, {20, 20}));
     EXPECT_TRUE(Access::Drawing(*this->app_).hasSelection);
+    EXPECT_TRUE(Access::Drawing(*this->app_).candidateOnly);
+    EXPECT_EQ(Access::Drawing(*this->app_).phase, open_st::SelectionPhase::Unselected);
     EXPECT_FALSE(Access::Drawing(*this->app_).showHandles);
     EXPECT_FALSE(Access::Model(*this->app_).hasSelection);
     EXPECT_EQ(Access::Model(*this->app_).phase, open_st::SelectionPhase::Unselected);
@@ -177,6 +179,7 @@ TEST_F(WindowSelectionIntegrationTest, click_confirms_before_capture_loss_and_al
     Access::Message(*this->app_, WM_CAPTURECHANGED);
     this->ExpectRectangle({10, 10, 90, 90});
     EXPECT_TRUE(Access::Drawing(*this->app_).showHandles);
+    EXPECT_FALSE(Access::Drawing(*this->app_).candidateOnly);
     EXPECT_TRUE(Access::Post(*this->app_, open_st::CaptureToolbarCommand::Copy));
     EXPECT_FALSE(Access::Post(*this->app_, open_st::CaptureToolbarCommand::Save));
 }

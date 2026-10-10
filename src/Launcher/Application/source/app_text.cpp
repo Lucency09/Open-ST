@@ -40,6 +40,10 @@ void App::ProcessSelectionText()
             this->RefreshCaptureToolbar();
             return;
         }
+        // OCR等待最新底图发布后才固定输入。
+        // 入参：无。返回：无。
+        if (this->DeferCaptureOutput([this]() { this->ProcessSelectionText(); }))
+            return;
         SdrSelectionFrame frame;
         std::wstring error;
         this->completionBusy_ = true;

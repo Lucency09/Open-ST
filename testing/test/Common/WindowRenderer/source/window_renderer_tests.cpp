@@ -61,6 +61,7 @@ class RendererBindingTest : public testing::Test
     bool longText_ = false;
     bool throwChange_ = false;
     std::wstring infoText_;
+    std::vector<open_st::RendererOption> options_{{"a", L"A"}, {"b", L"B"}};
     std::vector<open_st::RendererResult> errors_;
     // 注册可独立运行的草稿、选项和关闭动作。
     // 入参：document 为要加载的测试布局 JSON；默认包含两页和通用按钮。
@@ -101,10 +102,10 @@ class RendererBindingTest : public testing::Test
             }));
         ASSERT_TRUE(this->renderer_.BindOptions(
             "choice",
-            // 返回固定的两个下拉选项，隔离业务选项查询。
+            // 默认提供两个下拉选项，允许用例模拟运行期选项增长。
             // 入参：无显式入参。
-            // 返回：成功的选项查询结果，包含 a/A 和 b/B 两项。
-            []() { return open_st::RendererOptionsResult{true, {{"a", L"A"}, {"b", L"B"}}, {}}; }));
+            // 返回：成功的当前选项快照；默认包含 a/A 和 b/B。
+            [this]() { return open_st::RendererOptionsResult{true, this->options_, {}}; }));
         // 累计确认动作次数，检测控件是否重复分发。
         // 入参：无显式入参。
         // 返回：无返回值。
@@ -142,6 +143,35 @@ class RendererBindingTest : public testing::Test
         HWND combo = nullptr;
         EnumChildWindows(this->renderer_.NativeHandle(), FindCombo, reinterpret_cast<LPARAM>(&combo));
         return combo;
+    }
+    // 展开本实例的真实下拉列表，验证字体行高、实际可见容量及选择保持。
+    // 入参：minimumRows 为应同时显示的最少条目数。返回：无；检查后关闭本实例的列表。
+    void CheckExpandedCombo(int minimumRows)
+    {
+        const HWND window = this->renderer_.NativeHandle();
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+        ASSERT_TRUE(SetWindowPos(window, HWND_TOP, 20, 20, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE));
+        const HWND combo = this->Combo();
+        ASSERT_NE(combo, nullptr);
+        SendMessageW(combo, CB_SHOWDROPDOWN, TRUE, 0);
+        ASSERT_NE(SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0), 0);
+        COMBOBOXINFO info{sizeof(info)};
+        ASSERT_TRUE(GetComboBoxInfo(combo, &info));
+        ASSERT_TRUE(IsWindowVisible(info.hwndList));
+        RECT listClient{}, list{}, field{};
+        ASSERT_TRUE(GetClientRect(info.hwndList, &listClient));
+        ASSERT_TRUE(GetWindowRect(info.hwndList, &list));
+        ASSERT_TRUE(GetWindowRect(combo, &field));
+        const LRESULT itemHeight = SendMessageW(combo, CB_GETITEMHEIGHT, 0, 0);
+        ASSERT_GT(itemHeight, 0);
+        EXPECT_GE(listClient.bottom - listClient.top, minimumRows * itemHeight);
+        EXPECT_GE(list.right - list.left, field.right - field.left);
+        EXPECT_EQ(SendMessageW(combo, CB_GETCOUNT, 0, 0), static_cast<LRESULT>(this->options_.size()));
+        EXPECT_EQ(SendMessageW(combo, CB_GETCURSEL, 0, 0), 0);
+        EXPECT_EQ(this->draft_, "a");
+        EXPECT_EQ(this->changes_, 0);
+        SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+        PumpMessages();
     }
 };
 // 验证无布局或缺少窗口级与字段级回调时不可创建半成品窗口。
@@ -470,6 +500,42 @@ TEST_F(RendererBindingTest, dpi_changes_preserve_selection)
         EXPECT_EQ(SendMessageW(this->Combo(), CB_GETCURSEL, 0, 0), 1);
         EXPECT_EQ(this->draft_, "b");
         EXPECT_EQ(this->changes_, 0);
+    }
+}
+
+// 验证少量选项自动收缩列表后，动态增加选项仍可展开多个完整条目且不修改草稿。
+// 入参：无。返回：真实列表客户区容量与选项数、选择值一致。
+TEST_F(RendererBindingTest, combo_option_growth_preserves_expanded_list_capacity)
+{
+    this->Prepare();
+    this->Show();
+    this->CheckExpandedCombo(2);
+    for (int index = 2; index < 20; ++index)
+        this->options_.push_back({std::to_string(index), L"Item " + std::to_wstring(index)});
+    ASSERT_TRUE(this->renderer_.RefreshValue("choice"));
+    this->CheckExpandedCombo(4);
+}
+
+// 验证 DPI 重排及字体刷新后实际展开列表仍能容纳多行，字体随 DPI 增长而不截断条目。
+// 入参：无。返回：144/192 DPI 的实际行高、展开容量和草稿选择保持有效。
+TEST_F(RendererBindingTest, combo_dpi_changes_preserve_expanded_list_capacity)
+{
+    for (int index = 2; index < 20; ++index)
+        this->options_.push_back({std::to_string(index), L"Item " + std::to_wstring(index)});
+    this->Prepare();
+    this->Show();
+    const HWND window = this->renderer_.NativeHandle();
+    LRESULT previousHeight{};
+    for (const UINT dpi : {144U, 192U})
+    {
+        RECT suggested{20, 20, 20 + MulDiv(600, static_cast<int>(dpi), 96),
+                       20 + MulDiv(360, static_cast<int>(dpi), 96)};
+        SendMessageW(window, WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&suggested));
+        ASSERT_TRUE(this->renderer_.RefreshTexts());
+        this->CheckExpandedCombo(4);
+        const LRESULT actualHeight = SendMessageW(this->Combo(), CB_GETITEMHEIGHT, 0, 0);
+        EXPECT_GT(actualHeight, previousHeight);
+        previousHeight = actualHeight;
     }
 }
 // 验证Tab 导航到长页面底部字段时应滚动，使获得焦点的输入框可见。

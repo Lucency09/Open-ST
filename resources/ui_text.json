@@ -412,9 +412,9 @@
       "ja-JP": "Open-ST について"
     },
     "about.body": {
-      "zh-CN": "Open-ST {version}\n原生 Windows 截图、OCR 与翻译工具（开发中）",
-      "en-US": "Open-ST {version}\nNative Windows capture, OCR, and translation tool (in development)",
-      "ja-JP": "Open-ST {version}\nWindows ネイティブのキャプチャ、OCR、翻訳ツール（開発中）"
+      "zh-CN": "Open-ST {version}\n原生 Windows 截图、OCR 与翻译工具",
+      "en-US": "Open-ST {version}\nNative Windows capture, OCR, and translation tool",
+      "ja-JP": "Open-ST {version}\nWindows ネイティブのキャプチャ、OCR、翻訳ツール"
     },
     "settings.title": {
       "zh-CN": "Open-ST 设置",
@@ -2245,6 +2245,76 @@
       "zh-CN": "搜索更充分、速度稍慢；不保证每句都优于均衡档。",
       "en-US": "Explores more candidates and runs more slowly; individual translations may not improve.",
       "ja-JP": "候補をより広く探索するため遅くなりますが、すべての訳が改善するとは限りません。"
+    },
+    "capture.settings.title": {
+      "zh-CN": "截图设置",
+      "en-US": "Screenshot settings",
+      "ja-JP": "スクリーンショット設定"
+    },
+    "capture.settings.brightness": {
+      "zh-CN": "HDR 截图亮度（%）",
+      "en-US": "HDR screenshot brightness (%)",
+      "ja-JP": "HDR スクリーンショットの明るさ（%）"
+    },
+    "capture.settings.mask": {
+      "zh-CN": "选区外遮罩深度（%）",
+      "en-US": "Outside-selection dimming (%)",
+      "ja-JP": "選択範囲外の暗さ（%）"
+    },
+    "capture.settings.help": {
+      "zh-CN": "滑动即时预览，仅影响本次截图。亮度按曝光调整，100%为标准效果；遮罩数值越大越暗。",
+      "en-US": "Preview changes apply to this screenshot only. Brightness adjusts exposure; 100% is the standard result. Higher dimming values darken the outside area.",
+      "ja-JP": "変更は今回の撮影だけに適用されます。明るさは露出を調整し、100%が標準です。遮罩の値が大きいほど範囲外が暗くなります。"
+    },
+    "capture.settings.restore": {
+      "zh-CN": "恢复默认",
+      "en-US": "Restore defaults",
+      "ja-JP": "既定値に戻す"
+    },
+    "capture.settings.close": {
+      "zh-CN": "关闭",
+      "en-US": "Close",
+      "ja-JP": "閉じる"
+    },
+    "capture.settings.processing": {
+      "zh-CN": "正在更新截图效果…",
+      "en-US": "Updating screenshot preview…",
+      "ja-JP": "プレビューを更新しています…"
+    },
+    "capture.settings.ready": {
+      "zh-CN": "当前效果已更新",
+      "en-US": "Preview is up to date",
+      "ja-JP": "プレビューを更新しました"
+    },
+    "capture.settings.sdr_only": {
+      "zh-CN": "当前选区没有可调节的 HDR 图像。",
+      "en-US": "This selection has no adjustable HDR image.",
+      "ja-JP": "選択範囲に調整可能な HDR 画像がありません。"
+    },
+    "capture.settings.invalid": {
+      "zh-CN": "请输入允许范围内的整数。",
+      "en-US": "Enter an integer within the allowed range.",
+      "ja-JP": "許容範囲内の整数を入力してください。"
+    },
+    "settings.capture.default_brightness": {
+      "zh-CN": "默认 HDR 截图亮度（%）",
+      "en-US": "Default HDR screenshot brightness (%)",
+      "ja-JP": "既定の HDR 撮影の明るさ（%）"
+    },
+    "settings.capture.default_mask": {
+      "zh-CN": "默认选区外遮罩深度（%）",
+      "en-US": "Default outside-selection dimming (%)",
+      "ja-JP": "既定の選択範囲外の暗さ（%）"
+    },
+    "settings.capture.defaults_help": {
+      "zh-CN": "这里只保存下次截图的默认参数；本次截图可通过工具栏齿轮即时调整。",
+      "en-US": "These defaults apply to the next screenshot. Use the toolbar gear to adjust the current screenshot.",
+      "ja-JP": "ここでは次回の撮影の既定値を保存します。今回の撮影はツールバーの歯車で調整できます。"
+    },
+    "capture.error.hdr_tone_mapping_invalid": {
+      "zh-CN": "截图参数无效。请检查 settings.json 中的 HDR 高光上限：必须是 1000～10000 nit 的整数。",
+      "en-US": "Screenshot parameters are invalid. Check the HDR highlight ceiling in settings.json: it must be an integer from 1000 to 10000 nit.",
+      "ja-JP": "撮影パラメーターが無効です。settings.json の HDR ハイライト上限を確認してください。1000～10000 nit の整数が必要です。"
     }
   }
 }

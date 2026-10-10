@@ -8,6 +8,8 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <cmath>
 #include <exception>
 #include <list>
@@ -76,6 +78,7 @@ struct FrozenIdentity
     CapturedColorSpace displaySpace{};
     bool converted{};
     float white{};
+    bool hasWhite{};
 };
 
 // 比较物理矩形，不依赖截屏状态或当前窗口几何。
@@ -114,6 +117,9 @@ struct AnnotationMosaicSource::Impl
     DWORD thread{GetCurrentThreadId()};
     std::vector<FrozenIdentity> storage;
     SelectionOutputRenderer converter;
+    unsigned int brightnessPercent{100U};
+    HdrToneMappingOptions toneMappingOptions{};
+    std::shared_ptr<const SdrSelectionFrame> selectionPreview;
     std::list<std::shared_ptr<const ColorTile>> colorCache;
     std::size_t colorBytes{};
     std::list<BitmapTile> bitmaps;
@@ -122,6 +128,63 @@ struct AnnotationMosaicSource::Impl
     std::weak_ptr<const std::vector<AnnotationObject>> preparedSnapshot;
     const void* preparedIdentity{};
     RectI preparedSelection{};
+
+    // 统一释放全部依赖亮度或预览来源的色样、画刷和准备资格。
+    // 入参：无。返回：无，冻结数据身份保持不变。
+    void ClearColors() noexcept
+    {
+        this->prepared.clear();
+        this->preparedSnapshot.reset();
+        this->preparedIdentity = nullptr;
+        this->preparedSelection = {};
+        this->bitmaps.clear();
+        this->bitmapBytes = 0U;
+        this->colorCache.clear();
+        this->colorBytes = 0U;
+    }
+
+    // 优先裁切后台底图；仅补算边界网格位于预览外的剩余条带，维持整块取样语义。
+    // 入参：region 为完整tile范围；pixels 为结果；error 为诊断。返回：完整拼接时true。
+    bool ReadPixels(RectI region, SdrSelectionFrame& pixels, std::wstring& error)
+    {
+        if (!this->selectionPreview)
+            return this->converter.Render(*this->desktop, region, pixels, error);
+        const RectI preview = this->selectionPreview->Bounds();
+        const RectI overlap{std::max(region.left, preview.left), std::max(region.top, preview.top),
+                            std::min(region.right, preview.right), std::min(region.bottom, preview.bottom)};
+        if (overlap.IsEmpty())
+            return this->converter.Render(*this->desktop, region, pixels, error);
+        const std::size_t stride = static_cast<std::size_t>(region.Width()) * 4U;
+        std::vector<std::uint8_t> bytes(stride * static_cast<std::size_t>(region.Height()));
+        // 将已转换条带拷到tile相对位置，不改变RGB或第四字节。
+        // 入参：source 为来源，part 为其覆盖交集。返回：无。
+        const auto copy = [&](const SdrSelectionFrame& source, RectI part)
+        {
+            for (int y = part.top; y < part.bottom; ++y)
+                std::memcpy(bytes.data() + static_cast<std::size_t>(y - region.top) * stride +
+                                static_cast<std::size_t>(part.left - region.left) * 4U,
+                            source.Pixels().data() +
+                                static_cast<std::size_t>(y - source.Bounds().top) * source.Stride() +
+                                static_cast<std::size_t>(part.left - source.Bounds().left) * 4U,
+                            static_cast<std::size_t>(part.Width()) * 4U);
+        };
+        copy(*this->selectionPreview, overlap);
+        const std::array<RectI, 4> remainder{{{region.left, region.top, region.right, overlap.top},
+                                              {region.left, overlap.bottom, region.right, region.bottom},
+                                              {region.left, overlap.top, overlap.left, overlap.bottom},
+                                              {overlap.right, overlap.top, region.right, overlap.bottom}}};
+        for (const RectI part : remainder)
+        {
+            if (part.IsEmpty())
+                continue;
+            SdrSelectionFrame converted;
+            if (!this->converter.Render(*this->desktop, part, converted, error))
+                return false;
+            copy(converted, part);
+        }
+        pixels = SdrSelectionFrame(region, std::move(bytes));
+        return pixels.IsValid();
+    }
 
     // 计算固定网格中的 tile 边界，最后一个 tile 只保留桌面范围。
     // 入参：key 为块档位与 tile 坐标。
@@ -144,7 +207,7 @@ struct AnnotationMosaicSource::Impl
     {
         const RectI region = this->TileBounds(key);
         SdrSelectionFrame pixels;
-        if (!this->converter.Render(*this->desktop, region, pixels, error))
+        if (!this->ReadPixels(region, pixels, error))
             return false;
         auto next = std::make_shared<ColorTile>();
         next->key = key;
@@ -280,15 +343,65 @@ AnnotationMosaicSource::AnnotationMosaicSource(const FrozenDesktopFrame& desktop
     this->impl_->desktop = &desktop;
     this->impl_->bounds = desktop.Bounds();
     for (const CapturedOutputPlane& plane : desktop.Outputs())
-        this->impl_->storage.push_back({plane.Pixels().data(), plane.Pixels().size(), plane.Bounds(), plane.Format(),
-                                        plane.PixelColorSpace(), plane.ColorMetadata().displayColorSpace,
-                                        plane.ColorMetadata().systemConvertedToSdr,
-                                        plane.ColorMetadata().sdrWhiteLevelNits});
+        this->impl_->storage.push_back(
+            {plane.Pixels().data(), plane.Pixels().size(), plane.Bounds(), plane.Format(), plane.PixelColorSpace(),
+             plane.ColorMetadata().displayColorSpace, plane.ColorMetadata().systemConvertedToSdr,
+             plane.ColorMetadata().sdrWhiteLevelNits, plane.ColorMetadata().hasSdrWhiteLevel});
 }
 // 释放全部会话自有缓存与转换资源。
 // 入参：无。
 // 返回：无。
 AnnotationMosaicSource::~AnnotationMosaicSource() = default;
+
+// 同步马赛克采样的亮度，并原子失效全部依赖旧颜色的缓存。
+// 入参：percent 为 25 至 200 的亮度百分比；只能在来源所属线程调用。
+// 返回：设置成功时 true；非法范围或线程错误时 false，不改变已有缓存。
+bool AnnotationMosaicSource::SetBrightnessPercent(unsigned int percent) noexcept
+{
+    if (GetCurrentThreadId() != this->impl_->thread || !this->impl_->converter.SetBrightnessPercent(percent))
+        return false;
+    if (this->impl_->brightnessPercent == percent)
+        return true;
+    this->impl_->brightnessPercent = percent;
+    this->impl_->selectionPreview.reset();
+    this->impl_->ClearColors();
+    return true;
+}
+
+// 策略变动同步失效全部颜色缓存。
+// 入参：options 为策略。返回：成功为 true，失败保持原状态。
+bool AnnotationMosaicSource::SetToneMappingOptions(HdrToneMappingOptions options) noexcept
+{
+    if (GetCurrentThreadId() != this->impl_->thread || !this->impl_->converter.SetToneMappingOptions(options))
+        return false;
+    if (this->impl_->toneMappingOptions.highlightCeilingNits == options.highlightCeilingNits)
+        return true;
+    this->impl_->toneMappingOptions = options;
+    this->impl_->selectionPreview.reset();
+    this->impl_->ClearColors();
+    return true;
+}
+
+// 接收同参数不可变底图的共享所有权，覆盖之外仍从唯一冻结来源补齐。
+// 入参：frame 为后台结果或nullptr。返回：校验通过时true，否则保持旧底图及缓存。
+bool AnnotationMosaicSource::SetSelectionPreview(std::shared_ptr<const SdrSelectionFrame> frame) noexcept
+{
+    if (GetCurrentThreadId() != this->impl_->thread)
+        return false;
+    if (frame)
+    {
+        const RectI part = frame->Bounds();
+        const RectI bounds = this->impl_->bounds;
+        if (!frame->IsValid() || part.left < bounds.left || part.top < bounds.top || part.right > bounds.right ||
+            part.bottom > bounds.bottom)
+            return false;
+    }
+    if (this->impl_->selectionPreview == frame)
+        return true;
+    this->impl_->selectionPreview = std::move(frame);
+    this->impl_->ClearColors();
+    return true;
+}
 
 // 在目标结束前释放其位图缓存，避免保留已关闭窗口或离屏整张图像的 COM 目标。
 // 入参：target 为即将释放的目标。
@@ -323,7 +436,8 @@ bool AnnotationMosaicSource::IsFor(const FrozenDesktopFrame& desktop) const noex
             !SameRect(plane.Bounds(), saved.bounds) || plane.Format() != saved.format ||
             plane.PixelColorSpace() != saved.space || plane.ColorMetadata().displayColorSpace != saved.displaySpace ||
             plane.ColorMetadata().systemConvertedToSdr != saved.converted ||
-            plane.ColorMetadata().sdrWhiteLevelNits != saved.white)
+            plane.ColorMetadata().sdrWhiteLevelNits != saved.white ||
+            plane.ColorMetadata().hasSdrWhiteLevel != saved.hasWhite)
             return false;
     }
     return true;

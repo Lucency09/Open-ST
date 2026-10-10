@@ -234,6 +234,53 @@
             ]
           },
           {
+            "type": "row",
+            "id": "defaultHdrBrightnessRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "defaultHdrBrightnessLabel",
+                "textKey": "settings.capture.default_brightness",
+                "width": 160
+              },
+              {
+                "type": "integer",
+                "id": "defaultHdrBrightness",
+                "minimum": 25,
+                "maximum": 200,
+                "slider": true,
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "row",
+            "id": "defaultMaskOpacityRow",
+            "gap": 16,
+            "children": [
+              {
+                "type": "text",
+                "id": "defaultMaskOpacityLabel",
+                "textKey": "settings.capture.default_mask",
+                "width": 160
+              },
+              {
+                "type": "integer",
+                "id": "defaultMaskOpacity",
+                "minimum": 0,
+                "maximum": 90,
+                "slider": true,
+                "width": "fill"
+              }
+            ]
+          },
+          {
+            "type": "text",
+            "id": "captureDefaultsHelp",
+            "textKey": "settings.capture.defaults_help"
+          },
+          {
             "type": "text",
             "id": "storageHelp",
             "textKey": "settings.storage.help"

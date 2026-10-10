@@ -34,7 +34,9 @@ enum class CaptureToolbarCommand : std::uint32_t
     EraserTool,
     TextTool,
     MosaicTool,
-    Ocr
+    Ocr,
+    // 编号20为已删除的直接翻译命令，不能被新设置命令复用。
+    Settings = 21
 };
 enum class ToolbarIcon
 {
@@ -56,8 +58,24 @@ enum class ToolbarIcon
     EraserTool,
     TextTool,
     MosaicTool,
-    Ocr
+    Ocr,
+    // 保留已删除翻译图标的编号，避免旧描述被当作设置图标。
+    Settings = 20
 };
+
+// 校验公开命令，保留删除命令的空洞而不把排列索引当作身份。
+// 入参：command 为命令。返回：当前正式命令为 true。
+[[nodiscard]] constexpr bool IsCaptureToolbarCommand(CaptureToolbarCommand command) noexcept
+{
+    return (command >= CaptureToolbarCommand::Cancel && command <= CaptureToolbarCommand::Ocr) ||
+           command == CaptureToolbarCommand::Settings;
+}
+// 校验公开图标，拒绝已删除图标的保留编号。
+// 入参：icon 为图标。返回：当前正式图标为 true。
+[[nodiscard]] constexpr bool IsToolbarIcon(ToolbarIcon icon) noexcept
+{
+    return (icon >= ToolbarIcon::Cancel && icon <= ToolbarIcon::Ocr) || icon == ToolbarIcon::Settings;
+}
 
 struct ToolbarButtonSpec
 {

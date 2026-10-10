@@ -181,6 +181,9 @@ struct SettingsWindowCallbacks final
     // 入参：int64_t 为质量值，合法范围由宿主规则确定。
     // 返回：可用于 JPEG 编码时为 true。
     std::function<bool(std::int64_t)> validJpegQuality;
+    // 校验截图默认参数，合法范围由宿主图形领域提供。
+    // 入参：key 为截图设置键；value 为整数百分比。返回：领域允许时为 true。
+    std::function<bool(std::string_view, std::int64_t)> validCaptureVisualSetting;
     // 只在当前构建提供 OCR 时开放对应设置页及默认恢复范围。
     bool ocrAvailable{};
     // 查询领域提供的 OCR 模型档位，不在 Settings 重复维护合法值。
