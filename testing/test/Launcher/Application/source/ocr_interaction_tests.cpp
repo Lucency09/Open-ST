@@ -1,6 +1,6 @@
 // 使用真实结果窗口与会话编排、可控 OCR 边界验证输入归属和迟到结果，不识别或写真实剪贴板。
-#include "capture_text_session.h"
 #include "text_result_window.h"
+#include "text_session.h"
 #include <clipboard_writer.h>
 #include <gtest/gtest.h>
 #include <ocr_client.h>
@@ -159,7 +159,7 @@ class OcrInteractionTest : public testing::Test
   protected:
     OcrBoundaryState state_;
     HWND owner_{};
-    std::unique_ptr<open_st::CaptureTextSession> session_;
+    std::unique_ptr<open_st::TextSession> session_;
     open_st::SdrSelectionFrame frame_{{0, 0, 2, 2}, std::vector<std::uint8_t>(16, 255)};
 
     // 创建隐藏稳定宿主及真实协调器。
@@ -171,7 +171,9 @@ class OcrInteractionTest : public testing::Test
         this->owner_ = CreateWindowExW(0, L"STATIC", L"OCR integration owner", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                        GetModuleHandleW(nullptr), nullptr);
         ASSERT_NE(this->owner_, nullptr);
-        this->session_ = std::make_unique<open_st::CaptureTextSession>(this->owner_, nullptr);
+        EXPECT_EQ(this->state_.creates, 0);
+        this->session_ = std::make_unique<open_st::TextSession>(this->owner_, nullptr, open_st::CaptureTextPollTimer);
+        EXPECT_EQ(this->state_.creates, 0);
     }
     // 先停止边界并关闭会话，随后销毁稳定 HWND。
     // 入参：无。
@@ -237,9 +239,9 @@ class OcrInteractionTest : public testing::Test
     // 开始并立即隐藏真实结果窗口，避免让自动化窗口停留桌面。
     // 入参：无。
     // 返回：无；窗口不能创建时为测试失败。
-    void Begin()
+    void BeginOcr()
     {
-        ASSERT_NO_THROW(this->session_->Begin(this->frame_, "best", "eng"));
+        ASSERT_NO_THROW(this->session_->BeginOcr(this->frame_, "best", "eng"));
         ASSERT_NE(this->Window(), nullptr);
         ShowWindow(this->Window(), SW_HIDE);
     }
@@ -269,7 +271,7 @@ class OcrInteractionTest : public testing::Test
 // 返回：无；使用实际 Renderer 和 EN_CHANGE。
 TEST_F(OcrInteractionTest, completed_snapshot_is_consumed_once_and_copy_uses_edited_draft)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     EXPECT_FALSE(IsWindowEnabled(this->Edit()));
     EXPECT_EQ(this->state_.options.model, "best");
@@ -293,7 +295,7 @@ TEST_F(OcrInteractionTest, completed_snapshot_is_consumed_once_and_copy_uses_edi
 // 返回：无；剪贴板边界由替身接收。
 TEST_F(OcrInteractionTest, copy_failure_preserves_window_draft_and_undo)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     this->Succeed(L"original");
     this->Replace(L"changed");
@@ -311,7 +313,7 @@ TEST_F(OcrInteractionTest, copy_failure_preserves_window_draft_and_undo)
 // 返回：无；直到明确完成前，重新提交必须拒绝忙状态。
 TEST_F(OcrInteractionTest, close_keeps_client_alive_and_busy_reopen_does_not_accept_late_result)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     SendMessageW(this->Window(), WM_CLOSE, 0, 0);
     this->Pump();
@@ -319,7 +321,7 @@ TEST_F(OcrInteractionTest, close_keeps_client_alive_and_busy_reopen_does_not_acc
     EXPECT_GT(this->state_.cancellations, 0);
     EXPECT_EQ(this->state_.destroys, 0);
     EXPECT_TRUE(this->state_.snapshot.busy);
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     EXPECT_EQ(this->state_.creates, 1);
     EXPECT_NE(this->Control(L"STATIC", L"ocr.busy"), nullptr);
@@ -333,9 +335,9 @@ TEST_F(OcrInteractionTest, close_keeps_client_alive_and_busy_reopen_does_not_acc
 // 返回：无；迟到阶段不能恢复已经结束的窗口。
 TEST_F(OcrInteractionTest, end_capture_and_shutdown_wait_for_explicit_background_completion)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
-    this->session_->EndCapture();
+    this->session_->Close();
     this->Pump();
     EXPECT_EQ(this->Window(), nullptr);
     this->Succeed(L"obsolete");
@@ -352,7 +354,7 @@ TEST_F(OcrInteractionTest, end_capture_and_shutdown_wait_for_explicit_background
 // 返回：无；不发送真实桌面按键。
 TEST_F(OcrInteractionTest, multiline_enter_and_background_registered_hotkeys_keep_input_ownership)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     this->Succeed(L"text");
     SetFocus(this->Edit());
@@ -380,7 +382,7 @@ TEST_F(OcrInteractionTest, multiline_enter_and_background_registered_hotkeys_kee
 // 返回：无；不写真实剪贴板或取消识别任务。
 TEST_F(OcrInteractionTest, modal_pause_survives_completion_and_preserves_draft_undo)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     this->session_->Pause(true);
     EXPECT_FALSE(IsWindowEnabled(this->Window()));
@@ -405,7 +407,7 @@ TEST_F(OcrInteractionTest, modal_pause_survives_completion_and_preserves_draft_u
 // 返回：无；窗口关闭不释放仍归应用持有的客户端。
 TEST_F(OcrInteractionTest, closing_completed_result_stops_poll_timer_without_destroying_client)
 {
-    this->Begin();
+    this->BeginOcr();
     ASSERT_NE(this->Window(), nullptr);
     this->Succeed(L"finished");
     EXPECT_FALSE(this->session_->ShutdownComplete());
@@ -414,6 +416,6 @@ TEST_F(OcrInteractionTest, closing_completed_result_stops_poll_timer_without_des
     this->session_->Poll();
     EXPECT_EQ(this->Window(), nullptr);
     EXPECT_EQ(this->state_.destroys, 0);
-    EXPECT_EQ(KillTimer(this->owner_, open_st::TextPollTimer), FALSE);
+    EXPECT_EQ(KillTimer(this->owner_, open_st::CaptureTextPollTimer), FALSE);
 }
 } // namespace

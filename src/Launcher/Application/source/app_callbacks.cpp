@@ -1,19 +1,19 @@
 // 集中组装 App 注入子模块的回调，连接本地化、业务命令与跨线程截图门禁。
 
+#include "app_translation_state.h"
 #include "capture_storage_options.h"
 #include "capture_visual_session.h"
-#include "capture_text_session.h"
 #include "diagnostic_text.h"
-#include "app_translation_state.h"
-#include <app.h>
+#include "text_session.h"
 #include <algorithm>
-#include <shellapi.h>
+#include <app.h>
 #include <array>
-#include <stdexcept>
 #include <hotkeys.h>
 #include <pin_window_manager.h>
 #include <settings.h>
 #include <settings_window.h>
+#include <shellapi.h>
+#include <stdexcept>
 #include <ui_text.h>
 #include <vector>
 #include <windows_util.h>
@@ -438,6 +438,8 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
     {
         if (this->textSession_)
             this->textSession_->ConfigurationChanged();
+        if (this->translationWindowSession_)
+            this->translationWindowSession_->ConfigurationChanged();
     };
 #endif
 #ifdef OPEN_ST_HAS_OCR

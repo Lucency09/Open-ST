@@ -224,6 +224,10 @@ class WindowRenderer final
     // 入参：无。
     // 返回：文本查询及更新请求完成时返回空错误码；状态无效或回调异常返回结构化错误；保留原生控件、焦点和草稿。
     RendererResult RefreshTexts();
+    // 将焦点交给当前前台窗口内可交互的指定控件，不激活后台窗口或重写正文、选区。
+    // 入参：id 为当前页面或公共底部中具有原生 Tab 停靠资格的叶控件 ID。
+    // 返回：实际焦点到达目标后为空错误；错误线程、窗口缺失、未知或非交互节点、忙状态及焦点失败返回结构化错误。
+    RendererResult FocusControl(std::string_view id);
     // 设置单个控件的宿主可用状态。
     // 入参：id：目标控件 ID；enabled：true 允许交互，false 禁用。
     // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID

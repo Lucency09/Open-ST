@@ -1,4 +1,4 @@
-// 声明截图会话和OCR结果的生命周期协调，不向核心传入App或窗口对象。
+// 声明截图或手动文本会话的任务发布和结果窗口生命周期协调。
 #pragma once
 #include <functional>
 #include <memory>
@@ -12,20 +12,24 @@ namespace open_st
 class SdrSelectionFrame;
 class TranslationClient;
 inline constexpr UINT TextWakeMessage = WM_APP + 141;
-inline constexpr UINT_PTR TextPollTimer = 141;
-class CaptureTextSession final
+inline constexpr UINT_PTR CaptureTextPollTimer = 141;
+inline constexpr UINT_PTR StandaloneTextPollTimer = 143;
+class TextSession final
 {
   public:
     // 建立延迟加载的协调器。
-    // 入参：owner为消息窗口；icon为借用图标；read一次读取完整配置，失败为空；translator借用宿主唯一客户端。返回：未识别对象。
-    CaptureTextSession(HWND owner, HICON icon, std::function<std::optional<nlohmann::json>()> read = {},
-                       TranslationClient* translator = nullptr);
+    // 入参：owner为消息窗口；icon为借用图标；pollTimer为本实例独立轮询编号；read读取完整配置，失败为空；translator借用宿主唯一客户端。返回：未创建OCR的对象。
+    TextSession(HWND owner, HICON icon, UINT_PTR pollTimer, std::function<std::optional<nlohmann::json>()> read = {},
+                TranslationClient* translator = nullptr);
     // 回收会话；正常退出须先等后台结束。
     // 入参：无。返回：无。
-    ~CaptureTextSession();
+    ~TextSession();
     // 接收本次正式输出及固定设置。
     // 入参：frame为借用图像；model/language为OCR参数，不自动发起翻译。返回：无。
-    void Begin(const SdrSelectionFrame& frame, const std::string& model, const std::string& language);
+    void BeginOcr(const SdrSelectionFrame& frame, const std::string& model, const std::string& language);
+    // 首次建立可编辑空草稿，重复调用仅激活现有窗口。
+    // 入参：无。返回：无，不执行OCR或自动翻译；窗口创建失败抛异常。
+    void BeginText();
     // 提供结果窗口给宿主协调层级，不暴露窗口实现。
     // 入参：无。返回：存活结果窗口的借用句柄或空。
     HWND ResultWindowHandle() const noexcept;
@@ -37,7 +41,13 @@ class CaptureTextSession final
     void ConfigurationChanged() noexcept;
     // 关闭当前结果并取消请求，后台对象继续存活。
     // 入参：无。返回：无。
-    void EndCapture() noexcept;
+    void Close() noexcept;
+    // 转交截图期间的暂隐和恢复意图，不取消请求或激活窗口。
+    // 入参：suspended为暂隐标志。返回：无，仅恢复原先可见且仍存活的窗口。
+    void SetCaptureSuspended(bool suspended) noexcept;
+    // 刷新界面文本和安全状态描述，不修改正文或任何修订。
+    // 入参：无。返回：无，不提交或取消任务。
+    void RefreshTexts() noexcept;
     // 查询并分派新快照，补收丢失通知。
     // 入参：无。返回：无。
     void Poll() noexcept;
@@ -58,6 +68,9 @@ class CaptureTextSession final
     void Pause(bool paused) noexcept;
 
   private:
+    // 共用窗口和窄回调初始化，读取一次初始配置，不提交领域任务。
+    // 入参：manual为手动输入来源。返回：无；窗口创建失败抛异常。
+    void CreateResultWindow(bool manual);
     // 仅响应结果窗明确操作，固定当前草稿和配置；OCR未完成时拒绝，不排队。
     // 入参：无。返回：无；拒绝原因在现有窗口显示。
     void Translate() noexcept;

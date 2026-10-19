@@ -15,7 +15,7 @@
 
 namespace open_st
 {
-class CaptureTextSession;
+class TextSession;
 class TranslationClient;
 struct AppTranslationState;
 class FrozenDesktopFrame;
@@ -94,7 +94,23 @@ class App final
     // 入参：无。返回：无，失败保留截图会话。
     void ProcessSelectionText();
     std::unique_ptr<AppTranslationState> translation_;
-    std::unique_ptr<CaptureTextSession> textSession_;
+    std::unique_ptr<TextSession> textSession_;
+    std::unique_ptr<TextSession> translationWindowSession_;
+    // 建立或激活独立文本翻译窗口，保留已有草稿。
+    // 入参：无。返回：无；创建失败使用统一提示，截图期间拒绝重新显示。
+    void ShowTranslationWindow();
+    // 按需建立文字会话，复用同一配置适配和应用唯一翻译客户端。
+    // 入参：session为App持有的实例槽；pollTimer为本实例专用计时器标识。返回：借用会话引用，失败抛异常。
+    TextSession& EnsureTextSession(std::unique_ptr<TextSession>& session, UINT_PTR pollTimer);
+    // 为两个独立窗口补收任务状态，通知不携带窗口指针。
+    // 入参：无。返回：无；各实例只发布自己的请求结果。
+    void PollTextSessions() noexcept;
+    // 统一请求两个文字会话退出，界面线程继续处理消息。
+    // 入参：无。返回：无，不等待工作线程。
+    void ShutdownTextSessions() noexcept;
+    // 查询两个文字会话拥有的后台是否都已释放。
+    // 入参：无。返回：均不存在或释放完成为true，共享翻译另行查询。
+    bool TextSessionsShutdownComplete() const noexcept;
     // 取得应用唯一的延迟翻译客户端；文字结果窗只借用它。
     // 入参：无。返回：支持翻译时的客户端，构造异常由调用方处理。
     TranslationClient* EnsureTranslationClient();
@@ -114,6 +130,7 @@ class App final
     friend struct AppOverlayTestAccess;
     friend struct AppAnnotationTestAccess;
     friend struct AppAnnotationTextTestAccess;
+    friend struct AppTextTestAccess;
     struct PinOperation;
     // 集中组装贴图文本查询和异步业务命令回调。
     // 入参：无。

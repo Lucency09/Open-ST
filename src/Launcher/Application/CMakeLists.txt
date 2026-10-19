@@ -33,9 +33,9 @@ target_sources(open_st_application
         source/app.cpp
         source/about_window.cpp
         source/app_text.cpp
-        source/capture_text_session.cpp
+        source/text_session.cpp
         source/text_result_window.cpp
-        private/capture_text_session.h
+        private/text_session.h
         private/text_result_window.h
         private/about_window.h
         source/app_visual.cpp

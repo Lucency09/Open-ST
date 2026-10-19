@@ -43,7 +43,11 @@ set(application_targets
     open_st_annotation_properties_tests open_st_annotation_text_integration_tests
     open_st_about_update_integration_tests open_st_ocr_interaction_tests)
 if(OPEN_ST_ENABLE_TRANSLATION)
-    list(APPEND application_targets open_st_text_translation_interaction_tests)
+    list(APPEND application_targets open_st_text_translation_interaction_tests
+        open_st_standalone_text_translation_interaction_tests)
+endif()
+if(OPEN_ST_ENABLE_TRANSLATION AND OPEN_ST_ENABLE_OCR)
+    list(APPEND application_targets open_st_app_text_integration_tests)
 endif()
 open_st_register_test_module(application ${application_targets})
 open_st_register_test_module(capture_toolbar open_st_capture_toolbar_tests open_st_capture_toolbar_manual_tests)

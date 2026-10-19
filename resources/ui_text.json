@@ -6,6 +6,36 @@
     "ja-JP"
   ],
   "texts": {
+    "tray.translation": {
+      "zh-CN": "打开翻译窗口",
+      "en-US": "Open translation window",
+      "ja-JP": "翻訳ウィンドウを開く"
+    },
+    "translation.manual.title": {
+      "zh-CN": "文本翻译",
+      "en-US": "Text translation",
+      "ja-JP": "テキスト翻訳"
+    },
+    "translation.manual.source": {
+      "zh-CN": "原文",
+      "en-US": "Original text",
+      "ja-JP": "原文"
+    },
+    "translation.manual.help": {
+      "zh-CN": "在原文框中输入或粘贴文本，然后点击“翻译”。",
+      "en-US": "Type or paste text in the original text box, then click Translate.",
+      "ja-JP": "原文欄にテキストを入力または貼り付けて、「翻訳」をクリックしてください。"
+    },
+    "translation.manual.ready": {
+      "zh-CN": "请输入或粘贴需要翻译的文本。",
+      "en-US": "Type or paste the text you want to translate.",
+      "ja-JP": "翻訳するテキストを入力または貼り付けてください。"
+    },
+    "translation.open_failed": {
+      "zh-CN": "无法打开翻译窗口，请重试。",
+      "en-US": "Unable to open the translation window. Please try again.",
+      "ja-JP": "翻訳ウィンドウを開けません。もう一度お試しください。"
+    },
     "translation.models_present": {
       "zh-CN": "模型文件齐全；首次使用时验证并加载。",
       "en-US": "Model files are present; they will be verified and loaded on first use.",

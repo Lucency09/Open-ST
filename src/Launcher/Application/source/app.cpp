@@ -2,13 +2,12 @@
 
 #include "about_window.h"
 #include "annotation_interaction_controller.h"
+#include "app_translation_state.h"
 #include "capture_annotation_state.h"
 #include "capture_command_gate.h"
 #include "capture_completion.h"
 #include "capture_selection_input.h"
 #include "capture_storage_options.h"
-#include "capture_text_session.h"
-#include "app_translation_state.h"
 #include "capture_toolbar_monitor.h"
 #include "capture_visual_session.h"
 #include "diagnostic_text.h"
@@ -17,6 +16,7 @@
 #include "save_directory.h"
 #include "save_image_dialog.h"
 #include "simple_message_window.h"
+#include "text_session.h"
 #include "window_selection_snapshot.h"
 #include <annotation_mosaic_source.h>
 #include <app.h>
@@ -275,11 +275,9 @@ App::App(HINSTANCE instance)
 App::~App()
 {
     this->shuttingDown_ = true;
-    if (this->textSession_)
-    {
-        this->textSession_->Shutdown();
-        this->textSession_.reset();
-    }
+    this->ShutdownTextSessions();
+    this->textSession_.reset();
+    this->translationWindowSession_.reset();
     this->ShutdownTranslation();
     this->translation_.reset();
     this->StopLogMaintenance();
@@ -332,6 +330,8 @@ App::~App()
 // 入参：message 为非 WM_QUIT 消息。返回：处理完成为真。
 bool App::ProcessApplicationMessage(MSG& message)
 {
+    if (this->translationWindowSession_ && this->translationWindowSession_->Process(message))
+        return true;
     if (this->textSession_)
     {
         if (this->textSession_->Process(message))
@@ -722,8 +722,7 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         this->shuttingDown_ = true;
         if (this->captureVisual_ && this->captureVisual_->HasDeferredOutput())
             this->completionBusy_ = false;
-        if (this->textSession_)
-            this->textSession_->Shutdown();
+        this->ShutdownTextSessions();
         this->ShutdownTranslation();
         this->StopLogMaintenance();
         this->pendingPinId_ = 0;
@@ -734,10 +733,10 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         return 0;
     }
     if (message == TextWakeMessage ||
-        (message == WM_TIMER && (wParam == TextPollTimer || wParam == TranslationPollTimer)))
+        (message == WM_TIMER &&
+         (wParam == CaptureTextPollTimer || wParam == StandaloneTextPollTimer || wParam == TranslationPollTimer)))
     {
-        if (this->textSession_)
-            this->textSession_->Poll();
+        this->PollTextSessions();
         if (this->TranslationShutdownComplete())
             KillTimer(this->messageWindow_, TranslationPollTimer);
         if (this->shuttingDown_)
@@ -811,6 +810,10 @@ LRESULT App::HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         // 用户选择托盘菜单中的“截图”。
         case ID_TRAY_CAPTURE:
             this->StartCapture();
+            return 0;
+        // 用户选择独立文本入口，已有草稿只激活、不替换。
+        case ID_TRAY_TRANSLATION:
+            this->ShowTranslationWindow();
             return 0;
         // 用户选择托盘菜单中的“设置”。
         case ID_TRAY_SETTINGS:
@@ -919,6 +922,10 @@ void App::RemoveTrayIcon() noexcept
 // 返回：无返回值；更新已存在的界面对象，不创建新的业务窗口。
 void App::RefreshLocalizedUi()
 {
+    if (this->textSession_)
+        this->textSession_->RefreshTexts();
+    if (this->translationWindowSession_)
+        this->translationWindowSession_->RefreshTexts();
     if (this->pinManager_)
         this->pinManager_->RefreshText();
     if (this->captureToolbar_ != nullptr)
@@ -986,6 +993,10 @@ void App::ShowTrayMenu()
     const std::wstring exitText = GetUiText("tray.exit");
     const std::wstring cleanupText = GetUiText("tray.cleanup");
     (void)AppendMenuW(menu, MF_STRING, ID_TRAY_CAPTURE, captureText.c_str());
+#ifdef OPEN_ST_HAS_TRANSLATION
+    const std::wstring translationText = GetUiText("tray.translation");
+    (void)AppendMenuW(menu, MF_STRING, ID_TRAY_TRANSLATION, translationText.c_str());
+#endif
     if (this->pinManager_ && this->pinManager_->Count() != 0)
     {
         const std::wstring closePinsText = GetUiText("tray.pin_close_all");
@@ -1097,6 +1108,8 @@ void App::UpdateCaptureGate() noexcept
                         this->settingsBusy_ || this->hotkeyRecording_;
     if (this->textSession_)
         this->textSession_->Pause(paused);
+    if (this->translationWindowSession_)
+        this->translationWindowSession_->Pause(paused);
     this->hotkeyBoundary_ = GetTickCount();
     const std::uint64_t next = (this->captureGate_.load(std::memory_order_relaxed) & ~std::uint64_t{1}) + 2;
     this->captureGate_.store(next | static_cast<std::uint64_t>(paused), std::memory_order_release);
@@ -1115,9 +1128,8 @@ void App::UpdateCaptureGate() noexcept
     this->InvalidateToolbarCommands();
     if (this->shuttingDown_ && !this->overlayRendering_ && !this->annotationPreparing_ && !this->CompletionBusy() &&
         !this->dialogActive_ && !this->settingsBusy_ && !this->welcoming_ &&
-        (!this->pinManager_ || !this->pinManager_->IsBusy()) &&
-        (!this->textSession_ || this->textSession_->ShutdownComplete()) && this->TranslationShutdownComplete() &&
-        (!this->captureVisual_ || !this->captureVisual_->HasWork()))
+        (!this->pinManager_ || !this->pinManager_->IsBusy()) && this->TextSessionsShutdownComplete() &&
+        this->TranslationShutdownComplete() && (!this->captureVisual_ || !this->captureVisual_->HasWork()))
         PostQuitMessage(0);
 }
 
@@ -1404,7 +1416,8 @@ void App::StartCapture()
 try
 {
     if (this->CompletionBusy() || this->dialogActive_ || this->welcoming_ || this->shuttingDown_ ||
-        this->settingsBusy_ || this->hotkeyRecording_ || this->overlayRendering_ || this->annotationPreparing_)
+        this->settingsBusy_ || this->hotkeyRecording_ || this->overlayPreparing_ || this->overlayRendering_ ||
+        this->annotationPreparing_)
     {
         return;
     }
@@ -1433,6 +1446,10 @@ try
                 this->app.CloseOverlay();
         }
     } captureGuard{*this};
+    // 捕获和隐藏窗口也可能产生同步消息，整个准备期都拒绝重入的新窗口入口。
+    this->overlayPreparing_ = true;
+    if (this->translationWindowSession_)
+        this->translationWindowSession_->SetCaptureSuspended(true);
     std::wstring pinError;
     if (this->pinManager_ && !this->pinManager_->BeginCapture(pinError))
     {
@@ -2027,7 +2044,7 @@ void App::CloseOverlay() noexcept
     if (this->captureVisual_ && this->captureVisual_->HasDeferredOutput())
         this->completionBusy_ = false;
     if (this->textSession_)
-        this->textSession_->EndCapture();
+        this->textSession_->Close();
     this->CancelAnnotationPropertyRequest();
     if (!this->annotationInteraction_->CanClose() || this->annotationPreparing_ || this->overlayRendering_)
     {
@@ -2082,6 +2099,8 @@ void App::CloseOverlay() noexcept
     this->overlayInvalidated_ = false;
     if (this->pinManager_ && !this->shuttingDown_)
         this->pinManager_->EndCapture();
+    if (this->translationWindowSession_ && !this->shuttingDown_)
+        this->translationWindowSession_->SetCaptureSuspended(false);
 }
 
 // 把当前稳定截图选区复制到系统剪贴板。
@@ -2380,11 +2399,10 @@ void App::ShowCleanup()
                 (void)renderer.SetEnabled("deleteLogs", false);
                 (void)renderer.RefreshTexts();
             }
-            if ((this->textSession_ && !this->textSession_->ShutdownComplete()) || !this->TranslationShutdownComplete())
+            this->ShutdownTextSessions();
+            this->ShutdownTranslation();
+            if (!this->TextSessionsShutdownComplete() || !this->TranslationShutdownComplete())
             {
-                if (this->textSession_)
-                    this->textSession_->Shutdown();
-                this->ShutdownTranslation();
                 waitingForText = true;
                 statusKey = "ocr.stopping";
                 (void)renderer.SetStatus(GetUiText(statusKey));
@@ -2440,8 +2458,7 @@ void App::ShowCleanup()
                                    [&](MSG& message)
                                    {
                                        (void)message;
-                                       if (waitingForText && !exitRequested &&
-                                           (!this->textSession_ || this->textSession_->ShutdownComplete()) &&
+                                       if (waitingForText && !exitRequested && this->TextSessionsShutdownComplete() &&
                                            this->TranslationShutdownComplete())
                                        {
                                            waitingForText = false;

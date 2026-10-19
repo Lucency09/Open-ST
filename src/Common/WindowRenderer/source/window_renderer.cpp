@@ -2526,6 +2526,34 @@ RendererResult WindowRenderer::RefreshTexts()
     }
 }
 
+// 在当前前台窗口内按控件 ID 聚焦，并复用滚动揭示机制保持目标可见。
+// 入参：id 为具有原生 Tab 停靠资格的叶控件 ID，不切换页面或激活后台窗口。
+// 返回：GetFocus 核验成功时为空错误；无效节点、隐藏、禁用、窗口忙或实际聚焦失败时返回结构化错误。
+RendererResult WindowRenderer::FocusControl(std::string_view id)
+{
+    const RendererResult checked = this->impl_->Check();
+    if (!checked)
+        return checked;
+    if (this->impl_->window == nullptr)
+        return {"window_missing", {}, std::string(id)};
+    const auto found = this->impl_->controls.find(id);
+    if (found == this->impl_->controls.end())
+        return {this->impl_->nodes.contains(id) ? "wrong_control_type" : "unknown_id", {}, std::string(id)};
+    const Impl::Control& control = found->second;
+    if (control.window == nullptr || (GetWindowLongPtrW(control.window, GWL_STYLE) & WS_TABSTOP) == 0)
+        return {"wrong_control_type", {}, std::string(id)};
+    if (this->impl_->busy)
+        return {"busy", {}, std::string(id)};
+    if (GetForegroundWindow() != this->impl_->window || !IsWindowVisible(this->impl_->window) ||
+        !this->impl_->Interactive(control) || !IsWindowVisible(control.window))
+        return {"not_interactive", {}, std::string(id)};
+    SetFocus(control.window);
+    if (GetFocus() != control.window)
+        return {"focus_failed", {}, std::string(id)};
+    this->impl_->RevealFocus();
+    return {};
+}
+
 // 设置单个控件的宿主可用状态。
 // 入参：id：目标控件 ID；enabled：true 允许交互，false 禁用。
 // 返回：成功时返回空错误码的 RendererResult；失败返回含错误码、路径或控件 ID

@@ -1,14 +1,30 @@
 // 声明文字结果的唯一原文草稿、显示译文及公共窗口绑定。
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 #include <windows.h>
 namespace open_st
 {
 class WindowRenderer;
+enum class TextInputMode
+{
+    Ocr,
+    Manual
+};
+// 状态仅保存可重新本地化的安全参数，不持有任务快照、正文或凭据。
+struct TextResultStatus final
+{
+    std::string key;
+    std::wstring name;
+    std::size_t index{}, total{}, unattempted{};
+    std::vector<std::pair<std::wstring, std::string>> attempts;
+};
 struct TextResultCallbacks
 {
     std::function<void()> close, changed, translate, cancelTranslation;
@@ -21,23 +37,28 @@ class TextResultWindow final
     // 释放公共窗口。入参：无。返回：无。
     ~TextResultWindow();
     // 创建非模态表单并固定初始语言，不读取配置文件。
-    // 入参：owner/icon为宿主资源；callbacks为窄通知；source/target为语言。返回：成功为true。
-    bool Show(HWND owner, HICON icon, TextResultCallbacks callbacks, std::string source, std::string target);
+    // 入参：owner/icon为宿主资源；callbacks为窄通知；source/target为语言；mode决定初始输入状态。返回：成功为true。
+    bool Show(HWND owner, HICON icon, TextResultCallbacks callbacks, std::string source, std::string target,
+              TextInputMode mode = TextInputMode::Ocr);
     // 配置恢复后填充尚未选择的语言，保留用户已作出的临时选择。
     // 入参：source/target为成功读取的配置语言。返回：无。
     void InitializeMissingLanguages(const std::string& source, const std::string& target);
     // 更新通用状态。入参：key为文本键。返回：无。
     void Status(std::string_view key);
-    // 更新带参数或逐项诊断的安全状态。入参：text不含原文和凭据。返回：无。
-    void StatusText(std::wstring text);
+    // 更新带参数或逐项诊断的安全状态。入参：status仅含资源键及安全参数。返回：无。
+    void Status(TextResultStatus status);
     // 首次填充本地识别原文，保持单一草稿。入参：text为正文。返回：无。
     void SetSource(std::wstring_view text);
-    // 接受已经过会话核验的译文。入参：text为UTF8，origin为安全来源名。返回：无。
-    void SetTranslation(std::string text, std::wstring origin);
+    // 接受已经过会话核验的译文。入参：text为UTF8，profileName为接口名，network为在线事实。返回：无。
+    void SetTranslation(std::string text, std::string profileName, bool network);
     // 配置应用后使现有来源戳过期。入参：无。返回：无。
     void ConfigurationChanged();
-    // 根据实际任务快照刷新按钮，不存忙状态镜像。入参：busy为当前是否忙。返回：无。
-    void TranslationActivity(bool busy);
+    // 根据权威任务快照刷新按钮，不存忙状态镜像。入参：busy为全局忙，canCancel为本窗拥有可取消任务。返回：无。
+    void TranslationActivity(bool busy, bool canCancel);
+    // 刷新界面文字及安全状态，不重填正文或推进修订。入参：无。返回：无。
+    void RefreshTexts();
+    // 暂隐并记住本次恢复资格，关闭后不再恢复。入参：suspended为暂隐状态。返回：无，不激活窗口。
+    void SetCaptureSuspended(bool suspended) noexcept;
     // 显示配置链是否含明文HTTP。入参：insecure。返回：无。
     void SetNetworkWarning(bool insecure);
     // 读取唯一草稿。入参：无。返回：只读引用。
@@ -48,7 +69,7 @@ class TextResultWindow final
     const std::string& TargetLanguage() const noexcept;
     // 查询包含文字、语言、配置变化的单调修订。入参：无。返回：修订号。
     std::uint64_t Revision() const noexcept;
-    // 查询是否已有可编辑OCR结果。入参：无。返回：就绪为true。
+    // 查询手动草稿或OCR原文是否已可编辑。入参：无。返回：就绪为true。
     bool SourceReady() const noexcept;
     // 请求延迟关闭。入参：无。返回：无。
     void Close() noexcept;
@@ -71,11 +92,15 @@ class TextResultWindow final
     void Changed();
     // 复制指定UTF8草稿。入参：text。返回：无，失败保留内容。
     void Copy(const std::string& text);
+    // 用当前资源解析状态键和安全参数。入参：无。返回：无，不修改编辑控件。
+    void RefreshStatus();
     std::unique_ptr<WindowRenderer> renderer_;
     TextResultCallbacks callbacks_;
     std::string source_, target_, draft_, translated_;
-    std::wstring origin_;
+    std::string originProfile_;
+    TextResultStatus status_;
     std::uint64_t revision_{}, translatedRevision_{};
-    bool sourceReady_{}, insecure_{}, closing_{};
+    bool sourceReady_{}, insecure_{}, closing_{}, originNetwork_{}, paused_{}, captureSuspended_{};
+    HWND suspendedWindow_{};
 };
 } // namespace open_st

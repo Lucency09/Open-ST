@@ -1,32 +1,24 @@
 // 使用真实结果窗口与会话编排、可控 OCR 边界验证输入归属和迟到结果，不识别或写真实剪贴板。
-#include "capture_text_session.h"
 #include "../Translation/source/translation_test_defaults.h"
 #include "text_result_window.h"
+#include "text_session.h"
 #include <clipboard_writer.h>
 #include <gtest/gtest.h>
-#include <ocr_client.h>
 #include <sdr_selection_frame.h>
+#include <text_task_fake.h>
 #include <translation_client.h>
 #include <ui_text.h>
 #include <vector>
 
+#ifdef OPEN_ST_TEST_TRANSLATION_ONLY
+#define TextTranslationInteractionTest StandaloneTextTranslationInteractionTest
+#endif
+
 namespace
 {
-struct OcrBoundaryState
+struct OcrBoundaryState : open_st::test_text::TextTaskState
 {
-    open_st::OcrSnapshot snapshot;
-    open_st::OcrOptions options;
-    int creates{};
-    int destroys{};
-    int submissions{};
-    int cancellations{};
     int copies{};
-    open_st::TranslationSnapshot translation;
-    open_st::TranslationRequest request;
-    unsigned translationSubmissions{}, translationCancellations{};
-    bool translationStopped{};
-    bool stopping{};
-    bool stopped{};
     bool copySucceeds{true};
     std::wstring copied;
 };
@@ -35,151 +27,6 @@ OcrBoundaryState* boundary{};
 
 namespace open_st
 {
-// 独立链接替身只拥有空实现，真实后台线程由 OCR 模块专项覆盖。
-struct OcrClient::Impl
-{
-};
-// 建立可控任务边界，不加载模型或启动后台线程。
-// 入参：root 和 notify 为真实协调器传入的资源路径及通知。
-// 返回：未提交状态。
-OcrClient::OcrClient(std::filesystem::path root, std::function<void(std::uint64_t)> notify)
-    : impl_(std::make_unique<Impl>())
-{
-    (void)root;
-    (void)notify;
-    ++boundary->creates;
-}
-// 记录客户端释放，检验关闭窗口不会提前析构工作所有者。
-// 入参：无。
-// 返回：无。
-OcrClient::~OcrClient()
-{
-    ++boundary->destroys;
-}
-// 模拟单任务准入，故意保持任务运行至测试明确发布结果。
-// 入参：image/options 为真实会话参数；requestId/error 为输出。
-// 返回：忙或停止时拒绝，其他情况接受。
-bool OcrClient::Submit(OcrImageView image, const OcrOptions& options, std::uint64_t& requestId,
-                       OcrError& error) noexcept
-{
-    requestId = 0;
-    error = OcrError::None;
-    ++boundary->submissions;
-    if (boundary->snapshot.busy || boundary->stopping)
-    {
-        error = boundary->stopping ? OcrError::Unavailable : OcrError::Busy;
-        return false;
-    }
-    if (image.width != 2 || image.height != 2 || image.stride != 8 || image.pixels.size() != 16)
-    {
-        error = OcrError::InvalidInput;
-        return false;
-    }
-    boundary->options = options;
-    ++boundary->snapshot.requestId;
-    ++boundary->snapshot.revision;
-    boundary->snapshot.phase = OcrPhase::Preparing;
-    boundary->snapshot.busy = true;
-    boundary->snapshot.text.reset();
-    requestId = boundary->snapshot.requestId;
-    return true;
-}
-// 保持 busy，模拟取消不能立即中断的模型初始化。
-// 入参：无。
-// 返回：无，只撤销可发布正文。
-void OcrClient::Cancel() noexcept
-{
-    ++boundary->cancellations;
-    boundary->snapshot.phase = OcrPhase::Cancelled;
-    boundary->snapshot.text.reset();
-    ++boundary->snapshot.revision;
-}
-// 请求退出但不虚构后台已完成。
-// 入参：无。
-// 返回：无。
-void OcrClient::RequestShutdown() noexcept
-{
-    boundary->stopping = true;
-    this->Cancel();
-}
-// 返回测试明确控制的释放状态。
-// 入参：无。
-// 返回：后台释放完成时为 true。
-bool OcrClient::ShutdownComplete() const noexcept
-{
-    return boundary->stopped;
-}
-// 提供不可变正文及阶段快照，供真实会话执行代次检查。
-// 入参：无。
-// 返回：当前测试快照。
-OcrSnapshot OcrClient::Snapshot() const
-{
-    return boundary->snapshot;
-}
-struct TranslationClient::Impl
-{
-};
-// 不创建线程或网络，只观测真实窗口提交。
-// 入参：程序目录和通知。返回：可控替身。
-TranslationClient::TranslationClient(std::filesystem::path, std::function<void(std::uint64_t)>)
-    : impl_(std::make_unique<Impl>())
-{
-}
-// 释放空替身。入参：无。返回：无。
-TranslationClient::~TranslationClient() = default;
-// 真实唯一任务准入的替身，保存独立请求快照。
-// 入参：request 为原文和资格戳，id/error 为输出。返回：空闲时接受。
-bool TranslationClient::Submit(const TranslationRequest& request, std::uint64_t& id, TranslationError& error) noexcept
-{
-    ++boundary->translationSubmissions;
-    id = 0;
-    error = TranslationError::None;
-    if (boundary->translation.busy)
-    {
-        error = TranslationError::Busy;
-        return false;
-    }
-    try
-    {
-        boundary->request = request;
-        ++boundary->translation.requestId;
-        ++boundary->translation.revision;
-        boundary->translation.phase = TranslationPhase::Running;
-        boundary->translation.busy = true;
-        boundary->translation.result.reset();
-        id = boundary->translation.requestId;
-        return true;
-    }
-    catch (...)
-    {
-        error = TranslationError::OutOfMemory;
-        return false;
-    }
-}
-// 保持忙槽位，取消不代表底层已经收尾。
-// 入参：无。返回：无。
-void TranslationClient::Cancel() noexcept
-{
-    ++boundary->translationCancellations;
-    boundary->translation.result.reset();
-    boundary->translation.phase = TranslationPhase::Cancelled;
-    ++boundary->translation.revision;
-}
-// 提供权威任务快照。入参：无。返回：快照副本。
-TranslationSnapshot TranslationClient::Snapshot() const
-{
-    return boundary->translation;
-}
-// 退出只撤销资格。入参：无。返回：无。
-void TranslationClient::RequestShutdown() noexcept
-{
-    this->Cancel();
-}
-// 等测试显式通知真实收尾。入参：无。返回：释放状态。
-bool TranslationClient::ShutdownComplete() const noexcept
-{
-    return boundary->translationStopped;
-}
 // 把文本键直接用作稳定测试文案，不读取真实用户资源。
 // 入参：key 为文本键；arguments 未使用。
 // 返回：文本键的宽字符形式。
@@ -207,6 +54,7 @@ struct WindowSearch
 {
     HWND owner{};
     HWND found{};
+    HWND excluded{};
 };
 // 按本测试独有 owner 查找实际 Renderer，避免误操作其他桌面窗口。
 // 入参：window 为当前线程窗口；data 指向查找状态。
@@ -216,7 +64,8 @@ BOOL CALLBACK FindResult(HWND window, LPARAM data)
     auto& search = *reinterpret_cast<WindowSearch*>(data);
     wchar_t type[64]{};
     GetClassNameW(window, type, 64);
-    if (GetWindow(window, GW_OWNER) == search.owner && std::wstring_view(type) == L"OpenST.WindowRenderer")
+    if (window != search.excluded && GetWindow(window, GW_OWNER) == search.owner &&
+        std::wstring_view(type) == L"OpenST.WindowRenderer")
     {
         search.found = window;
         return FALSE;
@@ -229,11 +78,13 @@ class TextTranslationInteractionTest : public testing::Test
   protected:
     OcrBoundaryState state_;
     HWND owner_{};
+    HWND primaryWindow_{};
+    std::unique_ptr<open_st::TextSession> peer_;
     nlohmann::json settings_ = open_st::TestDefaultSettings();
     bool settingsReadable_{true};
     unsigned settingsReads_{};
     std::unique_ptr<open_st::TranslationClient> translator_;
-    std::unique_ptr<open_st::CaptureTextSession> session_;
+    std::unique_ptr<open_st::TextSession> session_;
     open_st::SdrSelectionFrame frame_{{0, 0, 2, 2}, std::vector<std::uint8_t>(16, 255)};
 
     // 创建隐藏稳定宿主及真实协调器。
@@ -242,13 +93,14 @@ class TextTranslationInteractionTest : public testing::Test
     void SetUp() override
     {
         boundary = &this->state_;
+        open_st::test_text::state = &this->state_;
         this->owner_ = CreateWindowExW(0, L"STATIC", L"OCR integration owner", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr,
                                        GetModuleHandleW(nullptr), nullptr);
         ASSERT_NE(this->owner_, nullptr);
         this->translator_ =
             std::make_unique<open_st::TranslationClient>(std::filesystem::path{}, std::function<void(std::uint64_t)>{});
-        this->session_ = std::make_unique<open_st::CaptureTextSession>(
-            this->owner_, nullptr,
+        this->session_ = std::make_unique<open_st::TextSession>(
+            this->owner_, nullptr, open_st::CaptureTextPollTimer,
             // 每次提供同一文件的独立设置快照，失败不回退默认网络配置。
             // 入参：无。返回：内存设置或读取失败。
             [this]() -> std::optional<nlohmann::json>
@@ -263,21 +115,29 @@ class TextTranslationInteractionTest : public testing::Test
     // 返回：无；不留下窗口、计时器或后台任务。
     void TearDown() override
     {
+#ifdef OPEN_ST_HAS_OCR
         this->state_.snapshot.busy = false;
+#endif
         this->state_.stopped = true;
         this->state_.translationStopped = true;
+        if (this->peer_)
+            this->peer_->Shutdown();
         this->session_->Shutdown();
         this->Pump();
+        this->peer_.reset();
         this->session_.reset();
         this->translator_.reset();
         DestroyWindow(this->owner_);
         boundary = nullptr;
+        open_st::test_text::state = nullptr;
     }
     // 查找本会话窗口，窗口仍以真实公共组件创建。
     // 入参：无。
     // 返回：借用句柄或空。
     HWND Window() const
     {
+        if (this->primaryWindow_)
+            return IsWindow(this->primaryWindow_) ? this->primaryWindow_ : nullptr;
         WindowSearch search{this->owner_};
         EnumThreadWindows(GetCurrentThreadId(), FindResult, reinterpret_cast<LPARAM>(&search));
         return search.found;
@@ -314,7 +174,8 @@ class TextTranslationInteractionTest : public testing::Test
         MSG message{};
         for (int index = 0; index < 256 && PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE); ++index)
         {
-            if (message.message != WM_QUIT && !this->session_->Process(message))
+            if (message.message != WM_QUIT && !this->session_->Process(message) &&
+                (!this->peer_ || !this->peer_->Process(message)))
             {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
@@ -326,9 +187,36 @@ class TextTranslationInteractionTest : public testing::Test
     // 返回：无；窗口不能创建时为测试失败。
     void Begin()
     {
-        ASSERT_NO_THROW(this->session_->Begin(this->frame_, "best", "eng"));
+        this->primaryWindow_ = nullptr;
+#ifdef OPEN_ST_HAS_OCR
+        ASSERT_NO_THROW(this->session_->BeginOcr(this->frame_, "best", "eng"));
+#else
+        ASSERT_NO_THROW(this->session_->BeginText());
+#endif
         ASSERT_NE(this->Window(), nullptr);
         ShowWindow(this->Window(), SW_HIDE);
+    }
+    // 手动入口只初始化草稿，不生成识别输入。入参：无。返回：无。
+    void BeginManual()
+    {
+        this->primaryWindow_ = nullptr;
+        ASSERT_NO_THROW(this->session_->BeginText());
+        ASSERT_NE(this->Window(), nullptr);
+        this->primaryWindow_ = this->Window();
+        ShowWindow(this->Window(), SW_HIDE);
+    }
+    // 第二实例借用同一客户端与宿主，使用独立 timer。入参：无。返回：第二窗口。
+    HWND BeginPeer()
+    {
+        this->primaryWindow_ = this->Window();
+        this->peer_ = std::make_unique<open_st::TextSession>(
+            this->owner_, nullptr, open_st::StandaloneTextPollTimer,
+            [this]() -> std::optional<nlohmann::json> { return this->settings_; }, this->translator_.get());
+        this->peer_->BeginText();
+        WindowSearch search{this->owner_};
+        search.excluded = this->primaryWindow_;
+        EnumThreadWindows(GetCurrentThreadId(), FindResult, reinterpret_cast<LPARAM>(&search));
+        return search.found;
     }
     // 通过真实结果窗按钮显式翻译；OCR 完成和窗口激活都不能暗中替代此动作。
     // 入参：无。返回：无，缺失或禁用按钮作为测试失败。
@@ -344,11 +232,15 @@ class TextTranslationInteractionTest : public testing::Test
     // 返回：无。
     void Succeed(std::wstring text)
     {
+#ifdef OPEN_ST_HAS_OCR
         this->state_.snapshot.phase = open_st::OcrPhase::Succeeded;
         this->state_.snapshot.busy = false;
         this->state_.snapshot.text = std::make_shared<const std::wstring>(std::move(text));
         ++this->state_.snapshot.revision;
         this->session_->Poll();
+#else
+        this->Replace(text.c_str());
+#endif
     }
     // 找到只读译文控件，不依赖生成编号。
     // 入参：无。返回：译文 HWND。
@@ -417,6 +309,7 @@ class TextTranslationInteractionTest : public testing::Test
 
 // OCR 完成、重复激活及状态补收均零提交，只有结果窗口显式点击才翻译一次。
 // 入参：无。返回：断言结果。
+#ifdef OPEN_ST_HAS_OCR
 TEST_F(TextTranslationInteractionTest, ocr_completion_and_activation_require_explicit_translation_click)
 {
     this->Begin();
@@ -441,6 +334,7 @@ TEST_F(TextTranslationInteractionTest, ocr_completion_and_activation_require_exp
     SendMessageW(this->Control(L"BUTTON", L"translation.copy_result"), BM_CLICK, 0, 0);
     EXPECT_EQ(this->state_.copied, L"translated");
 }
+#endif
 // 编辑立即撤销翻译资格，迟到结果不得覆盖正文或重新发送。
 // 入参：无。返回：断言结果。
 TEST_F(TextTranslationInteractionTest, editing_source_rejects_late_translation)
@@ -472,7 +366,7 @@ TEST_F(TextTranslationInteractionTest, editing_after_idle_empty_source_reenables
     const HWND translate = this->Control(L"BUTTON", L"translation.action");
     ASSERT_NE(translate, nullptr);
     EXPECT_FALSE(IsWindowEnabled(translate));
-    EXPECT_EQ(KillTimer(this->owner_, open_st::TextPollTimer), FALSE);
+    EXPECT_EQ(KillTimer(this->owner_, open_st::CaptureTextPollTimer), FALSE);
     this->Replace(L"new source");
     EXPECT_TRUE(IsWindowEnabled(translate));
     EXPECT_EQ(this->state_.translationSubmissions, 1U);
@@ -506,7 +400,11 @@ TEST_F(TextTranslationInteractionTest, shutdown_waits_for_owned_ocr_and_leaves_s
     this->session_->Shutdown();
     this->Pump();
     EXPECT_EQ(this->Window(), nullptr);
+#ifdef OPEN_ST_HAS_OCR
     EXPECT_FALSE(this->session_->ShutdownComplete());
+#else
+    EXPECT_TRUE(this->session_->ShutdownComplete());
+#endif
     this->state_.stopped = true;
     EXPECT_TRUE(this->session_->ShutdownComplete());
     EXPECT_FALSE(this->translator_->ShutdownComplete());
@@ -637,6 +535,106 @@ TEST_F(TextTranslationInteractionTest, ending_capture_does_not_cancel_foreign_tr
     this->ClickTranslate();
     ++this->state_.translation.requestId;
     const unsigned before = this->state_.translationCancellations;
-    this->session_->EndCapture();
+    this->session_->Close();
     EXPECT_EQ(this->state_.translationCancellations, before);
+}
+
+// 手动草稿即刻可编辑；重复打开保留正文、撤销与零后台提交。
+// 入参：无。返回：断言结果。
+TEST_F(TextTranslationInteractionTest, manual_input_is_ready_without_ocr_and_reactivation_preserves_undo)
+{
+    this->BeginManual();
+    EXPECT_TRUE(IsWindowEnabled(this->Edit()));
+    EXPECT_EQ(this->Value(), L"");
+    EXPECT_FALSE(IsWindowEnabled(this->Control(L"BUTTON", L"translation.action")));
+    this->Replace(L"first");
+    this->Replace(L"draft");
+    const HWND window = this->Window();
+    this->session_->BeginText();
+    EXPECT_EQ(this->Window(), window);
+    EXPECT_EQ(this->Value(), L"draft");
+    EXPECT_EQ(this->state_.creates, 0);
+    EXPECT_EQ(this->state_.submissions, 0);
+    EXPECT_EQ(this->state_.translationSubmissions, 0U);
+    SendMessageW(this->Edit(), WM_UNDO, 0, 0);
+    EXPECT_EQ(this->Value(), L"first");
+}
+
+// 刷新界面文字不改变正在运行的请求资格、草稿或撤销。
+// 入参：无。返回：断言结果。
+TEST_F(TextTranslationInteractionTest, localized_text_refresh_preserves_running_request_and_draft)
+{
+    this->BeginManual();
+    this->Replace(L"original");
+    this->ClickTranslate();
+    const std::uint64_t request = this->state_.translation.requestId;
+    const unsigned cancellations = this->state_.translationCancellations;
+    this->session_->RefreshTexts();
+    this->session_->RefreshTexts();
+    EXPECT_EQ(this->state_.translation.requestId, request);
+    EXPECT_EQ(this->state_.translationCancellations, cancellations);
+    EXPECT_EQ(this->Value(), L"original");
+    this->TranslateSucceeded("translated");
+    EXPECT_EQ(this->TranslationValue(), L"translated");
+    this->Replace(L"edited");
+    this->session_->RefreshTexts();
+    SendMessageW(this->Edit(), WM_UNDO, 0, 0);
+    EXPECT_EQ(this->Value(), L"original");
+}
+
+// 两实例共用唯一任务槽；另一窗口编辑、取消和关闭不能取消或接收本窗任务。
+// 入参：无。返回：断言结果。
+TEST_F(TextTranslationInteractionTest, second_instance_cannot_cancel_or_receive_foreign_request)
+{
+    this->BeginManual();
+    this->Replace(L"owner draft");
+    const HWND peer = this->BeginPeer();
+    ASSERT_NE(peer, nullptr);
+    ASSERT_NE(peer, this->Window());
+    const HWND viewport = FindWindowExW(peer, nullptr, L"OpenST.WindowRendererPage", nullptr);
+    const HWND edit = FindWindowExW(viewport, nullptr, L"EDIT", nullptr);
+    ASSERT_NE(edit, nullptr);
+    SendMessageW(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"peer draft"));
+    this->ClickTranslate();
+    this->peer_->Poll();
+    const HWND action = FindWindowExW(peer, nullptr, L"BUTTON", L"translation.action");
+    const HWND cancel = FindWindowExW(peer, nullptr, L"BUTTON", L"translation.cancel");
+    ASSERT_NE(action, nullptr);
+    EXPECT_FALSE(IsWindowEnabled(action));
+    if (cancel)
+        EXPECT_FALSE(IsWindowEnabled(cancel));
+    const unsigned cancellations = this->state_.translationCancellations;
+    SendMessageW(edit, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L" changed"));
+    if (cancel)
+        SendMessageW(cancel, BM_CLICK, 0, 0);
+    this->peer_->Close();
+    EXPECT_EQ(this->state_.translationCancellations, cancellations);
+    this->TranslateSucceeded("owner result");
+    EXPECT_EQ(this->Value(), L"owner draft");
+    EXPECT_EQ(this->TranslationValue(), L"owner result");
+    this->peer_->Poll();
+    EXPECT_EQ(this->state_.translationSubmissions, 1U);
+}
+
+// 一实例关闭只停自己的 timer；通知丢失后显式补收仍发布到原窗口。
+// 入参：无。返回：断言结果。
+TEST_F(TextTranslationInteractionTest, timers_are_independent_and_poll_recovers_missing_notification)
+{
+    this->BeginManual();
+    this->Replace(L"source");
+    const HWND peer = this->BeginPeer();
+    ASSERT_NE(peer, nullptr);
+    this->ClickTranslate();
+    this->peer_->Poll();
+    // 明确布置第二实例自己的补收计时器，验证析构只移除本实例编号。
+    ASSERT_NE(SetTimer(this->owner_, open_st::StandaloneTextPollTimer, 100, nullptr), 0U);
+    ASSERT_TRUE(KillTimer(this->owner_, open_st::CaptureTextPollTimer));
+    ASSERT_NE(SetTimer(this->owner_, open_st::CaptureTextPollTimer, 100, nullptr), 0U);
+    this->peer_.reset();
+    this->Pump();
+    EXPECT_EQ(KillTimer(this->owner_, open_st::StandaloneTextPollTimer), FALSE);
+    EXPECT_TRUE(KillTimer(this->owner_, open_st::CaptureTextPollTimer));
+    this->TranslateSucceeded("recovered");
+    EXPECT_EQ(this->TranslationValue(), L"recovered");
+    EXPECT_EQ(this->state_.translationSubmissions, 1U);
 }

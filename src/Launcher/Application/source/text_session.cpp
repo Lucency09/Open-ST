@@ -1,5 +1,5 @@
 // 协调截图、OCR及翻译的发布资格；原文草稿归结果窗口，后台状态归领域模块。
-#include "capture_text_session.h"
+#include "text_session.h"
 #include "diagnostic_text.h"
 #include "text_result_window.h"
 #include <log.h>
@@ -15,10 +15,11 @@
 #endif
 namespace open_st
 {
-struct CaptureTextSession::Impl
+struct TextSession::Impl
 {
     HWND owner{};
     HICON icon{};
+    UINT_PTR pollTimer{};
     std::unique_ptr<TextResultWindow> window;
     std::function<std::optional<nlohmann::json>()> read;
     std::uint64_t request{}, seen{}, session{}, configurationRevision{};
@@ -44,27 +45,22 @@ struct CaptureTextSession::Impl
             // 入参：key为领域键。返回：副本或缺失。
             [&snapshot](std::string_view key) -> std::optional<nlohmann::json>
             {
-                const auto found = snapshot->find(key);
+                const nlohmann::json::const_iterator found = snapshot->find(key);
                 return found == snapshot->end() ? std::nullopt : std::optional<nlohmann::json>(*found);
             });
     }
 #endif
 };
-// 建立跨窗口存活的OCR所有者并借用翻译客户端，不加载模型或访问网络。
-// 入参：owner/icon为宿主资源；read为设置读取适配。返回：空闲协调器。
-CaptureTextSession::CaptureTextSession(HWND owner, HICON icon, std::function<std::optional<nlohmann::json>()> read,
-                                       TranslationClient* translator)
+// 记录稳定宿主和独立轮询编号，OCR留到截图入口按需建立。
+// 入参：owner/icon为宿主资源；pollTimer为独立编号；read读取设置；translator为借用客户端。返回：空闲协调器。
+TextSession::TextSession(HWND owner, HICON icon, UINT_PTR pollTimer,
+                         std::function<std::optional<nlohmann::json>()> read, TranslationClient* translator)
     : impl_(std::make_unique<Impl>())
 {
     this->impl_->owner = owner;
     this->impl_->icon = icon;
+    this->impl_->pollTimer = pollTimer;
     this->impl_->read = std::move(read);
-#ifdef OPEN_ST_HAS_OCR
-    this->impl_->client = std::make_unique<OcrClient>(
-        GetExecutableDirectory(),
-        // 通知只携带编号，结果可定时补收。入参：id为请求编号。返回：无。
-        [owner](std::uint64_t id) { (void)PostMessageW(owner, TextWakeMessage, static_cast<WPARAM>(id), 0); });
-#endif
 #ifdef OPEN_ST_HAS_TRANSLATION
     this->impl_->translator = translator;
 #else
@@ -73,17 +69,15 @@ CaptureTextSession::CaptureTextSession(HWND owner, HICON icon, std::function<std
 }
 // 消息宿主销毁前回收任务；正常退出已异步等待后台释放。
 // 入参：无。返回：无。
-CaptureTextSession::~CaptureTextSession()
+TextSession::~TextSession()
 {
-    KillTimer(this->impl_->owner, TextPollTimer);
+    this->Close();
+    KillTimer(this->impl_->owner, this->impl_->pollTimer);
 }
-// 固定正式图像，只执行OCR并填充可编辑原文。
-// 入参：frame/model/language为OCR参数。返回：无，不发起翻译。
-void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string& model, const std::string& language)
+// 统一建立窗口和回调，窗口拥有唯一正文，设置失败仍允许编辑。
+// 入参：manual决定手动就绪或等待OCR。返回：无，创建失败抛出异常。
+void TextSession::CreateResultWindow(bool manual)
 {
-#ifdef OPEN_ST_HAS_OCR
-    if (this->impl_->stopping || this->ActivateExisting())
-        return;
     ++this->impl_->session;
     this->impl_->window = std::make_unique<TextResultWindow>();
     std::string source, target;
@@ -96,7 +90,7 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
     }
     catch (...)
     {
-        // 翻译配置失败不阻断纯本地OCR；提交翻译时必须重新取得有效完整快照。
+        // 配置失败保留草稿；提交翻译时必须重新取得有效完整快照。
         this->impl_->settings.reset();
     }
 #endif
@@ -105,7 +99,10 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
     callbacks.close = [this]()
     {
         this->impl_->request = 0;
-        this->impl_->client->Cancel();
+#ifdef OPEN_ST_HAS_OCR
+        if (this->impl_->client)
+            this->impl_->client->Cancel();
+#endif
         this->CancelTranslation();
     };
     // 编辑仅取消，不自动重发。入参：无。返回：无。
@@ -118,16 +115,38 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
     callbacks.translate = [this]() { this->Translate(); };
     // 取消当前请求，不等待后台。入参：无。返回：无。
     callbacks.cancelTranslation = [this]() { this->CancelTranslation(); };
-    if (!this->impl_->window->Show(this->impl_->owner, this->impl_->icon, std::move(callbacks), source, target))
+    if (!this->impl_->window->Show(this->impl_->owner, this->impl_->icon, std::move(callbacks), source, target,
+                                   manual ? TextInputMode::Manual : TextInputMode::Ocr))
     {
         this->impl_->window.reset();
         throw std::runtime_error("Cannot create text result window");
     }
     this->RefreshNetworkWarning();
-    if (!SetTimer(this->impl_->owner, TextPollTimer, 100, nullptr))
+#ifdef OPEN_ST_HAS_TRANSLATION
+    if (manual && !this->impl_->settings)
+        this->impl_->window->Status("translation.error.configuration");
+#endif
+}
+// 固定正式图像，仅此入口按需建立OCR并提交本地识别。
+// 入参：frame/model/language为OCR参数。返回：无，不发起翻译。
+void TextSession::BeginOcr(const SdrSelectionFrame& frame, const std::string& model, const std::string& language)
+{
+#ifdef OPEN_ST_HAS_OCR
+    if (this->impl_->stopping || this->ActivateExisting())
+        return;
+    this->CreateResultWindow(false);
+    if (!SetTimer(this->impl_->owner, this->impl_->pollTimer, 100, nullptr))
     {
         this->impl_->window->Status("ocr.unavailable");
         return;
+    }
+    if (!this->impl_->client)
+    {
+        const HWND owner = this->impl_->owner;
+        this->impl_->client = std::make_unique<OcrClient>(
+            GetExecutableDirectory(),
+            // 通知只携带编号，窗口关闭后仍可定时补收。入参：id为任务编号。返回：无。
+            [owner](std::uint64_t id) { (void)PostMessageW(owner, TextWakeMessage, static_cast<WPARAM>(id), 0); });
     }
     OcrError error{};
     const OcrImageView image{static_cast<std::uint32_t>(frame.Bounds().Width()),
@@ -148,15 +167,24 @@ void CaptureTextSession::Begin(const SdrSelectionFrame& frame, const std::string
     (void)language;
 #endif
 }
+// 手动输入不建立图像或OCR，重复调用只激活原草稿。
+// 入参：无。返回：无，创建失败抛异常。
+void TextSession::BeginText()
+{
+    if (this->impl_->stopping || this->ActivateExisting())
+        return;
+    this->CreateResultWindow(true);
+    this->Poll();
+}
 // 查询当前结果窗口，不缓存可能关闭重开的原生句柄。
 // 入参：无。返回：存活结果窗口或空。
-HWND CaptureTextSession::ResultWindowHandle() const noexcept
+HWND TextSession::ResultWindowHandle() const noexcept
 {
     return this->impl_->window ? this->impl_->window->NativeHandle() : nullptr;
 }
 // 只激活现有结果，不隐式提交翻译。
 // 入参：无。返回：存在窗口为true。
-bool CaptureTextSession::ActivateExisting() noexcept
+bool TextSession::ActivateExisting() noexcept
 {
     if (!this->impl_->window || !this->impl_->window->IsOpen())
         return false;
@@ -165,7 +193,7 @@ bool CaptureTextSession::ActivateExisting() noexcept
 }
 // 设置更改立即失效，不覆盖用户原文或临时语言。
 // 入参：无。返回：无。
-void CaptureTextSession::ConfigurationChanged() noexcept
+void TextSession::ConfigurationChanged() noexcept
 {
     ++this->impl_->configurationRevision;
     this->CancelTranslation();
@@ -186,11 +214,19 @@ void CaptureTextSession::ConfigurationChanged() noexcept
     catch (...)
     {
         OPEN_ST_LOG_WARNING("Cannot refresh changed translation configuration.");
+        try
+        {
+            if (this->impl_->window && this->impl_->window->IsOpen())
+                this->impl_->window->Status("translation.error.configuration");
+        }
+        catch (...)
+        {
+        }
     }
 }
 // 固定唯一草稿和配置快照，旧任务未结束不接受新轮次。
 // 入参：无。返回：无，失败保留草稿与旧译文。
-void CaptureTextSession::Translate() noexcept
+void TextSession::Translate() noexcept
 {
 #ifdef OPEN_ST_HAS_TRANSLATION
     try
@@ -220,7 +256,7 @@ void CaptureTextSession::Translate() noexcept
         window.InitializeMissingLanguages(settings.options.sourceLanguage, settings.options.targetLanguage);
         this->impl_->settings = settings;
         this->RefreshNetworkWarning();
-        if (!SetTimer(this->impl_->owner, TextPollTimer, 100, nullptr))
+        if (!SetTimer(this->impl_->owner, this->impl_->pollTimer, 100, nullptr))
         {
             window.Status(TranslationErrorTextKey(TranslationError::Unavailable));
             return;
@@ -254,7 +290,7 @@ void CaptureTextSession::Translate() noexcept
 }
 // 取消立即撤销显示资格；后台实际收尾不在UI等待。
 // 入参：无。返回：无。
-void CaptureTextSession::CancelTranslation() noexcept
+void TextSession::CancelTranslation() noexcept
 {
 #ifdef OPEN_ST_HAS_TRANSLATION
     const bool active = this->impl_->translationRequest != 0;
@@ -274,7 +310,7 @@ void CaptureTextSession::CancelTranslation() noexcept
 }
 // 用同一领域协议判断明文传输，界面保持提示直至配置改变。
 // 入参：无。返回：无，不校验或加载本地模型。
-void CaptureTextSession::RefreshNetworkWarning()
+void TextSession::RefreshNetworkWarning()
 {
 #ifdef OPEN_ST_HAS_TRANSLATION
     if (!this->impl_->window || !this->impl_->window->IsOpen())
@@ -291,34 +327,35 @@ void CaptureTextSession::RefreshNetworkWarning()
     this->impl_->window->SetNetworkWarning(insecure);
 #endif
 }
-// 截图关闭同步取消OCR及翻译，延迟销毁结果窗口。
+// 关闭本会话并同步撤销自有任务资格，延迟销毁结果窗口。
 // 入参：无。返回：无。
-void CaptureTextSession::EndCapture() noexcept
+void TextSession::Close() noexcept
 {
     this->impl_->request = 0;
     this->CancelTranslation();
     if (this->impl_->window)
         this->impl_->window->Close();
 #ifdef OPEN_ST_HAS_OCR
-    this->impl_->client->Cancel();
+    if (this->impl_->client)
+        this->impl_->client->Cancel();
 #endif
 }
 // 按编号和修订分派，OCR只首次填充，状态不刷新编辑控件。
 // 入参：无。返回：无，异常不逃出主循环。
-void CaptureTextSession::Poll() noexcept
+void TextSession::Poll() noexcept
 {
     try
     {
         bool busy = false;
         const bool open = this->impl_->window && this->impl_->window->IsOpen();
         if (!open && this->impl_->request != 0)
-            this->EndCapture();
+            this->Close();
 #ifdef OPEN_ST_HAS_TRANSLATION
         if (!open && this->impl_->translationRequest != 0)
             this->CancelTranslation();
 #endif
 #ifdef OPEN_ST_HAS_OCR
-        const OcrSnapshot snapshot = this->impl_->client->Snapshot();
+        const OcrSnapshot snapshot = this->impl_->client ? this->impl_->client->Snapshot() : OcrSnapshot{};
         busy = snapshot.busy;
         if (open && this->impl_->request != 0 && snapshot.requestId == this->impl_->request &&
             snapshot.revision != this->impl_->seen)
@@ -367,7 +404,8 @@ void CaptureTextSession::Poll() noexcept
         if (open)
         {
             TextResultWindow& window = *this->impl_->window;
-            window.TranslationActivity(translation.busy);
+            window.TranslationActivity(translation.busy, translation.busy && this->impl_->translationRequest != 0 &&
+                                                             translation.requestId == this->impl_->translationRequest);
             if (this->impl_->translationRequest != 0 && translation.requestId == this->impl_->translationRequest &&
                 translation.revision != this->impl_->translationSeen)
             {
@@ -381,34 +419,35 @@ void CaptureTextSession::Poll() noexcept
                         result.options.sourceLanguage == window.SourceLanguage() &&
                         result.options.targetLanguage == window.TargetLanguage())
                     {
-                        window.SetTranslation(
-                            result.text, Utf8ToWide(result.profileName) + L" · " +
-                                             GetUiText(result.network ? "translation.online" : "translation.local"));
+                        window.SetTranslation(result.text, result.profileName, result.network);
                         window.Status("translation.completed");
                     }
                 }
                 else if (translation.phase == TranslationPhase::Running)
-                    window.StatusText(GetUiText("translation.attempting",
-                                                {{L"name", Utf8ToWide(translation.currentProfileName)},
-                                                 {L"index", std::to_wstring(translation.currentIndex)},
-                                                 {L"total", std::to_wstring(translation.totalInterfaces)}}));
+                {
+                    TextResultStatus status;
+                    status.key = "translation.attempting";
+                    status.name = Utf8ToWide(translation.currentProfileName);
+                    status.index = translation.currentIndex;
+                    status.total = translation.totalInterfaces;
+                    window.Status(std::move(status));
+                }
                 else if (translation.phase == TranslationPhase::Failed ||
                          translation.phase == TranslationPhase::Cancelled)
                 {
-                    std::wstring text = GetUiText(TranslationErrorTextKey(translation.error));
+                    TextResultStatus status;
+                    status.key = TranslationErrorTextKey(translation.error);
                     for (const TranslationAttempt& attempt : translation.attempts)
-                        text += L"\n" + Utf8ToWide(attempt.profileName) + L": " +
-                                GetUiText(TranslationErrorTextKey(attempt.error));
-                    if (translation.unattempted != 0)
-                        text += L"\n" + GetUiText("translation.unattempted",
-                                                  {{L"count", std::to_wstring(translation.unattempted)}});
-                    window.StatusText(std::move(text));
+                        status.attempts.emplace_back(Utf8ToWide(attempt.profileName),
+                                                     TranslationErrorTextKey(attempt.error));
+                    status.unattempted = translation.unattempted;
+                    window.Status(std::move(status));
                 }
             }
         }
 #endif
         if (!busy && (!this->impl_->stopping || this->ShutdownComplete()))
-            KillTimer(this->impl_->owner, TextPollTimer);
+            KillTimer(this->impl_->owner, this->impl_->pollTimer);
     }
     catch (...)
     {
@@ -416,39 +455,61 @@ void CaptureTextSession::Poll() noexcept
     }
 }
 // 复用窗口消息导航。入参：message为主循环消息。返回：消费为true。
-bool CaptureTextSession::Process(MSG& message)
+bool TextSession::Process(MSG& message)
 {
     return this->impl_->window && this->impl_->window->Process(message);
 }
 // 转交已核验全局编辑组合。入参：modifiers/key为组合。返回：消费为true。
-bool CaptureTextSession::RegisteredHotkey(UINT modifiers, UINT key) noexcept
+bool TextSession::RegisteredHotkey(UINT modifiers, UINT key) noexcept
 {
     return this->impl_->window && this->impl_->window->RegisteredHotkey(modifiers, key);
 }
 // 请求后台释放，不在UI线程等待。入参：无。返回：无。
-void CaptureTextSession::Shutdown() noexcept
+void TextSession::Shutdown() noexcept
 {
     this->impl_->stopping = true;
-    this->EndCapture();
+    this->Close();
 #ifdef OPEN_ST_HAS_OCR
-    this->impl_->client->RequestShutdown();
+    if (this->impl_->client)
+        this->impl_->client->RequestShutdown();
 #endif
     if (!this->ShutdownComplete())
-        (void)SetTimer(this->impl_->owner, TextPollTimer, 100, nullptr);
+        (void)SetTimer(this->impl_->owner, this->impl_->pollTimer, 100, nullptr);
 }
 // 只查询本会话拥有的OCR后台；共享翻译的退出等待由App执行。入参：无。返回：完成为true。
-bool CaptureTextSession::ShutdownComplete() const noexcept
+bool TextSession::ShutdownComplete() const noexcept
 {
 #ifdef OPEN_ST_HAS_OCR
-    if (!this->impl_->client->ShutdownComplete())
+    if (this->impl_->client && !this->impl_->client->ShutdownComplete())
         return false;
 #endif
     return true;
 }
 // 参与统一模态输入门禁。入参：paused为暂停标志。返回：无。
-void CaptureTextSession::Pause(bool paused) noexcept
+void TextSession::Pause(bool paused) noexcept
 {
     if (this->impl_->window)
         this->impl_->window->Pause(paused);
+}
+// 暂隐恢复资格完全归窗口，不根据宿主截图状态推断。
+// 入参：suspended为暂隐意图。返回：无，不取消任务。
+void TextSession::SetCaptureSuspended(bool suspended) noexcept
+{
+    if (this->impl_->window)
+        this->impl_->window->SetCaptureSuspended(suspended);
+}
+// 仅更新本地化显示，保留输入修订与发布资格。
+// 入参：无。返回：无，刷新错误记录安全日志。
+void TextSession::RefreshTexts() noexcept
+{
+    try
+    {
+        if (this->impl_->window && this->impl_->window->IsOpen())
+            this->impl_->window->RefreshTexts();
+    }
+    catch (...)
+    {
+        OPEN_ST_LOG_WARNING("Text result localization refresh failed.");
+    }
 }
 } // namespace open_st

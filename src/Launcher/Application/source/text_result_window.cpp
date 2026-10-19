@@ -2,6 +2,7 @@
 #include "text_result_window.h"
 #include "diagnostic_text.h"
 #include <clipboard_writer.h>
+#include <log.h>
 #include <ui_text.h>
 #include <window_renderer.h>
 #ifdef OPEN_ST_HAS_TRANSLATION
@@ -14,11 +15,15 @@ TextResultWindow::TextResultWindow() = default;
 // 回收原生窗口和业务草稿。入参：无。返回：无。
 TextResultWindow::~TextResultWindow() = default;
 // 绑定公共窗口控件，业务回调仅通知协调器。
-// 入参：owner/icon为稳定宿主资源，callbacks为动作，source/target为语言。返回：创建成功为true。
+// 入参：owner/icon为稳定宿主资源，callbacks为动作，source/target为语言，mode决定初始就绪状态。返回：创建成功为true。
 bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callbacks, std::string source,
-                            std::string target)
+                            std::string target, TextInputMode mode)
 {
     this->closing_ = false;
+    this->sourceReady_ = mode == TextInputMode::Manual;
+    this->paused_ = false;
+    this->captureSuspended_ = false;
+    this->suspendedWindow_ = nullptr;
     this->callbacks_ = std::move(callbacks);
     this->source_ = std::move(source);
     this->target_ = std::move(target);
@@ -35,8 +40,14 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
     layout["window"]["titleKey"] = "translation.window.title";
     layout["window"]["initialSize"] = {900, 640};
     layout["window"]["minSize"] = {720, 480};
-    auto& body = layout["content"]["children"];
-    const auto original = body[1];
+    nlohmann::json& body = layout["content"]["children"];
+    nlohmann::json original = body[1];
+    if (mode == TextInputMode::Manual)
+    {
+        layout["window"]["titleKey"] = "translation.manual.title";
+        body[0]["textKey"] = "translation.manual.help";
+        original["labelKey"] = "translation.manual.source";
+    }
     body.erase(1);
     body.push_back(nlohmann::json::parse(R"({"type":"row","id":"languages","gap":16,"children":[
       {"type":"select","id":"sourceLanguage","labelKey":"translation.source","width":"fill"},
@@ -56,7 +67,7 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
                                                          {"maxLength", 1000000},
                                                          {"width", "fill"}}})}});
     body.push_back({{"type", "text"}, {"id", "provenance"}, {"textKey", "translation.provenance"}});
-    auto& actions = layout["footer"]["leading"];
+    nlohmann::json& actions = layout["footer"]["leading"];
     actions[0]["textKey"] = "translation.copy_source";
     actions.push_back({{"type", "button"}, {"id", "copyTranslation"}, {"textKey", "translation.copy_result"}});
     actions.push_back({{"type", "button"}, {"id", "translate"}, {"textKey", "translation.action"}});
@@ -72,7 +83,10 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
                 {
                     if (this->translated_.empty())
                         return GetUiText("translation.no_result");
-                    const std::wstring origin = GetUiText("translation.origin", {{L"name", this->origin_}});
+                    const std::wstring name =
+                        Utf8ToWide(this->originProfile_) + L" · " +
+                        GetUiText(this->originNetwork_ ? "translation.online" : "translation.local");
+                    const std::wstring origin = GetUiText("translation.origin", {{L"name", name}});
                     return this->translatedRevision_ == this->revision_
                                ? origin
                                : origin + L"  " + GetUiText("translation.stale");
@@ -128,7 +142,7 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
                 [isSource]()
                 {
                     RendererOptionsResult result;
-                    for (auto value :
+                    for (const std::string_view value :
                          TranslationChoices(isSource ? "translation.source_language" : "translation.target_language"))
                         result.options.push_back(
                             {std::string(value), GetUiText("translation.language." + std::string(value))});
@@ -160,13 +174,20 @@ bool TextResultWindow::Show(HWND owner, HICON icon, TextResultCallbacks callback
         return false;
     if (!renderer.Show({owner, icon, SW_SHOWNORMAL, true}))
         return false;
-    (void)renderer.SetEnabled("result", false);
+    (void)renderer.SetEnabled("result", this->sourceReady_);
     (void)renderer.SetEnabled("copy", false);
 #ifdef OPEN_ST_HAS_TRANSLATION
     (void)renderer.SetEnabled("copyTranslation", false);
-    this->TranslationActivity(false);
+    this->TranslationActivity(false, false);
 #endif
-    this->Status("ocr.preparing");
+    this->Status(mode == TextInputMode::Manual ? "translation.manual.ready" : "ocr.preparing");
+    if (mode == TextInputMode::Manual)
+    {
+        // 前台资格可能在显示后被外部窗口取得；聚焦失败保留可编辑草稿，不再次激活或重试。
+        const RendererResult focused = renderer.FocusControl("result");
+        if (!focused)
+            OPEN_ST_LOG_WARNING("Initial manual text focus unavailable. code=", focused.code);
+    }
     return true;
 }
 // 仅在首次配置读取失败后补入已恢复的设置，不覆盖用户临时选择。
@@ -204,11 +225,26 @@ void TextResultWindow::Copy(const std::string& text)
 // 查询并显示安全资源文字。入参：key。返回：无。
 void TextResultWindow::Status(std::string_view key)
 {
-    this->StatusText(GetUiText(key));
+    TextResultStatus status;
+    status.key = key;
+    this->Status(std::move(status));
 }
-// 更新状态而不刷新正文。入参：text。返回：无。
-void TextResultWindow::StatusText(std::wstring text)
+// 保存可重新解析的安全参数，不保存格式化译文或原文。入参：status为状态描述。返回：无。
+void TextResultWindow::Status(TextResultStatus status)
 {
+    this->status_ = std::move(status);
+    this->RefreshStatus();
+}
+// 当前语言下解析状态和逐项诊断，不触碰正文及撤销历史。入参：无。返回：无。
+void TextResultWindow::RefreshStatus()
+{
+    std::wstring text = GetUiText(this->status_.key, {{L"name", this->status_.name},
+                                                      {L"index", std::to_wstring(this->status_.index)},
+                                                      {L"total", std::to_wstring(this->status_.total)}});
+    for (const std::pair<std::wstring, std::string>& attempt : this->status_.attempts)
+        text += L"\n" + attempt.first + L": " + GetUiText(attempt.second);
+    if (this->status_.unattempted != 0)
+        text += L"\n" + GetUiText("translation.unattempted", {{L"count", std::to_wstring(this->status_.unattempted)}});
     if (this->renderer_)
         (void)this->renderer_->SetStatus(std::move(text));
 }
@@ -221,13 +257,14 @@ void TextResultWindow::SetSource(std::wstring_view text)
     (void)this->renderer_->RefreshValue("result");
     (void)this->renderer_->SetEnabled("result", true);
     (void)this->renderer_->SetEnabled("copy", !this->draft_.empty());
-    this->TranslationActivity(false);
+    this->TranslationActivity(false, false);
 }
-// 发布完整译文并记录其对应修订。入参：text/origin。返回：无。
-void TextResultWindow::SetTranslation(std::string text, std::wstring origin)
+// 发布完整译文并保存可重新本地化的来源事实。入参：text/profileName为UTF8，network为在线事实。返回：无。
+void TextResultWindow::SetTranslation(std::string text, std::string profileName, bool network)
 {
     this->translated_ = std::move(text);
-    this->origin_ = std::move(origin);
+    this->originProfile_ = std::move(profileName);
+    this->originNetwork_ = network;
     this->translatedRevision_ = this->revision_;
 #ifdef OPEN_ST_HAS_TRANSLATION
     (void)this->renderer_->RefreshValue("translated");
@@ -240,18 +277,31 @@ void TextResultWindow::ConfigurationChanged()
 {
     this->Changed();
 }
-// 仅把权威任务状态投影为控件可用性。入参：busy。返回：无。
-void TextResultWindow::TranslationActivity(bool busy)
+// 仅把权威任务状态及归属投影为控件可用性。入参：busy为全局忙，canCancel为本窗可取消。返回：无。
+void TextResultWindow::TranslationActivity(bool busy, bool canCancel)
 {
 #ifdef OPEN_ST_HAS_TRANSLATION
     if (this->IsOpen())
     {
         (void)this->renderer_->SetEnabled("translate", !busy && this->sourceReady_ && !this->draft_.empty());
-        (void)this->renderer_->SetEnabled("cancelTranslation", busy);
+        (void)this->renderer_->SetEnabled("cancelTranslation", busy && canCancel);
     }
 #else
     (void)busy;
+    (void)canCancel;
 #endif
+}
+// 只刷新本地化文本及保存的安全状态。入参：无。返回：无，不改变任何修订或正文。
+void TextResultWindow::RefreshTexts()
+{
+    if (!this->IsOpen())
+        return;
+    (void)this->renderer_->RefreshTexts();
+#ifdef OPEN_ST_HAS_TRANSLATION
+    (void)this->renderer_->RefreshValue("sourceLanguage");
+    (void)this->renderer_->RefreshValue("targetLanguage");
+#endif
+    this->RefreshStatus();
 }
 // 明文传输提示始终由当前配置决定。入参：insecure。返回：无。
 void TextResultWindow::SetNetworkWarning(bool insecure)
@@ -291,6 +341,7 @@ void TextResultWindow::Close() noexcept
     if (this->closing_)
         return;
     this->closing_ = true;
+    this->suspendedWindow_ = nullptr;
     try
     {
         if (this->callbacks_.close)
@@ -305,7 +356,7 @@ void TextResultWindow::Close() noexcept
 // 激活存活结果。入参：无。返回：无。
 void TextResultWindow::Activate() noexcept
 {
-    if (this->IsOpen())
+    if (this->IsOpen() && !this->captureSuspended_ && !this->paused_)
     {
         ShowWindow(this->renderer_->NativeHandle(), SW_RESTORE);
         SetForegroundWindow(this->renderer_->NativeHandle());
@@ -325,12 +376,14 @@ bool TextResultWindow::IsOpen() const noexcept
 // 复用公共消息路由。入参：message。返回：消费为true。
 bool TextResultWindow::Process(MSG& message)
 {
-    return this->renderer_ && this->renderer_->ProcessDialogMessage(message);
+    return !this->paused_ && !this->captureSuspended_ && this->IsOpen() &&
+           this->renderer_->ProcessDialogMessage(message);
 }
 // 注册组合只在实际前台结果窗生效。入参：modifiers/key。返回：该窗口是否消费。
 bool TextResultWindow::RegisteredHotkey(UINT modifiers, UINT key) noexcept
 {
-    if (!this->renderer_ || GetForegroundWindow() != this->renderer_->NativeHandle())
+    if (!this->IsOpen() || this->paused_ || this->captureSuspended_ ||
+        !IsWindowVisible(this->renderer_->NativeHandle()) || GetForegroundWindow() != this->renderer_->NativeHandle())
         return false;
     if (IsWindowEnabled(this->renderer_->NativeHandle()))
         (void)this->renderer_->ProcessRegisteredEditHotkey(modifiers, key);
@@ -339,7 +392,29 @@ bool TextResultWindow::RegisteredHotkey(UINT modifiers, UINT key) noexcept
 // 全部模态入口共用输入暂停。入参：paused。返回：无。
 void TextResultWindow::Pause(bool paused) noexcept
 {
+    this->paused_ = paused;
     if (this->IsOpen())
         EnableWindow(this->renderer_->NativeHandle(), !paused);
+}
+// 只有本次暂隐前可见的同一窗口可恢复，恢复不得抢占焦点。
+// 入参：suspended为截图暂隐意图。返回：无，重复调用不覆盖恢复资格。
+void TextResultWindow::SetCaptureSuspended(bool suspended) noexcept
+{
+    if (this->captureSuspended_ == suspended)
+        return;
+    this->captureSuspended_ = suspended;
+    if (suspended)
+    {
+        this->suspendedWindow_ = this->IsOpen() && IsWindowVisible(this->renderer_->NativeHandle())
+                                     ? this->renderer_->NativeHandle()
+                                     : nullptr;
+        if (this->suspendedWindow_)
+            ShowWindow(this->suspendedWindow_, SW_HIDE);
+        return;
+    }
+    const HWND window = this->suspendedWindow_;
+    this->suspendedWindow_ = nullptr;
+    if (window && this->IsOpen() && this->renderer_->NativeHandle() == window && IsWindow(window))
+        ShowWindow(window, SW_SHOWNOACTIVATE);
 }
 } // namespace open_st

@@ -4,6 +4,7 @@
 
 #include <commctrl.h>
 #include <gtest/gtest.h>
+#include <thread>
 
 namespace
 {
@@ -21,6 +22,26 @@ nlohmann::json EditDocument()
           {"type":"integer","id":"number","minimum":1,"maximum":100,"slider":true}]}]},
       "footer":{"trailing":[{"type":"button","id":"confirm","textKey":"confirm"}]}
     })");
+}
+
+// 为真实桌面断言临时借用前台输入队列，避免后台启动的 CTest 进程被系统拒绝激活。
+// 入参：window 为本测试线程拥有的可见根窗口。
+// 返回：真实前台已到达目标时为 true；队列连接失败或系统仍拒绝时为 false，不跳过断言。
+bool ActivateTestWindow(HWND window)
+{
+    (void)SetForegroundWindow(window);
+    if (GetForegroundWindow() == window)
+        return true;
+    const DWORD foregroundThread = GetWindowThreadProcessId(GetForegroundWindow(), nullptr);
+    const DWORD testThread = GetCurrentThreadId();
+    if (foregroundThread == 0 || foregroundThread == testThread ||
+        !AttachThreadInput(testThread, foregroundThread, TRUE))
+        return false;
+    (void)SetForegroundWindow(window);
+    const bool activated = GetForegroundWindow() == window;
+    // 共享输入队列仅限激活请求，正式焦点断言和产品调用都在解除连接后执行。
+    const bool detached = AttachThreadInput(testThread, foregroundThread, FALSE) != FALSE;
+    return activated && detached;
 }
 
 class RendererEditTest : public testing::Test
@@ -314,6 +335,222 @@ class RendererMultilineTest : public RendererEditTest
     }
 };
 
+class RendererFocusTest : public RendererMultilineTest
+{
+  protected:
+    // 为真实焦点验证建立可交互前台窗口，不通过聚焦接口隐式激活。
+    // 入参：无。
+    // 返回：无；窗口创建和前台归属失败按测试失败报告。
+    void SetUp() override
+    {
+        ASSERT_NO_FATAL_FAILURE(RendererMultilineTest::SetUp());
+        ShowWindow(this->renderer_.NativeHandle(), SW_SHOWNORMAL);
+        ASSERT_TRUE(ActivateTestWindow(this->renderer_.NativeHandle()));
+        ASSERT_EQ(GetForegroundWindow(), this->renderer_.NativeHandle());
+    }
+};
+
+// 验证按 ID 聚焦编辑框及按钮，重复聚焦保留正文、选区和原生撤销资格。
+// 入参：无。
+// 返回：无；通过真实 GetFocus、选区及撤销消息验证，不使用 SetFocus 返回值推断成功。
+TEST_F(RendererFocusTest, focus_by_id_preserves_text_selection_and_native_undo)
+{
+    SendMessageW(this->Edit(false), EM_SETSEL, 0, -1);
+    SendMessageW(this->Edit(false), EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(L"draft text"));
+    SendMessageW(this->Edit(false), EM_SETSEL, 1, 4);
+    const int textChanges = this->textChanges_;
+    const int numberChanges = this->numberChanges_;
+    ASSERT_TRUE(this->renderer_.FocusControl("number"));
+    EXPECT_EQ(GetFocus(), this->Edit(true));
+    ASSERT_TRUE(this->renderer_.FocusControl("text"));
+    EXPECT_EQ(GetFocus(), this->Edit(false));
+    ASSERT_TRUE(this->renderer_.FocusControl("text"));
+    DWORD first{}, last{};
+    SendMessageW(this->Edit(false), EM_GETSEL, reinterpret_cast<WPARAM>(&first), reinterpret_cast<LPARAM>(&last));
+    EXPECT_EQ(first, 1U);
+    EXPECT_EQ(last, 4U);
+    EXPECT_EQ(this->Value(false), L"draft text");
+    EXPECT_EQ(this->textChanges_, textChanges);
+    EXPECT_NE(SendMessageW(this->Edit(false), EM_CANUNDO, 0, 0), 0);
+    ASSERT_TRUE(this->renderer_.FocusControl("confirm"));
+    EXPECT_EQ(GetFocus(), GetDlgItem(this->renderer_.NativeHandle(), 103));
+    EXPECT_EQ(this->textChanges_, textChanges);
+    EXPECT_EQ(this->numberChanges_, numberChanges);
+    EXPECT_EQ(this->confirmations_, 0);
+}
+
+// 验证未知 ID、容器和静态文字被拒绝，失败不会覆盖当前输入焦点及选区。
+// 入参：无。
+// 返回：无；错误结果包含原控件 ID，未触发任何宿主变更。
+TEST_F(RendererFocusTest, focus_rejects_unknown_container_and_static_nodes)
+{
+    ASSERT_TRUE(this->renderer_.FocusControl("text"));
+    SendMessageW(this->Edit(false), EM_SETSEL, 1, 4);
+    for (const std::string_view id : {"missing", "content", "label"})
+    {
+        const open_st::RendererResult result = this->renderer_.FocusControl(id);
+        EXPECT_EQ(result.code, id == "missing" ? "unknown_id" : "wrong_control_type");
+        EXPECT_EQ(result.id, id);
+        EXPECT_EQ(GetFocus(), this->Edit(false));
+        DWORD first{}, last{};
+        SendMessageW(this->Edit(false), EM_GETSEL, reinterpret_cast<WPARAM>(&first), reinterpret_cast<LPARAM>(&last));
+        EXPECT_EQ(first, 1U);
+        EXPECT_EQ(last, 4U);
+    }
+    EXPECT_EQ(this->Value(false), L"valid");
+    EXPECT_EQ(this->textChanges_, 0);
+}
+
+// 验证隐藏祖先、禁用字段、窗口忙及根窗口禁用均撤销聚焦资格。
+// 入参：无。
+// 返回：无；每次拒绝都不改变当时的前台窗口、焦点、正文或选区。
+TEST_F(RendererFocusTest, focus_rejects_hidden_disabled_busy_and_disabled_root)
+{
+    ASSERT_TRUE(this->renderer_.FocusControl("text"));
+    SendMessageW(this->Edit(false), EM_SETSEL, 1, 4);
+    // 核验错误调用没有抢占输入，同时检查编辑控件仍保留原有数据。
+    // 入参：code 为本次拒绝的结构化错误码。
+    // 返回：无；通过断言报告副作用。
+    const auto expectRejected = [this](std::string_view code)
+    {
+        const HWND foreground = GetForegroundWindow();
+        const HWND focused = GetFocus();
+        const open_st::RendererResult result = this->renderer_.FocusControl("number");
+        EXPECT_EQ(result.code, code);
+        EXPECT_EQ(result.id, "number");
+        EXPECT_EQ(GetForegroundWindow(), foreground);
+        EXPECT_EQ(GetFocus(), focused);
+        DWORD first{}, last{};
+        SendMessageW(this->Edit(false), EM_GETSEL, reinterpret_cast<WPARAM>(&first), reinterpret_cast<LPARAM>(&last));
+        EXPECT_EQ(first, 1U);
+        EXPECT_EQ(last, 4U);
+        EXPECT_EQ(this->Value(false), L"valid");
+    };
+    ASSERT_TRUE(this->renderer_.SetVisible("row", false));
+    expectRejected("not_interactive");
+    ASSERT_TRUE(this->renderer_.SetVisible("row", true));
+    ASSERT_TRUE(this->renderer_.SetEnabled("number", false));
+    expectRejected("not_interactive");
+    ASSERT_TRUE(this->renderer_.SetEnabled("number", true));
+    ASSERT_TRUE(this->renderer_.SetBusy(true));
+    expectRejected("busy");
+    ASSERT_TRUE(this->renderer_.SetBusy(false));
+    EnableWindow(this->renderer_.NativeHandle(), FALSE);
+    expectRejected("not_interactive");
+    EnableWindow(this->renderer_.NativeHandle(), TRUE);
+    EXPECT_EQ(this->textChanges_, 0);
+}
+
+// 验证可见的后台 Renderer 不得因按 ID 聚焦而激活，也不能抢走另一根窗口的焦点。
+// 入参：无；另建窗口仅属于本次测试，不发送桌面输入。
+// 返回：无；拒绝前后真实前台及焦点保持属于另一窗口。
+TEST_F(RendererFocusTest, focus_does_not_activate_a_background_window)
+{
+    struct OtherWindow
+    {
+        HWND window{};
+        // 在任何断言退出路径释放本用例的原生窗口。
+        // 入参：无。
+        // 返回：无。
+        ~OtherWindow()
+        {
+            if (this->window != nullptr)
+                DestroyWindow(this->window);
+        }
+    } other;
+    other.window = CreateWindowExW(0, L"STATIC", L"focus owner", WS_OVERLAPPEDWINDOW, 0, 0, 200, 200, nullptr, nullptr,
+                                   GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(other.window, nullptr);
+    ShowWindow(other.window, SW_SHOWNORMAL);
+    ASSERT_TRUE(ActivateTestWindow(other.window));
+    SetFocus(other.window);
+    ASSERT_EQ(GetForegroundWindow(), other.window);
+    ASSERT_EQ(GetFocus(), other.window);
+    EXPECT_EQ(this->renderer_.FocusControl("text").code, "not_interactive");
+    EXPECT_EQ(GetForegroundWindow(), other.window);
+    EXPECT_EQ(GetFocus(), other.window);
+    ShowWindow(this->renderer_.NativeHandle(), SW_HIDE);
+    EXPECT_EQ(this->renderer_.FocusControl("text").code, "not_interactive");
+    EXPECT_EQ(GetForegroundWindow(), other.window);
+    EXPECT_EQ(GetFocus(), other.window);
+    EXPECT_EQ(this->Value(false), L"valid");
+}
+
+// 验证原生焦点通知重定向输入时返回失败，不能把 SetFocus 的旧焦点返回值当作成功。
+// 入参：无；子类只在本测试内把文本框焦点转到另一个真实控件。
+// 返回：无；实际 GetFocus 决定结果，正文及宿主通知保持不变。
+TEST_F(RendererFocusTest, focus_reports_failure_when_native_focus_is_redirected)
+{
+    struct RedirectFocus
+    {
+        HWND window;
+        HWND target;
+        // 解除本次测试的焦点通知替身。
+        // 入参：无。
+        // 返回：无。
+        ~RedirectFocus()
+        {
+            RemoveWindowSubclass(this->window, Procedure, 78);
+        }
+        // 将焦点通知转交另一个可交互控件，其余消息照常分派。
+        // 入参：window/message/wParam/lParam 为系统消息，data 借用本测试的重定向状态。
+        // 返回：返回真实默认消息处理结果。
+        static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR,
+                                          DWORD_PTR data)
+        {
+            const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+            if (message == WM_SETFOCUS)
+                SetFocus(reinterpret_cast<RedirectFocus*>(data)->target);
+            return result;
+        }
+    } redirect{this->Edit(false), this->Edit(true)};
+    ASSERT_TRUE(
+        SetWindowSubclass(redirect.window, RedirectFocus::Procedure, 78, reinterpret_cast<DWORD_PTR>(&redirect)));
+    SetFocus(this->Edit(true));
+    EXPECT_EQ(this->renderer_.FocusControl("text").code, "focus_failed");
+    EXPECT_EQ(GetFocus(), this->Edit(true));
+    EXPECT_EQ(this->Value(false), L"valid");
+    EXPECT_EQ(this->textChanges_, 0);
+}
+
+// 验证按 ID 聚焦位于视口外的控件时复用现有滚动揭示机制。
+// 入参：无。
+// 返回：无；目标获得焦点并完整进入视口，不触发任何编辑回调。
+TEST_F(RendererFocusTest, focus_reveals_the_target_below_the_viewport)
+{
+    ASSERT_TRUE(SetWindowPos(this->renderer_.NativeHandle(), nullptr, 0, 0, 240, 180,
+                             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE));
+    RECT bounds{}, viewport{};
+    GetWindowRect(this->Edit(true), &bounds);
+    GetWindowRect(this->Viewport(), &viewport);
+    ASSERT_GT(bounds.bottom, viewport.bottom);
+    ASSERT_TRUE(this->renderer_.FocusControl("number"));
+    EXPECT_EQ(GetFocus(), this->Edit(true));
+    GetWindowRect(this->Edit(true), &bounds);
+    EXPECT_GE(bounds.top, viewport.top);
+    EXPECT_LE(bounds.bottom, viewport.bottom);
+    EXPECT_EQ(this->textChanges_, 0);
+    EXPECT_EQ(this->numberChanges_, 0);
+}
+
+// 验证未创建窗口及跨线程请求被先行拒绝，不访问其他线程的原生焦点。
+// 入参：无。
+// 返回：无；分别核验 window_missing 和 wrong_thread 结构化错误。
+TEST(RendererFocusBoundaryTest, focus_rejects_missing_window_and_wrong_thread)
+{
+    open_st::WindowRenderer renderer;
+    const open_st::RendererResult missing = renderer.FocusControl("text");
+    EXPECT_EQ(missing.code, "window_missing");
+    EXPECT_EQ(missing.id, "text");
+    open_st::RendererResult wrongThread;
+    // 从外部线程调用公开接口，复用 Renderer 所属线程门禁。
+    // 入参：无；renderer 及结果仅在本线程调用期间借用。
+    // 返回：无；结果在线程 join 后读取。
+    std::thread worker([&renderer, &wrongThread]() { wrongThread = renderer.FocusControl("text"); });
+    worker.join();
+    EXPECT_EQ(wrongThread.code, "wrong_thread");
+}
+
 // 验证多行样式、可视高度、Unicode 换行以及超过单行默认上限的文本。
 // 入参：无。
 // 返回：无；断言不发生截断或额外宿主变更。
@@ -500,7 +737,7 @@ TEST_F(RendererReadOnlyTest, registered_hotkeys_copy_readonly_selection_but_neve
     ASSERT_TRUE(SetWindowSubclass(probe.window, CopyProbe::Procedure, 77, reinterpret_cast<DWORD_PTR>(&probe)));
     ShowWindow(this->renderer_.NativeHandle(), SW_SHOWNORMAL);
     // 激活请求的返回值不代替实际输入归属，以下前台和焦点断言仍为强制前提。
-    (void)SetForegroundWindow(this->renderer_.NativeHandle());
+    ASSERT_TRUE(ActivateTestWindow(this->renderer_.NativeHandle()));
     SetFocus(this->Edit(false));
     ASSERT_EQ(GetForegroundWindow(), this->renderer_.NativeHandle());
     ASSERT_EQ(GetFocus(), this->Edit(false));
