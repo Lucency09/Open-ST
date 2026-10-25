@@ -1,8 +1,18 @@
 # Open-ST 实现进度
 
-更新时间：2026-10-19
+更新时间：2026-10-26
 当前版本：`1.2.0`；发行页面：[v1.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v1.2.0)，公开状态以该页面为准。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
+
+## 2026-10-26 固定长度自动分段（10月25日批准）
+
+- [x] 按[最小范围方案](design/automatic-text-segmentation.md)完成独立Translation/Segmentation子模块：固定200 Unicode标量，按句末/换行及较弱边界向下切分，保存原分隔内容并有界拼接。
+- [x] 生产范围严格5项：新增子模块头/实现/CMake，仅修改父Translation的CMake及translation_client.cpp。Local、provider、校验协议、App、窗口、设置及资源文案均未修改；保留原Validate/Execute，auto逐段交给原实现。
+- [x] 普通全文上限100000，诊断保留10000及单次请求；一次计划、同一家串行执行、全部成功才发布，失败按原规则整篇后备。每次校验/执行共用30秒，整轮120秒不在段间或后备重置；总译文仍限1MiB。
+- [x] 95个不同定向用例通过、0失败、0跳过：分段18、Translation65（含真实本地长文）、本地护栏及排版12。修复后只复跑新增及受影响用例，未运行全量；去重汇总见testing/testoutput/segmentation-verification-summary.json。
+- [x] 正式Debug /W4 /WX构建通过，产物build/Debug/src/Launcher/Open-ST.exe。最终复核修正200字符后分隔边界、网址保护范围、拼接空译文后备分类及外缘清理拆开Unicode序列的问题，均有回归。
+- [x] UTF-8/CRLF、diff及产物范围核验通过；.gitignore原有修改保持不变。构建使用已核实的vcpkg子进程沙箱限制对应权限，未改脚本或依赖。
+- [x] 用户初步验收表示“看上去没问题”，并于2026-10-26授权提交。固定长度与正常EOS不代表模型不会漏译；本次只提交，不推送或发布，公开发行版仍为1.2.0。
 
 ## 2026-10-19 v1.2.0发行准备
 

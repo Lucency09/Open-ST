@@ -256,6 +256,10 @@ Translation 拥有统一提供方协议、有序列表校验及单工作线程�
 本地适配器消费其 Local 子模块。Local 拥有固定模型验证、分词、CPU INT8 推理和单方向缓存，
 不反向依赖父级提供方，不读取设置或连接网络。空闲维护由既有工作线程驱动。
 
+Translation/Segmentation为独立OpenST::TranslationSegmentation子目标，仅使用标准库和统一编译选项；拥有固定200标量的语义分段及原分隔内容拼接，不依赖父Translation或兄弟Local。
+父Translation只生成一次计划，顺序调用原Validate/Execute并有界收集结果，整家成功后Assemble并一次发布；每家仅一条attempt，skipped只表示零次Execute。Local/provider及窗口接口保持原样，auto按片段交给原实现，不额外锁定整篇语言。
+普通整文门禁为100000标量，诊断仍10000且单次；片段校验/执行共用原30秒，整轮120秒包含规划、后备和拼接，不按段重新起表。总译文仍限1MiB；分段过程不增加窗口进度、设置或日志正文。
+
 截图工具栏只提取文字；OCR成功、重复激活结果窗不提交翻译，翻译仅由结果窗按钮明确请求。
 TextSession 固定会话、原文、语言及配置修订，OCR 成功只首次填充截图来源的 TextResultWindow；
 该窗口唯一拥有原文及显示译文，编辑只取消旧轮次并标记过期。关窗立即失去准入，后台对象跨窗口存活，
@@ -284,7 +288,7 @@ App 唯一拥有 TranslationClient，两个文字会话只借用；接口测试�
 
 本地接口编辑页提供快速／均衡／质量，默认均衡。`translation.local_quality_presets` 是唯一参数目录；默认资源定义fast/1、balanced/2、quality/4，各接口configuration.quality保存所选ID。C++仅校验受支持ID和资源上限，不另存beam映射。旧配置缺字段时从默认资源补入；已有值即使非法也不覆盖，不静默换档。
 设置草稿、说明、测试连接和正式任务共用捕获的目录；全局目录仍可通过settings.json配置。非法目录/档位明确失败，不能借只读显示回退作为实际推理参数。
-三个档位均为CPU INT8、同一任务线程、统一deadline和原有512 token/整体输出边界，保留换行、空行、缩进。本次不加入分句或更换模型，质量档不保证每句更优。
+三个档位均为CPU INT8、同一任务线程、统一deadline和每次Engine::Execute的原有512 token/输出边界，保留片段内换行、空行、缩进。2026-10-25起普通全文在父Translation调用前由Segmentation切片，Local实现及模型不变，质量档不保证每句更优。
 CTranslate2端口的should_stop独立于token回调，在编码和每步解码边界合作停止；停止抛出异常，不返回部分译文。模型加载与单次CPU算子仍不能强制抢占；取消/超时后释放引擎，下次可重新加载。内存不足继续保持致命错误优先级，不因到期降级为可外发的超时。
 
 ### 安装、共享数据与更新职责

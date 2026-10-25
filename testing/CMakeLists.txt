@@ -70,6 +70,7 @@ if(OPEN_ST_ENABLE_OCR)
 endif()
 if(OPEN_ST_ENABLE_TRANSLATION)
     open_st_register_test_module(translation open_st_translation_tests)
+    open_st_register_test_module(translation_segmentation open_st_translation_segmentation_tests)
     open_st_register_test_module(translation_local open_st_translation_local_tests)
 endif()
 

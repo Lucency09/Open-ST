@@ -1,0 +1,7 @@
+# 独立文本分段目标只消费标准库和统一编译选项。
+add_library(open_st_translation_segmentation STATIC)
+add_library(OpenST::TranslationSegmentation ALIAS open_st_translation_segmentation)
+
+target_sources(open_st_translation_segmentation PRIVATE source/text_segmentation.cpp
+    PUBLIC FILE_SET HEADERS BASE_DIRS include FILES include/text_segmentation.h)
+target_link_libraries(open_st_translation_segmentation PUBLIC open_st_project_options)

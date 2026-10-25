@@ -6,15 +6,42 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <text_segmentation.h>
 #include <thread>
 #include <translation_protocol.h>
 #include <translation_provider.h>
+#include <vector>
 
 namespace open_st
 {
 using translation_detail::Clock;
 namespace
 {
+constexpr std::size_t NORMAL_INPUT_CODEPOINTS = 100000;
+constexpr std::size_t DIAGNOSTIC_INPUT_CODEPOINTS = 10000;
+constexpr std::size_t MAX_ACCUMULATED_TEXT_BYTES = 1024 * 1024;
+
+// 将纯文本子模块错误适配到已有领域分类，不扩展界面错误协议。
+// 入参：error 为子模块错误。返回：对应领域错误，不包含原文。
+TranslationError SegmentationError(translation_segmentation::Error error) noexcept
+{
+    switch (error)
+    {
+    case translation_segmentation::Error::None:
+        return TranslationError::None;
+    case translation_segmentation::Error::InvalidInput:
+        return TranslationError::InvalidInput;
+    case translation_segmentation::Error::NoBoundary:
+        return TranslationError::InputTooLarge;
+    case translation_segmentation::Error::OutputTooLarge:
+        return TranslationError::Truncated;
+    case translation_segmentation::Error::Cancelled:
+        return TranslationError::Cancelled;
+    case translation_segmentation::Error::InvalidPlan:
+        return TranslationError::Service;
+    }
+    return TranslationError::Service;
+}
 // 只有用户取消、全局错误、明确输入错误和资源失败能提前结束整轮。
 // 入参：error 为已分类单项错误。
 // 返回：必须停止时 true。
@@ -95,12 +122,69 @@ struct TranslationClient::Impl
         }
         this->Notify(work.id);
     }
-    // 执行完整有序链，提供方 Execute 真实返回后才能进入下一条。
-    // 入参：work 为固定快照，stop 为取消；result 接收完整带戳译文。
-    // 返回：整轮最终错误，成功为 None。
+    // 同一段的校验和执行共用截止时间，取消或校验超时后不调用提供方。
+    // 入参：input/profile为固定片段与配置；provider为借用实现；roundDeadline为整轮截止；stop为取消；
+    // executed输出是否真正调用Execute；performed接收本次返回。返回：已有领域错误，致命错误不被超时覆盖。
+    TranslationError ExecutePart(const TranslationRequest& input, const nlohmann::json& profile,
+                                 translation_detail::ITranslationProvider& provider, Clock::time_point roundDeadline,
+                                 std::stop_token stop, bool& executed, translation_detail::ProviderResult& performed)
+    {
+        executed = false;
+        performed = {};
+        if (stop.stop_requested())
+            return TranslationError::Cancelled;
+        if (Clock::now() >= roundDeadline)
+            return TranslationError::BudgetExhausted;
+        const Clock::time_point deadline = std::min(roundDeadline, Clock::now() + this->dependencies->itemBudget);
+        TranslationError error = provider.Validate(input, profile);
+        if (stop.stop_requested())
+            return TranslationError::Cancelled;
+        if (error == TranslationError::None && Clock::now() >= deadline)
+            error = TranslationError::Timeout;
+        if (error == TranslationError::None)
+        {
+            executed = true;
+            performed = provider.Execute(input, profile, deadline, stop);
+            error = performed.error;
+            if (error == TranslationError::None && performed.status != translation_detail::ProviderStatus::Success)
+                error = TranslationError::Service;
+            if (Clock::now() >= deadline && !StopsChain(error))
+                error = TranslationError::Timeout;
+        }
+        if (stop.stop_requested())
+            return TranslationError::Cancelled;
+        if (Clock::now() >= roundDeadline && !StopsChain(error))
+            error = TranslationError::BudgetExhausted;
+        if (error == TranslationError::None)
+            error = translation_detail::ValidateResultText(performed.text);
+        if (stop.stop_requested())
+            return TranslationError::Cancelled;
+        if (Clock::now() >= roundDeadline && !StopsChain(error))
+            error = TranslationError::BudgetExhausted;
+        return error;
+    }
+    // 普通任务只规划一次；逐家按同一计划串行执行，整家成功后才发布完整带戳结果。
+    // 入参：work为整篇固定快照；stop为取消；result接收完整译文。返回：整轮最终分类，诊断保持单次原文请求。
     TranslationError Execute(const Work& work, std::stop_token stop, std::shared_ptr<const TranslationResult>& result)
     {
         const Clock::time_point roundDeadline = Clock::now() + this->dependencies->totalBudget;
+        if (stop.stop_requested())
+            return TranslationError::Cancelled;
+        if (Clock::now() >= roundDeadline)
+            return TranslationError::BudgetExhausted;
+        translation_segmentation::Plan plan;
+        if (!work.request.diagnostic)
+        {
+            const TranslationError planned =
+                SegmentationError(translation_segmentation::Split(work.request.text, plan, stop));
+            if (planned != TranslationError::None)
+                return planned;
+            if (plan.segmentCount == 0)
+                return TranslationError::InvalidInput;
+        }
+        TranslationRequest part = work.request;
+        if (!work.request.diagnostic)
+            part.text.clear();
         TranslationError last = TranslationError::NoInterfaces;
         std::set<std::string> used;
         std::size_t index{};
@@ -118,7 +202,6 @@ struct TranslationClient::Impl
             ++index;
             this->Progress(work, profile, index);
             const Clock::time_point started = Clock::now();
-            const Clock::time_point deadline = std::min(roundDeadline, Clock::now() + this->dependencies->itemBudget);
             const std::string kind = profile.at("kind").get<std::string>();
             std::unique_ptr<translation_detail::ITranslationProvider>& provider = this->providers[kind];
             if (!provider)
@@ -126,20 +209,54 @@ struct TranslationClient::Impl
             if (!provider)
                 return TranslationError::InvalidConfiguration;
             const translation_detail::ProviderCapabilities capabilities = provider->Capabilities(profile);
-            last = provider->Validate(work.request, profile);
-            if (last == TranslationError::None && Clock::now() >= deadline)
-                last = TranslationError::Timeout;
-            const bool skipped = last != TranslationError::None;
             translation_detail::ProviderResult performed;
-            if (!skipped && !stop.stop_requested())
+            bool anyExecuted{};
+            if (work.request.diagnostic)
+                last = this->ExecutePart(work.request, profile, *provider, roundDeadline, stop, anyExecuted, performed);
+            else
             {
-                performed = provider->Execute(work.request, profile, deadline, stop);
-                last = performed.error;
-                if (last == TranslationError::None && performed.status != translation_detail::ProviderStatus::Success)
-                    last = TranslationError::Service;
-                // 迟到结果失去发布资格，但明确输入/资源错误仍终止整轮，不能变成允许外发的超时。
-                if (Clock::now() >= deadline && !StopsChain(last))
-                    last = TranslationError::Timeout;
+                std::vector<std::string> translations;
+                translations.reserve(plan.segmentCount);
+                std::size_t accumulatedBytes{};
+                bool allLanguagesKnown = true;
+                std::string detectedLanguage;
+                last = TranslationError::None;
+                for (const translation_segmentation::Piece& piece : plan.pieces)
+                {
+                    if (piece.literal)
+                        continue;
+                    part.text.assign(work.request.text, piece.offset, piece.length);
+                    bool executed{};
+                    last = this->ExecutePart(part, profile, *provider, roundDeadline, stop, executed, performed);
+                    anyExecuted = anyExecuted || executed;
+                    if (last != TranslationError::None)
+                        break;
+                    if (performed.text.size() > MAX_ACCUMULATED_TEXT_BYTES - accumulatedBytes)
+                    {
+                        last = TranslationError::Truncated;
+                        break;
+                    }
+                    accumulatedBytes += performed.text.size();
+                    if (performed.detectedLanguage.empty())
+                        allLanguagesKnown = false;
+                    if (translations.empty())
+                        detectedLanguage = performed.detectedLanguage;
+                    else if (detectedLanguage != performed.detectedLanguage)
+                        allLanguagesKnown = false;
+                    translations.push_back(std::move(performed.text));
+                }
+                if (last == TranslationError::None)
+                {
+                    const translation_segmentation::JoinStyle style =
+                        work.request.options.targetLanguage == "en" ? translation_segmentation::JoinStyle::Spaced
+                                                                    : translation_segmentation::JoinStyle::Compact;
+                    const translation_segmentation::Error assembled = translation_segmentation::Assemble(
+                        work.request.text, plan, translations, style, MAX_ACCUMULATED_TEXT_BYTES, performed.text, stop);
+                    // 原文和计划已通过Split校验，此处空白译文失效不能误判为用户输入错误而阻断后备。
+                    last = assembled == translation_segmentation::Error::InvalidInput ? TranslationError::EmptyResult
+                                                                                      : SegmentationError(assembled);
+                    performed.detectedLanguage = allLanguagesKnown ? std::move(detectedLanguage) : std::string{};
+                }
             }
             if (stop.stop_requested())
                 return TranslationError::Cancelled;
@@ -147,8 +264,12 @@ struct TranslationClient::Impl
                 last = TranslationError::BudgetExhausted;
             if (last == TranslationError::None)
                 last = translation_detail::ValidateResultText(performed.text);
-            TranslationAttempt attempt{id, profile.at("name").get<std::string>(), last, skipped, capabilities.network,
-                                       {}};
+            if (stop.stop_requested())
+                return TranslationError::Cancelled;
+            if (Clock::now() >= roundDeadline && !StopsChain(last))
+                last = TranslationError::BudgetExhausted;
+            TranslationAttempt attempt{
+                id, profile.at("name").get<std::string>(), last, !anyExecuted, capabilities.network, {}};
             if (work.request.diagnostic)
             {
                 attempt.diagnostic = performed.diagnostic.value_or(TranslationDiagnostic{});
@@ -306,7 +427,7 @@ bool TranslationClient::Submit(const TranslationRequest& request, std::uint64_t&
         if (!translation_detail::CountText(request.text, count) || count == 0 ||
             request.text.find_first_not_of(" \t\r\n") == std::string::npos)
             error = TranslationError::InvalidInput;
-        else if (count > 10000)
+        else if (count > (request.diagnostic ? DIAGNOSTIC_INPUT_CODEPOINTS : NORMAL_INPUT_CODEPOINTS))
             error = TranslationError::InputTooLarge;
         else if (request.options.sourceLanguage == request.options.targetLanguage)
             error = TranslationError::SameLanguage;
