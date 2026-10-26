@@ -9,9 +9,8 @@ namespace open_st
 {
 inline constexpr std::string_view TRANSLATION_INTERFACES_KEY = "translation.interfaces";
 inline constexpr std::string_view TRANSLATION_LOCAL_QUALITY_KEY = "translation.local_quality_presets";
-inline constexpr std::array<std::string_view, 4> TRANSLATION_STRING_KEYS{
-    "translation.source_language", "translation.target_language", "translation.network.proxy_mode",
-    "translation.network.proxy_address"};
+inline constexpr std::array<std::string_view, 2> TRANSLATION_STRING_KEYS{"translation.source_language",
+                                                                         "translation.target_language"};
 
 // 将设置自有选项适配到公共控件，避免两个模块共享业务类型。
 // 入参：options 为领域经宿主提供的显示选项。
@@ -26,8 +25,7 @@ std::wstring TranslationSettingsError(const SettingsEditSession& session, const 
 // 入参：owner/icon 为宿主；profile 为确认后替换的条目；callbacks 提供领域规则；creating 允许新增时选择类型。
 // 返回：明确确认且校验通过为 true，取消或窗口失败为 false。
 bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, const SettingsWindowCallbacks& callbacks,
-                            bool creating, std::string proxyMode, std::string proxyAddress,
-                            const nlohmann::json& localQualityPresets);
+                            bool creating, const nlohmann::json& localQualityPresets);
 
 class TranslationSettingsPanel final
 {
@@ -56,7 +54,7 @@ class TranslationSettingsPanel final
     // 入参：operation 为布局动作名。
     // 返回：无，失败保留草稿。
     void Act(std::string_view operation);
-    // 校验候选后一次替换统一事务。
+    // 一次替换统一草稿，完整领域校验由主窗口应用入口负责。
     // 入参：value 为候选数组。
     // 返回：更新成功为 true。
     bool Store(const nlohmann::json& value);

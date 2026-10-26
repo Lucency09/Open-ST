@@ -219,7 +219,7 @@ struct SliderDragProbe final
 struct ProfileConfirmationDriver
 {
     HWND owner{};
-    bool enabled{}, visited{}, timeout{};
+    bool enabled{}, visited{}, timeout{}, repairNetwork{};
     UINT_PTR timer{};
     ULONGLONG deadline{};
     static thread_local ProfileConfirmationDriver* current;
@@ -273,6 +273,28 @@ struct ProfileConfirmationDriver
         if (!window || current->visited)
             return;
         current->visited = true;
+        if (current->repairNetwork)
+            EnumChildWindows(
+                window,
+                // 通过领域选项识别网络下拉框，主动修复非法模式。
+                // 入参：child为子控件，未使用的参数为枚举上下文。
+                // 返回：继续枚举。
+                [](HWND child, LPARAM) -> BOOL
+                {
+                    wchar_t type[64]{};
+                    GetClassNameW(child, type, 64);
+                    if (_wcsicmp(type, L"ComboBox") != 0)
+                        return TRUE;
+                    const LRESULT index = SendMessageW(child, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                                                       reinterpret_cast<LPARAM>(L"Direct"));
+                    if (index == CB_ERR)
+                        return TRUE;
+                    SendMessageW(child, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+                    SendMessageW(GetParent(child), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(child), CBN_SELCHANGE),
+                                 reinterpret_cast<LPARAM>(child));
+                    return TRUE;
+                },
+                0);
         ControlSearch enabled{L"Button", L"settings.translation.enabled"};
         EnumChildWindows(window, FindControl, reinterpret_cast<LPARAM>(&enabled));
         ASSERT_NE(enabled.found, nullptr);
@@ -526,8 +548,9 @@ class SettingsWindowTest : public testing::Test
         {
             if (key == "translation.kind")
                 return std::vector<open_st::SettingsOption>{{"test", L"Test provider"}};
-            if (key == "translation.network.proxy_mode")
-                return std::vector<open_st::SettingsOption>{{"system", L"System"}, {"custom", L"Custom"}};
+            if (key == "profile.network.proxy_mode")
+                return std::vector<open_st::SettingsOption>{
+                    {"system", L"System"}, {"direct", L"Direct"}, {"custom", L"Custom"}};
             return std::vector<open_st::SettingsOption>{{"auto", L"Auto"}, {"zh-CN", L"Chinese"}, {"en", L"English"}};
         };
         // 创建独立身份，复制不能重用旧条目ID。
@@ -795,8 +818,6 @@ class SettingsWindowTest : public testing::Test
                                        {{"id", "quality"}, {"beam_size", 4}}});
             values["translation.source_language"] = "auto";
             values["translation.target_language"] = "zh-CN";
-            values["translation.network.proxy_mode"] = "system";
-            values["translation.network.proxy_address"] = "";
             this->Write(relative, document.dump());
         }
     }
@@ -2466,11 +2487,10 @@ TEST_F(SettingsWindowTest, capture_defaults_native_drag_preserves_thumb_and_capt
                 EXPECT_EQ(currentScroll.nPos, scroll.nPos);
             }
             EXPECT_GT(probe.tracks, 0);
-            std::cout << "native drag: height=" << height << " scroll=" << scroll.nPos
-                      << " tracks=" << probe.tracks << " sizes=" << probe.sizes
-                      << " captureChanges=" << probe.captureChanges << " initialPixels=" << initialPixels
-                      << " callbackPixels=" << probe.callbackPixels << " shows=" << probe.shows
-                      << " positions=" << probe.positions << " erases=" << probe.erases
+            std::cout << "native drag: height=" << height << " scroll=" << scroll.nPos << " tracks=" << probe.tracks
+                      << " sizes=" << probe.sizes << " captureChanges=" << probe.captureChanges
+                      << " initialPixels=" << initialPixels << " callbackPixels=" << probe.callbackPixels
+                      << " shows=" << probe.shows << " positions=" << probe.positions << " erases=" << probe.erases
                       << " pumpedThumbPixels=" << pumpedThumbPixels << '\n';
             EXPECT_GT(probe.callbackPixels, initialPixels / 2)
                 << "slider pixels disappeared inside the production change callback";
@@ -2602,4 +2622,71 @@ TEST_F(SettingsWindowTest, capture_defaults_recheck_domain_before_apply)
     this->captureVisualValid_ = false;
     this->Click("settings.apply");
     EXPECT_EQ(open_st::GetIntegerSetting("capture.hdr_brightness_percent"), 100);
+}
+
+// 翻译网络只属于接口子表单，主设置不再展示或绑定旧全局页。
+// 入参：无。
+// 返回：无。
+TEST_F(SettingsWindowTest, translation_network_page_and_global_bindings_are_removed)
+{
+    this->PrepareTranslation();
+    nlohmann::json layout;
+    std::ifstream input(this->root_ / "resources/setting_windows.json");
+    input >> layout;
+    for (const nlohmann::json& page : layout.at("pages"))
+        EXPECT_NE(page.at("id"), "translationNetwork");
+    EXPECT_EQ(layout.dump().find("translation.network.proxy_"), std::string::npos);
+    ASSERT_NE(this->Open(), nullptr);
+    this->SelectPage(3);
+    EXPECT_EQ(this->Control(L"STATIC", this->Text("settings.translation.network.proxy_mode")), nullptr);
+    EXPECT_EQ(this->Control(L"STATIC", this->Text("settings.translation.network.proxy_address")), nullptr);
+}
+
+// 多个旧非法网络条目逐条进入父草稿，全部修复前禁止主窗口提交。
+// 入参：无。
+// 返回：无。
+TEST_F(SettingsWindowTest, multiple_invalid_network_profiles_can_be_repaired_before_apply)
+{
+    this->PrepareTranslation();
+    nlohmann::json profiles = *open_st::GetJsonSetting("translation.interfaces");
+    for (nlohmann::json& profile : profiles)
+        profile["network"] = {{"proxy_mode", "broken"}, {"proxy_address", ""}};
+    nlohmann::json document;
+    {
+        std::ifstream input(this->root_ / "data/settings.json");
+        input >> document;
+    }
+    document["settings"]["translation.interfaces"] = profiles;
+    this->Write("data/settings.json", document.dump());
+    open_st::SettingsWindowCallbacks callbacks = this->Callbacks();
+    const auto valid = [](const nlohmann::json& profile) -> std::wstring
+    { return profile.at("network").at("proxy_mode") == "direct" ? L"" : L"invalid network"; };
+    callbacks.validateTranslationProfile = valid;
+    callbacks.validateTranslationInterfaces = [valid](const nlohmann::json& list) -> std::wstring
+    {
+        for (const nlohmann::json& profile : list)
+            if (!valid(profile).empty())
+                return L"invalid network";
+        return L"";
+    };
+    ASSERT_TRUE(this->window_.Show(GetModuleHandleW(nullptr), std::move(callbacks)));
+    this->SelectPage(3);
+    const HWND table = this->Control(WC_LISTVIEWW);
+    ASSERT_NE(table, nullptr);
+    for (int index = 0; index < 2; ++index)
+    {
+        ListView_SetItemState(table, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ProfileConfirmationDriver driver(this->window_.NativeHandle(), index == 0);
+        driver.repairNetwork = true;
+        this->Click("settings.translation.edit");
+        EXPECT_TRUE(driver.visited);
+        EXPECT_FALSE(driver.timeout);
+        EXPECT_EQ(*open_st::GetJsonSetting("translation.interfaces"), profiles);
+        EXPECT_EQ(IsWindowEnabled(this->Control(L"Button", this->Text("settings.apply"))) != FALSE, index == 1);
+    }
+    this->Click("settings.apply");
+    const nlohmann::json repaired = *open_st::GetJsonSetting("translation.interfaces");
+    EXPECT_EQ(repaired[0]["network"]["proxy_mode"], "direct");
+    EXPECT_EQ(repaired[1]["network"]["proxy_mode"], "direct");
+    EXPECT_EQ(this->translationApplied_, 1U);
 }

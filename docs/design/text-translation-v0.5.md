@@ -207,3 +207,7 @@ Key、Secret、模板配置仍明文保存在程序旁data/settings.json，界�
 - Google网页候选曾以无敏感Hello world样例POST得到正确结果，仍无稳定官方契约，不绕过验证码/限流。
 
 此修订的顺序调用、自定义配置和CTranslate2本地组件已接入当前开发树，验证结果见[实现进度](../implementation_progress.md)。子Agent已复核HTTP关闭边界、错误优先级、语言能力、预算、配置一致快照及取消生命周期；本地自动识别策略已按2026-10-03用户批准内容修订。Debug／Release候选构建不代表公开发布或人工验收；本地模型存在短句误译，质量仍待认可，详见[历史实测摘要](../implementation_progress.md)。
+
+### 后续变更：每接口代理（2026-10-26）
+
+本文保留原阶段审核记录；全局代理及网络页面由已批准的[接口独立代理方案](per-interface-translation-proxy.md)替代，每个在线条目独立保存system/direct/custom配置。

@@ -4,13 +4,15 @@
 
 Open-ST 是一款 Windows 截图与标注工具，同时提供安装版和便携版。现已包含完全本地的中英日 OCR、fast/best 模型和可编辑结果；文本翻译支持有序在线接口与本地中英模型、自动识别、原文排布保留和连接诊断，图片翻译仍后置。
 
-当前版本为 **1.2.0**，目标平台为 Windows 10 22H2／Windows 11 x64。当前待办与验收范围见[实现进度](implementation_progress.md)。
+当前版本为 **1.3.0**，目标平台为 Windows 10 22H2／Windows 11 x64。当前待办与验收范围见[实现进度](implementation_progress.md)。
 
 右键托盘图标选择**打开翻译窗口**，可直接输入或粘贴文本后翻译。窗口复用已有接口顺序、代理和本地翻译设置，无需先截图。
 
+长文本会按句末、换行等边界自动分段，顺序翻译后拼接结果。每个在线接口可在编辑窗口独立选择跟随系统、直连或自定义 HTTP 代理；旧全局代理配置会自动迁移。
+
 ## 下载与使用
 
-从 [v1.2.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.2.0) 下载：
+从 [v1.3.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.3.0) 下载：
 
 - **Setup.exe**：支持当前用户／所有用户安装及自定义目录，缺少运行库时经用户确认后安装包内附带的微软运行库。
 - **ZIP**：完整解压到可写目录运行 Open-ST.exe；需另行安装[微软 VC++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。

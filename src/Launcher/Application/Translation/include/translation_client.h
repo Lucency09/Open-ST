@@ -66,7 +66,6 @@ struct TranslationOptions
 struct TranslationConfiguration
 {
     nlohmann::json interfaces, localQualityPresets;
-    std::string proxyMode, proxyAddress;
 };
 struct TranslationSettings
 {

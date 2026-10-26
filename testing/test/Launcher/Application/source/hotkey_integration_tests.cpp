@@ -2,16 +2,16 @@
 
 #include "capture_command_gate.h"
 #include "capture_overlay_session.h"
+#include "json_file_test_access.h"
+#include "settings_internal.h"
 #include <app.h>
 #include <array>
 #include <capture_toolbar.h>
+#include <fstream>
 #include <gtest/gtest.h>
 #include <selection_model.h>
-#include <settings_window.h>
 #include <settings.h>
-#include "settings_internal.h"
-#include "json_file_test_access.h"
-#include <fstream>
+#include <settings_window.h>
 #ifdef OPEN_ST_TEST_TRANSLATION
 #include <translation_client.h>
 #endif
@@ -288,8 +288,7 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     EXPECT_EQ(sample->targetLanguage, "en");
     const auto presets = GetJsonSetting("translation.local_quality_presets");
     ASSERT_TRUE(presets);
-    const SettingsTranslationTestStatus first =
-        callbacks.submitTranslationTest(profile, "system", "", *sample, *presets);
+    const SettingsTranslationTestStatus first = callbacks.submitTranslationTest(profile, *sample, *presets);
     ASSERT_NE(first.requestId, 0U);
     EXPECT_TRUE(first.running);
     EXPECT_EQ(profile, original);
@@ -317,8 +316,7 @@ TEST_F(AppHotkeyIntegrationTest, settings_probe_preserves_disabled_draft_and_rej
     const std::wstring error = callbacks.text("translation.error.credentials");
     EXPECT_FALSE(error.empty());
     EXPECT_NE(completed.text.find(error), std::wstring::npos);
-    const SettingsTranslationTestStatus second =
-        callbacks.submitTranslationTest(profile, "system", "", *sample, *presets);
+    const SettingsTranslationTestStatus second = callbacks.submitTranslationTest(profile, *sample, *presets);
     ASSERT_GT(second.requestId, first.requestId);
     callbacks.cancelTranslationTest(first.requestId);
     const SettingsTranslationTestStatus secondCompleted = wait(second.requestId);

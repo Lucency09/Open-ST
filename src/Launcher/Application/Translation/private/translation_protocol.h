@@ -5,6 +5,10 @@
 
 namespace open_st::translation_detail
 {
+// 将已校验在线条目的网络设置转换为完整 HTTP 代理值。
+// 入参：profile 为当前条目，output 接收代理。返回：配置错误不修改输出。
+TranslationError ResolveProxy(const nlohmann::json& profile, http::Proxy& output);
+
 // 验证 UTF-8、拒绝 NUL 并统计码点。
 // 入参：text 为 UTF-8；count 接收码点数。
 // 返回：合法为 true。

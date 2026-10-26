@@ -71,9 +71,9 @@ struct SettingsWindowCallbacks final
     std::function<SettingsTranslationResources()> translationResources;
     // 只打开经过校验的HTTPS资源地址，成功表示系统已接受，不提交或保存配置。
     std::function<bool(std::string_view)> openTranslationResource;
-    // 提交当前未保存条目及代理草稿；返回请求身份或安全拒绝原因，不写盘。
-    std::function<SettingsTranslationTestStatus(const nlohmann::json&, std::string_view, std::string_view,
-                                                const SettingsTranslationTestSample&, const nlohmann::json&)>
+    // 提交当前未保存完整条目（含网络草稿）；返回请求身份或安全拒绝原因，不写盘。
+    std::function<SettingsTranslationTestStatus(const nlohmann::json&, const SettingsTranslationTestSample&,
+                                                const nlohmann::json&)>
         submitTranslationTest;
     // 一次读取当前配置的测试样本；缺失或非法时无值，不回退代码默认。
     std::function<std::optional<SettingsTranslationTestSample>()> translationTestSample;

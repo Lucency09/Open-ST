@@ -1,9 +1,9 @@
 // 验证有序配置、静态 HTTP 模板与有界响应映射；完全不访问线上服务。
+#include "translation_test_defaults.h"
 #include <algorithm>
 #include <fstream>
-#include <limits>
-#include "translation_test_defaults.h"
 #include <gtest/gtest.h>
+#include <limits>
 #include <translation_protocol.h>
 
 namespace open_st
@@ -90,7 +90,7 @@ TEST(TranslationSchema, SettingsCaptureRejectsMissingAndInvalidFields)
                          std::invalid_argument);
         }
     }
-    EXPECT_EQ(TranslationSettingKeys().size(), 6U);
+    EXPECT_EQ(TranslationSettingKeys().size(), 4U);
 }
 // 验证资源默认值决定新条目及语言代理，新增条目不复用身份或秘密。
 // 入参：无。返回：断言结果。
@@ -115,14 +115,12 @@ TEST(TranslationSchema, ConfiguredDefaultsAreTheOnlySource)
     }
     values["translation.source_language"] = "ja";
     values["translation.target_language"] = "en";
-    values["translation.network.proxy_mode"] = "custom";
-    values["translation.network.proxy_address"] = "localhost:3456";
+    values["translation.interfaces"][0]["network"] = {{"proxy_mode", "custom"}, {"proxy_address", "localhost:3456"}};
     const TranslationSettings settings = ReadTranslationSettings(
         [&values](std::string_view key) -> std::optional<nlohmann::json> { return values.at(key); });
     EXPECT_EQ(settings.options.sourceLanguage, "ja");
     EXPECT_EQ(settings.options.targetLanguage, "en");
-    EXPECT_EQ(settings.configuration.proxyMode, "custom");
-    EXPECT_EQ(settings.configuration.proxyAddress, "localhost:3456");
+    EXPECT_EQ(settings.configuration.interfaces[0]["network"], values["translation.interfaces"][0]["network"]);
     EXPECT_THROW(CreateTranslationProfile("openai", nlohmann::json::array()), std::invalid_argument);
     EXPECT_THROW(CreateTranslationProfile("unknown", values["translation.interfaces"]), std::invalid_argument);
 }
@@ -132,11 +130,10 @@ TEST(TranslationSchema, ConfiguredDefaultsAreTheOnlySource)
 TEST(TranslationSchema, AllowsEmptyCredentialsButRejectsMalformedValues)
 {
     EXPECT_EQ(ValidateTranslationProfile(TestTranslationProfile("baidu")), TranslationError::None);
-    EXPECT_EQ(ValidateTranslationField("translation.network.proxy_address", "http://u:p@localhost:1"),
+    EXPECT_EQ(ValidateTranslationField("profile.network.proxy_address", "http://u:p@localhost:1"),
               TranslationError::InvalidConfiguration);
-    EXPECT_EQ(ValidateTranslationField("translation.network.proxy_address", "localhost:7897"), TranslationError::None);
-    EXPECT_EQ(ValidateTranslationField("translation.network.proxy_mode", "direct"),
-              TranslationError::InvalidConfiguration);
+    EXPECT_EQ(ValidateTranslationField("profile.network.proxy_address", "localhost:7897"), TranslationError::None);
+    EXPECT_EQ(ValidateTranslationField("profile.network.proxy_mode", "direct"), TranslationError::None);
     nlohmann::json local = TestTranslationProfile("ctranslate2_local");
     local["configuration"]["pack_id"] = "elsewhere";
     EXPECT_EQ(ValidateTranslationProfile(local), TranslationError::InvalidConfiguration);
@@ -435,5 +432,33 @@ TEST(TranslationCustom, TextRejectsHtmlAndInvalidEncoding)
     EXPECT_EQ(translation_detail::ParseCustomResponse(profile, response, "  \n", result),
               TranslationError::EmptyResult);
     EXPECT_EQ(translation_detail::ParseCustomResponse(profile, response, "你好", result), TranslationError::None);
+}
+// 验证自定义协议复用条目代理转换，拒绝缺失、未知和非法网络值。
+// 入参：无。返回：断言结果。
+TEST(TranslationSchema, ProfileNetworkHasStrictShapeAndAddressValidation)
+{
+    nlohmann::json profile = Custom();
+    for (const std::string mode : {"system", "direct", "custom"})
+    {
+        profile["network"] = {{"proxy_mode", mode}, {"proxy_address", "localhost:7897"}};
+        http::Request request;
+        ASSERT_EQ(translation_detail::BuildCustomRequest(Text(), profile, request), TranslationError::None);
+        EXPECT_EQ(request.proxy.mode, mode == "custom"   ? http::ProxyMode::Custom
+                                      : mode == "direct" ? http::ProxyMode::Direct
+                                                         : http::ProxyMode::System);
+        EXPECT_EQ(request.proxy.address, mode == "custom" ? L"localhost:7897" : L"");
+        profile["network"]["proxy_address"] = "socks5://localhost:7897";
+        EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
+    }
+    profile["network"] = {{"proxy_mode", "custom"}, {"proxy_address", ""}};
+    EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
+    profile.erase("network");
+    EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
+    profile["network"] = nullptr;
+    EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
+    profile = TestTranslationProfile("ctranslate2_local");
+    ASSERT_EQ(profile.size(), 6U);
+    profile["network"] = {{"proxy_mode", "system"}, {"proxy_address", ""}};
+    EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::InvalidConfiguration);
 }
 } // namespace open_st

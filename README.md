@@ -4,13 +4,13 @@
 
 Open-ST is a Windows screenshot and annotation tool with an installer and a portable ZIP. Offline Chinese, English and Japanese OCR is included, with editable results and fast/best models. Text translation supports ordered online providers and local Chinese/English models, with automatic source-language detection, line-layout preservation, and connection diagnostics. Image translation remains planned.
 
-The current version is **1.2.0**, targeting Windows 10 22H2 and Windows 11 x64. See the [current progress](docs/implementation_progress.md) for remaining work and acceptance limits.
+The current version is **1.3.0**, targeting Windows 10 22H2 and Windows 11 x64. See the [current progress](docs/implementation_progress.md) for remaining work and acceptance limits.
 
-Right-click the tray icon and choose **Open translation window** to type or paste text and translate it without taking a screenshot. The window uses your configured providers, proxy and local translation settings.
+Right-click the tray icon and choose **Open translation window** to type or paste text and translate it without taking a screenshot. The window uses your configured providers and local translation settings. Long text is split automatically at sentence and line boundaries, then translated in order and assembled. Each online provider entry has its own system, direct or custom HTTP proxy setting in its editor.
 
 ## Download and use
 
-Download from [v1.2.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.2.0):
+Download from [v1.3.0 Releases](https://github.com/Lucency09/Open-ST/releases/tag/v1.3.0):
 
 - **Setup.exe**: current-user or all-users installation and a custom local directory. A verified Microsoft VC++ x64 runtime installer is included and runs only after confirmation when required.
 - **ZIP**: extract the complete archive into a writable folder and run Open-ST.exe. The [Microsoft VC++ x64 runtime](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist) is required separately.

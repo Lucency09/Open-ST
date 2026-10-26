@@ -164,10 +164,31 @@ TEST(HttpTest, validates_tls_proxy_and_header_parameters)
     request.proxy.address = L"http://user:password@127.0.0.1:7897";
     EXPECT_FALSE(IsValidRequest(request));
     request.proxy = {};
+    EXPECT_EQ(request.proxy.mode, ProxyMode::System);
+    request.proxy = {ProxyMode::Direct, L""};
+    EXPECT_TRUE(IsValidRequest(request));
+    request.proxy.address = L"localhost:7897";
+    EXPECT_FALSE(IsValidRequest(request));
+    request.proxy = {};
     request.headers = {{L"X-Test", L"ok\r\nInjected: yes"}};
     EXPECT_FALSE(IsValidRequest(request));
     request.headers = {{L"Content-Length", L"1"}};
     EXPECT_FALSE(IsValidRequest(request));
+}
+
+// 验证明示直连使用回环目标，且无需更改机器系统代理。
+// 入参：无。返回：测试断言。
+TEST(HttpTest, direct_connects_to_loopback_target)
+{
+    LocalServer server("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+    ASSERT_NE(server.port_, 0);
+    Request request = server.MakeRequest();
+    request.url = L"http://127.0.0.1:" + std::to_wstring(server.port_) + L"/direct";
+    request.proxy = {ProxyMode::Direct, L""};
+    const Result result = MakeWinHttpTransport()->Perform(request, {}, [](std::span<const std::byte>) { return true; });
+    EXPECT_EQ(result.error, Error::None);
+    EXPECT_EQ(result.status, 200U);
+    EXPECT_NE(server.Captured().find("/direct"), std::string::npos);
 }
 
 // 验证 POST 字节和自定义头真正到达本机服务，并完整读取响应。

@@ -92,7 +92,7 @@ class SettingsWindow::Impl final
             {
                 const std::string id = page->is_object() ? page->value("id", std::string{}) : "";
                 if ((!this->callbacks_.ocrAvailable && id == "ocr") ||
-                    (!this->callbacks_.translationAvailable && (id == "translation" || id == "translationNetwork")))
+                    (!this->callbacks_.translationAvailable && id == "translation"))
                     page = pages.erase(page);
                 else
                     ++page;

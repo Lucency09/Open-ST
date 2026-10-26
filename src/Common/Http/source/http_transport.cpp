@@ -302,12 +302,13 @@ class WinHttpTransport final : public Transport
             components.dwUrlPathLength == 0 ? L"/" : std::wstring(components.lpszUrlPath, components.dwUrlPathLength);
         if (components.dwExtraInfoLength != 0)
             path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
-        const InternetHandle session(WinHttpOpen(L"Open-ST/1",
-                                                 request.proxy.mode == ProxyMode::System
-                                                     ? WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
-                                                     : WINHTTP_ACCESS_TYPE_NAMED_PROXY,
-                                                 proxyAddress.empty() ? WINHTTP_NO_PROXY_NAME : proxyAddress.c_str(),
-                                                 WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC));
+        const InternetHandle session(
+            WinHttpOpen(L"Open-ST/1",
+                        request.proxy.mode == ProxyMode::System   ? WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+                        : request.proxy.mode == ProxyMode::Direct ? WINHTTP_ACCESS_TYPE_NO_PROXY
+                                                                  : WINHTTP_ACCESS_TYPE_NAMED_PROXY,
+                        proxyAddress.empty() ? WINHTTP_NO_PROXY_NAME : proxyAddress.c_str(), WINHTTP_NO_PROXY_BYPASS,
+                        WINHTTP_FLAG_ASYNC));
         if (!session)
         {
             NetworkFailure(result, GetLastError());

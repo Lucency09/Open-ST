@@ -33,6 +33,7 @@ enum class Method
 enum class ProxyMode
 {
     System,
+    Direct,
     Custom
 };
 struct Proxy

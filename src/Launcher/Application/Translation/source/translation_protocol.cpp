@@ -88,6 +88,27 @@ TranslationError BaiduError(std::string_view code)
     return TranslationError::Service;
 }
 } // namespace
+// 转换条目独有的三种连接方式，非自定义模式不传递保留地址。
+// 入参：profile 为当前条目，output 接收代理。返回：未知模式为配置错误。
+TranslationError ResolveProxy(const nlohmann::json& profile, http::Proxy& output)
+{
+    const nlohmann::json& network = profile.at("network");
+    const std::string mode = network.at("proxy_mode").get<std::string>();
+    http::Proxy candidate;
+    if (mode == "system")
+        candidate.mode = http::ProxyMode::System;
+    else if (mode == "direct")
+        candidate.mode = http::ProxyMode::Direct;
+    else if (mode == "custom")
+    {
+        candidate.mode = http::ProxyMode::Custom;
+        candidate.address = Wide(network.at("proxy_address").get<std::string>());
+    }
+    else
+        return TranslationError::InvalidConfiguration;
+    output = std::move(candidate);
+    return TranslationError::None;
+}
 // 在单次请求边界落实语种、码点、字节和头部预算，不执行网络。
 // 入参：input 为完整接口参数，salt 为随机盐，output 接收构造结果。
 // 返回：成功为 None，失败不改变 output。
@@ -117,14 +138,13 @@ TranslationError BuildRequest(const TranslationRequest& input, const nlohmann::j
         return TranslationError::InputTooLarge;
     const std::string source = Language(provider, input.options.sourceLanguage, false);
     const std::string target = Language(provider, input.options.targetLanguage, true);
-    const TranslationConfiguration& config = input.configuration;
     http::Request request;
     request.method = http::Method::Post;
     request.maxResponseBytes = 1024U * 1024U;
     request.maxErrorBytes = 16U * 1024U;
-    request.proxy.mode = config.proxyMode == "custom" ? http::ProxyMode::Custom : http::ProxyMode::System;
-    if (request.proxy.mode == http::ProxyMode::Custom)
-        request.proxy.address = Wide(config.proxyAddress);
+    const TranslationError proxyError = ResolveProxy(profile, request.proxy);
+    if (proxyError != TranslationError::None)
+        return proxyError;
     request.headers.push_back({L"Content-Type", L"application/json; charset=utf-8"});
     nlohmann::json body;
     if (provider == "baidu")

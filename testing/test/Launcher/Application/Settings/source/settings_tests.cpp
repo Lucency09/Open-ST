@@ -90,6 +90,19 @@ class SettingsTest : public testing::Test
         SettingsTest::WriteRaw(this->root_ / "resources" / "default_settings.json", document.dump(2));
     }
 
+    // 准备包含新网络字段的默认接口，验证旧配置迁移不会误用模板路由。
+    // 入参：无。返回：默认文档的独立副本。
+    nlohmann::json WriteProxyDefaults()
+    {
+        const nlohmann::json profiles =
+            nlohmann::json::array({{{"kind", "google"}, {"network", {{"proxy_mode", "system"}, {"proxy_address", ""}}}},
+                                   {{"kind", "ctranslate2_local"}, {"configuration", nlohmann::json::object()}}});
+        const nlohmann::json defaults{{"schemaVersion", 1},
+                                      {"settings", {{"ui.language", "en-US"}, {"translation.interfaces", profiles}}}};
+        SettingsTest::WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+        return defaults;
+    }
+
     std::filesystem::path root_;
 };
 
@@ -779,7 +792,9 @@ TEST_F(SettingsTest, local_quality_migration_preserves_all_explicit_values)
     this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
     this->WriteRaw(userPath, original.dump());
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
-    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    nlohmann::json expected = original;
+    expected["settings"]["translation.interfaces"][5]["network"] = {{"proxy_mode", "system"}, {"proxy_address", ""}};
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), expected);
 }
 // 资源没有唯一合法引用时不编造档位；用户没接口列表时不多余写入默认列表。
 // 入参：无。返回：隔离配置文件断言。
@@ -805,4 +820,185 @@ TEST_F(SettingsTest, local_quality_migration_does_not_guess_invalid_resources)
     this->WriteRaw(userPath, missing.dump());
     ASSERT_TRUE(open_st::InitializeSettings(this->root_));
     EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), missing);
+}
+
+// 旧全局值仅补在线缺项，显式network（含null）、本地、顺序和未知数据均保留；重复迁移幂等。
+// 入参：无。返回：隔离文件及读取快照断言。
+TEST_F(SettingsTest, proxy_migration_preserves_explicit_networks_and_local_profiles)
+{
+    const nlohmann::json defaults = this->WriteProxyDefaults();
+    nlohmann::json profiles = nlohmann::json::array(
+        {{{"id", "disabled"}, {"kind", "google"}, {"enabled", false}, {"secrets", {{"key", "preserved"}}}},
+         {{"kind", "openai"}, {"network", {{"proxy_mode", "direct"}, {"proxy_address", ""}}}},
+         {{"kind", "custom_http"}, {"network", nullptr}},
+         defaults["settings"]["translation.interfaces"][1]});
+    nlohmann::json original{{"schemaVersion", 1},
+                            {"settings",
+                             {{"translation.interfaces", profiles},
+                              {"translation.network.proxy_mode", "custom"},
+                              {"translation.network.proxy_address", "http://127.0.0.1:7897"},
+                              {"untouched", 42}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    ASSERT_TRUE(open_st::IsSettingsPersistenceAvailable());
+    original["settings"]["translation.interfaces"][0]["network"] = {{"proxy_mode", "custom"},
+                                                                    {"proxy_address", "http://127.0.0.1:7897"}};
+    original["settings"].erase("translation.network.proxy_mode");
+    original["settings"].erase("translation.network.proxy_address");
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+    open_st::JsonFileHandle user;
+    open_st::JsonFileHandle resource;
+    EXPECT_TRUE(open_st::GetSettingsEditFiles(user, resource));
+    open_st::ShutdownSettings();
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+}
+
+// 用户仅设置旧全局代理时，物化默认接口并承接旧值，覆盖模板system但不改本地条目。
+// 入参：无。返回：隔离迁移及JSON读取断言。
+TEST_F(SettingsTest, proxy_migration_materializes_missing_interfaces_using_legacy_values)
+{
+    const nlohmann::json defaults = this->WriteProxyDefaults();
+    const nlohmann::json original{
+        {"schemaVersion", 1},
+        {"settings",
+         {{"translation.network.proxy_mode", "custom"}, {"translation.network.proxy_address", "localhost:7897"}}}};
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    nlohmann::json expected = defaults["settings"]["translation.interfaces"];
+    expected[0]["network"] = {{"proxy_mode", "custom"}, {"proxy_address", "localhost:7897"}};
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces"), expected);
+    const nlohmann::json actual = nlohmann::json::parse(this->ReadRaw(userPath));
+    EXPECT_EQ(actual["settings"].size(), 1U);
+    EXPECT_EQ(actual["settings"]["translation.interfaces"], expected);
+}
+
+// 缺失旧值按历史缺省补齐，显式非法值原样搬移，不能静默改成有效路由。
+// 入参：无。返回：各旧字段组合的隔离迁移断言。
+TEST_F(SettingsTest, proxy_migration_defaults_only_missing_legacy_fields)
+{
+    (void)this->WriteProxyDefaults();
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const std::array<nlohmann::json, 4> legacy{
+        nlohmann::json{{"translation.network.proxy_mode", nullptr}},
+        nlohmann::json{{"translation.network.proxy_address", 7}},
+        nlohmann::json{{"translation.network.proxy_mode", "system"}},
+        nlohmann::json{{"translation.network.proxy_mode", "unknown"},
+                       {"translation.network.proxy_address", "invalid address"}}};
+    for (const nlohmann::json& fields : legacy)
+    {
+        open_st::ShutdownSettings();
+        this->WriteRaw(userPath, nlohmann::json{{"schemaVersion", 1}, {"settings", fields}}.dump());
+        ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+        ASSERT_TRUE(open_st::IsSettingsPersistenceAvailable());
+        const std::optional<nlohmann::json> profiles = open_st::GetJsonSetting("translation.interfaces");
+        ASSERT_TRUE(profiles.has_value());
+        EXPECT_EQ((*profiles)[0]["network"]["proxy_mode"], fields.contains("translation.network.proxy_mode")
+                                                               ? fields["translation.network.proxy_mode"]
+                                                               : nlohmann::json("system"));
+        EXPECT_EQ((*profiles)[0]["network"]["proxy_address"], fields.contains("translation.network.proxy_address")
+                                                                  ? fields["translation.network.proxy_address"]
+                                                                  : nlohmann::json(""));
+        open_st::JsonFileHandle user;
+        open_st::JsonFileHandle resource;
+        EXPECT_TRUE(open_st::GetSettingsEditFiles(user, resource));
+    }
+}
+
+// 未设置旧代理或接口时继续资源回退，不多余物化默认列表。
+// 入参：无。返回：磁盘原样与默认接口读取断言。
+TEST_F(SettingsTest, proxy_migration_does_not_materialize_without_legacy_configuration)
+{
+    const nlohmann::json defaults = this->WriteProxyDefaults();
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const std::string original = R"({"schemaVersion":1,"settings":{"ui.language":"ja-JP"}})";
+    this->WriteRaw(userPath, original);
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_EQ(this->ReadRaw(userPath), original);
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces"), defaults["settings"]["translation.interfaces"]);
+}
+
+// Common拒绝写入或业务结构不明时保留原文件；三个入口均不得补入改变路由的新默认接口。
+// 入参：无。返回：失败保留、默认值门禁及恢复重启断言。
+TEST_F(SettingsTest, unfinished_proxy_migration_blocks_interface_defaults_and_editor)
+{
+    (void)this->WriteProxyDefaults();
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const std::array<nlohmann::json, 5> variants{
+        nlohmann::json::object(), nlohmann::json{{"translation.interfaces", false}},
+        nlohmann::json{{"translation.interfaces", nlohmann::json::array({{{"id", "missing-kind"}}})}},
+        nlohmann::json{{"translation.interfaces", nlohmann::json::array({{{"kind", 7}}})}},
+        nlohmann::json{{"translation.interfaces", nlohmann::json::array({{{"kind", "google"}}})}}};
+    const std::array<std::string_view, 1> keys{"translation.interfaces"};
+    for (const nlohmann::json& variant : variants)
+    {
+        open_st::ShutdownSettings();
+        (void)SetFileAttributesW(userPath.c_str(), FILE_ATTRIBUTE_NORMAL);
+        nlohmann::json settings = variant;
+        settings["translation.network.proxy_mode"] = "custom";
+        settings["translation.network.proxy_address"] = "localhost:7897";
+        settings["ui.language"] = "ja-JP";
+        const std::string original = nlohmann::json{{"schemaVersion", 1}, {"settings", settings}}.dump();
+        this->WriteRaw(userPath, original);
+        ASSERT_NE(SetFileAttributesW(userPath.c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+        ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+        EXPECT_FALSE(open_st::IsSettingsPersistenceAvailable());
+        EXPECT_EQ(this->ReadRaw(userPath), original);
+        EXPECT_FALSE(open_st::ReadSettingsSnapshot(keys));
+        EXPECT_FALSE(open_st::GetJsonSetting("translation.interfaces"));
+        open_st::JsonFileHandle user;
+        open_st::JsonFileHandle resource;
+        EXPECT_FALSE(open_st::GetSettingsEditFiles(user, resource));
+        EXPECT_FALSE(user.IsValid());
+        EXPECT_EQ(open_st::GetStringSetting("ui.language"), "ja-JP");
+    }
+    open_st::ShutdownSettings();
+    ASSERT_NE(SetFileAttributesW(userPath.c_str(), FILE_ATTRIBUTE_NORMAL), FALSE);
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_TRUE(open_st::IsSettingsPersistenceAvailable());
+    EXPECT_TRUE(open_st::ReadSettingsSnapshot(keys));
+    open_st::JsonFileHandle user;
+    open_st::JsonFileHandle resource;
+    EXPECT_TRUE(open_st::GetSettingsEditFiles(user, resource));
+}
+
+// 完整承接的接口即使残留旧键且文件只读，也可读和编辑；network非法内容留给领域修复。
+// 入参：无。返回：三个入口不误拦截断言。
+TEST_F(SettingsTest, completed_proxy_migration_is_readable_even_with_legacy_keys)
+{
+    (void)this->WriteProxyDefaults();
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const nlohmann::json profiles = nlohmann::json::array({{{"kind", "google"}, {"network", nullptr}}});
+    const nlohmann::json original{
+        {"schemaVersion", 1},
+        {"settings", {{"translation.interfaces", profiles}, {"translation.network.proxy_mode", "custom"}}}};
+    this->WriteRaw(userPath, original.dump());
+    ASSERT_NE(SetFileAttributesW(userPath.c_str(), FILE_ATTRIBUTE_READONLY), FALSE);
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    const std::array<std::string_view, 1> keys{"translation.interfaces"};
+    EXPECT_TRUE(open_st::ReadSettingsSnapshot(keys));
+    EXPECT_EQ(open_st::GetJsonSetting("translation.interfaces"), profiles);
+    open_st::JsonFileHandle user;
+    open_st::JsonFileHandle resource;
+    EXPECT_TRUE(open_st::GetSettingsEditFiles(user, resource));
+    EXPECT_EQ(nlohmann::json::parse(this->ReadRaw(userPath)), original);
+}
+
+// 结构无法识别时取消整个候选，包括此前准备的其他补缺，不造成部分迁移。
+// 入参：无。返回：可写文件的原始字节保留断言。
+TEST_F(SettingsTest, invalid_proxy_migration_structure_cancels_common_transaction)
+{
+    nlohmann::json defaults = this->WriteProxyDefaults();
+    defaults["settings"]["translation.provider_resources"] = nlohmann::json::object();
+    this->WriteRaw(this->root_ / "resources/default_settings.json", defaults.dump());
+    const std::filesystem::path userPath = this->root_ / "data/settings.json";
+    const std::string original =
+        R"({"schemaVersion":1,"settings":{"translation.interfaces":[{"kind":"google"},false],"translation.network.proxy_mode":"custom"}})";
+    this->WriteRaw(userPath, original);
+    ASSERT_TRUE(open_st::InitializeSettings(this->root_));
+    EXPECT_FALSE(open_st::IsSettingsPersistenceAvailable());
+    EXPECT_EQ(this->ReadRaw(userPath), original);
+    EXPECT_FALSE(open_st::GetJsonSetting("translation.interfaces"));
 }

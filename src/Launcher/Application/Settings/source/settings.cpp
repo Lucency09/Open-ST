@@ -50,6 +50,68 @@ using open_st::IsSettingsDocument;
 constexpr std::string_view USER_SETTINGS_CARD_NAME = "settings.user";
 constexpr std::string_view DEFAULT_SETTINGS_CARD_NAME = "settings.default";
 
+constexpr std::string_view TRANSLATION_INTERFACES_KEY = "translation.interfaces";
+constexpr std::string_view LEGACY_PROXY_MODE_KEY = "translation.network.proxy_mode";
+constexpr std::string_view LEGACY_PROXY_ADDRESS_KEY = "translation.network.proxy_address";
+
+// 仅识别迁移所需的条目结构，不复制Translation的提供方或代理合法性校验。
+// 入参：profiles 为用户或默认接口列表。
+// 返回：列表中每项都有非空字符串kind时为true；结构不明时不猜测迁移范围。
+bool CanMigrateProfileNetworks(const nlohmann::json& profiles)
+{
+    if (!profiles.is_array())
+        return false;
+    for (const nlohmann::json& profile : profiles)
+        if (!profile.is_object() || !profile.contains("kind") || !profile["kind"].is_string() ||
+            profile["kind"].get_ref<const std::string&>().empty())
+            return false;
+    return true;
+}
+
+// 判断旧代理是否尚未被接口列表承接；已有network内容留给领域层校验和编辑修复。
+// 入参：settings 为合法文档内的设置对象。
+// 返回：旧字段仍在且无法确认承接完成时为true，不检查文件写入条件。
+bool ProfileNetworkMigrationPending(const nlohmann::json& settings)
+{
+    if (!settings.contains(LEGACY_PROXY_MODE_KEY) && !settings.contains(LEGACY_PROXY_ADDRESS_KEY))
+        return false;
+    const nlohmann::json::const_iterator profiles = settings.find(TRANSLATION_INTERFACES_KEY);
+    if (profiles == settings.end() || !CanMigrateProfileNetworks(*profiles))
+        return true;
+    for (const nlohmann::json& profile : *profiles)
+        if (profile["kind"] != "ctranslate2_local" && !profile.contains("network"))
+            return true;
+    return false;
+}
+
+// 在Common提供的候选文档中搬移代理字段，文件锁、冲突检测和原子提交均由Common负责。
+// 入参：settings 为可修改候选设置；defaults 为默认资源中的设置对象。
+// 返回：可以完整迁移时为true；结构无法识别时为false，由外层Write取消整个候选事务。
+bool MigrateProfileNetworks(nlohmann::json& settings, const nlohmann::json& defaults)
+{
+    const bool hasLegacy = settings.contains(LEGACY_PROXY_MODE_KEY) || settings.contains(LEGACY_PROXY_ADDRESS_KEY);
+    const bool materialize = !settings.contains(TRANSLATION_INTERFACES_KEY) && hasLegacy;
+    if (!settings.contains(TRANSLATION_INTERFACES_KEY) && !hasLegacy)
+        return true;
+    const nlohmann::json& sourceSettings = materialize ? defaults : settings;
+    const nlohmann::json::const_iterator source = sourceSettings.find(TRANSLATION_INTERFACES_KEY);
+    if (source == sourceSettings.end() || !CanMigrateProfileNetworks(*source))
+        return false;
+    const nlohmann::json network{
+        {"proxy_mode",
+         settings.contains(LEGACY_PROXY_MODE_KEY) ? settings.at(LEGACY_PROXY_MODE_KEY) : nlohmann::json("system")},
+        {"proxy_address",
+         settings.contains(LEGACY_PROXY_ADDRESS_KEY) ? settings.at(LEGACY_PROXY_ADDRESS_KEY) : nlohmann::json("")}};
+    if (materialize)
+        settings[TRANSLATION_INTERFACES_KEY] = *source;
+    for (nlohmann::json& profile : settings[TRANSLATION_INTERFACES_KEY])
+        if (profile["kind"] != "ctranslate2_local" && (materialize || !profile.contains("network")))
+            profile["network"] = network;
+    settings.erase(LEGACY_PROXY_MODE_KEY);
+    settings.erase(LEGACY_PROXY_ADDRESS_KEY);
+    return true;
+}
+
 class SettingsState final
 {
   public:
@@ -167,7 +229,7 @@ class SettingsState final
                                         profile["configuration"]["quality"] = quality;
                         }
                     }
-                    return true;
+                    return MigrateProfileNetworks(userSettings, defaults);
                 },
                 &writeError);
             if (error != nullptr)
@@ -216,7 +278,7 @@ class SettingsState final
 
     // 取得业务初始化的文件入口，不向公开 Settings API 暴露 JSON 快照。
     // 入参：userFile 输出用户设置文件句柄；defaultFile 输出默认资源句柄；二者共享 Common 管理的文件状态。
-    // 返回：业务已初始化并复制两个句柄时为 true；未初始化时为 false 且输出保持原值。
+    // 返回：配置可供编辑且句柄复制成功时为true；读取失败或旧代理尚未承接时为false，输出保持原值。
     bool EditFiles(open_st::JsonFileHandle& userFile, open_st::JsonFileHandle& defaultFile) noexcept
     {
         const std::scoped_lock<std::mutex> lock(this->mutex_);
@@ -224,9 +286,20 @@ class SettingsState final
         {
             return false;
         }
-        userFile = this->userFile_;
-        defaultFile = this->defaultFile_;
-        return true;
+        try
+        {
+            nlohmann::json document;
+            if (!this->ReadDocument(this->userFile_, document, this->userReadFailed_) ||
+                ProfileNetworkMigrationPending(document.at("settings")))
+                return false;
+            userFile = this->userFile_;
+            defaultFile = this->defaultFile_;
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
     }
 
     // 窗口首次打开时注册布局句柄，之后每次打开仍由 Common 检查磁盘变化。
@@ -276,6 +349,20 @@ class SettingsState final
     // 入参：key 为设置键。返回：独立字段值或空。
     std::optional<nlohmann::json> Json(std::string_view key) noexcept
     {
+        if (key == TRANSLATION_INTERFACES_KEY)
+        {
+            try
+            {
+                const std::optional<nlohmann::json> snapshot = this->Snapshot({&key, 1});
+                if (!snapshot.has_value())
+                    return std::nullopt;
+                return std::optional<nlohmann::json>(snapshot->at(key));
+            }
+            catch (...)
+            {
+                return std::nullopt;
+            }
+        }
         // 任意原始 JSON 均交给领域层校验，不把显式 null 当成缺字段。
         // 入参：值。返回：始终允许原始类型。
         return this->ReadValue<nlohmann::json>(key, [](const nlohmann::json&) { return true; });
@@ -297,6 +384,9 @@ class SettingsState final
             if (!this->ReadDocument(this->userFile_, userDocument, this->userReadFailed_))
                 return std::nullopt;
             const nlohmann::json& user = userDocument.at("settings");
+            for (const std::string_view key : keys)
+                if (key == TRANSLATION_INTERFACES_KEY && ProfileNetworkMigrationPending(user))
+                    return std::nullopt;
             nlohmann::json result = nlohmann::json::object();
             nlohmann::json defaultDocument;
             bool defaultLoaded = false;

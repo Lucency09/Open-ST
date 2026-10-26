@@ -39,8 +39,7 @@ nlohmann::json ProfileField(std::string_view kind, const SettingsTranslationFiel
 // 入参：owner/icon为宿主；profile仅确认后输出；callbacks为领域规则；creating表示新增。
 // 返回：明确确认且完整校验通过为true，取消与失败均不改profile。
 bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, const SettingsWindowCallbacks& callbacks,
-                            bool creating, std::string proxyMode, std::string proxyAddress,
-                            const nlohmann::json& localQualityPresets)
+                            bool creating, const nlohmann::json& localQualityPresets)
 {
     using Json = nlohmann::json;
     const std::optional<SettingsTranslationTestSample> sample =
@@ -51,6 +50,8 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
     const std::string originalKind = profile.at("kind").get<std::string>();
     std::string kind = originalKind, name = profile.at("name").get<std::string>();
     bool enabled = profile.at("enabled").get<bool>();
+    Json network =
+        profile.contains("network") ? profile["network"] : Json{{"proxy_mode", "system"}, {"proxy_address", ""}};
     bool accepted = false;
     bool nameEdited = false;
     std::map<std::string, Json> drafts;
@@ -74,6 +75,21 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                      {{"type", "select"}, {"id", "profileKind"}, {"labelKey", "settings.translation.profile_type"}},
                      {{"type", "checkbox"}, {"id", "profileEnabled"}, {"labelKey", "settings.translation.enabled"}},
                      {{"type", "text"}, {"id", "profileHint"}, {"textKey", "settings.translation.profile_hint"}}});
+    const bool hasNetworkEditor = creating || kind != "ctranslate2_local";
+    if (hasNetworkEditor)
+        children.push_back(
+            {{"type", "column"},
+             {"id", "profileNetwork"},
+             {"gap", 10},
+             {"children", Json::array({{{"type", "select"},
+                                        {"id", "profile.network.proxy_mode"},
+                                        {"labelKey", "settings.translation.network.proxy_mode"}},
+                                       {{"type", "edit"},
+                                        {"id", "profile.network.proxy_address"},
+                                        {"labelKey", "settings.translation.network.proxy_address"},
+                                        {"maxLength", 2048}},
+                                       {{"type", "text"}, {"id", "profileNetworkHelp"},
+                                        {"textKey", "settings.translation.network.help"}}})}});
     if (!resources.error.empty())
         children.push_back({{"type", "text"}, {"id", "resourceError"}, {"textKey", "translation.resources.error"}});
     for (const auto& entry : drafts)
@@ -155,6 +171,10 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
         output["kind"] = kind;
         output["name"] = name;
         output["enabled"] = enabled;
+        if (kind == "ctranslate2_local")
+            output.erase("network");
+        else
+            output["network"] = network;
         return kind != "custom_http" || (custom && custom->Apply(output));
     };
     RequireProfile(renderer.SetTextResolver(
@@ -195,6 +215,8 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
     {
         for (const auto& entry : drafts)
             (void)renderer.SetVisible("kindGroup." + entry.first, entry.first == kind);
+        if (hasNetworkEditor)
+            (void)renderer.SetVisible("profileNetwork", kind != "ctranslate2_local");
         if (custom)
             custom->RefreshVisibility();
         const std::wstring error = assemble(candidate) ? callbacks.validateTranslationProfile(candidate)
@@ -245,11 +267,44 @@ bool EditTranslationProfile(HWND owner, HICON icon, nlohmann::json& profile, con
                                                if (probe.requestId && callbacks.cancelTranslationTest)
                                                    callbacks.cancelTranslationTest(probe.requestId);
                                                testedCandidate = candidate;
-                                               probe = callbacks.submitTranslationTest(
-                                                   candidate, proxyMode, proxyAddress, *sample, localQualityPresets);
+                                               probe = callbacks.submitTranslationTest(candidate, *sample,
+                                                                                       localQualityPresets);
                                            }
                                            (void)validate();
                                        }));
+    if (hasNetworkEditor)
+    {
+        RequireProfile(renderer.BindOptions(
+            "profile.network.proxy_mode",
+            // 连接方式完全消费领域目录。
+            // 入参：无。
+            // 返回：当前本地化选项。
+            [&]() { return TranslationRendererOptions(callbacks.translationChoices("profile.network.proxy_mode")); }));
+        for (const std::string field : {"proxy_mode", "proxy_address"})
+            RequireProfile(renderer.BindString(
+                "profile.network." + field,
+                // 非字符串保留在候选中，以错误状态等待用户主动修复。
+                // 入参：无。
+                // 返回：可编辑文字，不覆盖原始错误值。
+                [&, field]()
+                {
+                    const bool available = network.is_object() && network.contains(field) && network[field].is_string();
+                    return RendererStringResult{true, available ? network[field].get<std::string>() : "", {}};
+                },
+                // 各在线类型共用一份网络草稿，本地隐藏时也不丢失输入。
+                // 入参：value为用户候选。
+                // 返回：接受编辑和完整条目的领域校验结果。
+                [&, field](std::string_view value)
+                {
+                    Json repaired{{"proxy_mode", ""}, {"proxy_address", ""}};
+                    for (const std::string key : {"proxy_mode", "proxy_address"})
+                        if (network.is_object() && network.contains(key))
+                            repaired[key] = network[key];
+                    repaired[field] = value;
+                    network = std::move(repaired);
+                    return RendererChangeResult{true, validate()};
+                }));
+    }
     RequireProfile(renderer.BindString(
         "profileName", // 查询顶部唯一名称草稿。
         // 入参：无。

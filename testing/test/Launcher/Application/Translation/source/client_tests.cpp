@@ -1,8 +1,8 @@
 // 使用统一提供方替身测试真实工作线程的顺序、取消、期限和本地零网络边界。
+#include "translation_test_defaults.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include "translation_test_defaults.h"
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <mutex>
@@ -508,8 +508,7 @@ TEST(TranslationChain, SegmentsUseOriginalOptionsAndPublishOneCompleteIdentity)
     TranslationRequest request = Request({"first", "never"});
     request.text = SegmentedText(3);
     request.options.sourceLanguage = "en";
-    request.configuration.proxyMode = "custom";
-    request.configuration.proxyAddress = "localhost:8765";
+    request.configuration.interfaces[0]["network"] = {{"proxy_mode", "custom"}, {"proxy_address", "localhost:8765"}};
     const TranslationRequest original = request;
     std::uint64_t id{};
     TranslationError error{};
@@ -538,7 +537,7 @@ TEST(TranslationChain, SegmentsUseOriginalOptionsAndPublishOneCompleteIdentity)
         EXPECT_EQ(piece.options.sourceLanguage, original.options.sourceLanguage);
         EXPECT_EQ(piece.options.targetLanguage, original.options.targetLanguage);
         EXPECT_EQ(piece.configuration.interfaces, original.configuration.interfaces);
-        EXPECT_EQ(piece.configuration.proxyAddress, original.configuration.proxyAddress);
+        EXPECT_EQ(piece.configuration.interfaces[0]["network"], original.configuration.interfaces[0]["network"]);
         EXPECT_EQ(piece.sessionId, original.sessionId);
     }
     EXPECT_EQ(request.text, original.text);
@@ -977,23 +976,25 @@ TEST(TranslationChain, OnlineBusinessFallbackKeepsCapturedProxyAndInput)
     first["configuration"]["response"]["error_pointer"] = "/code";
     first["configuration"]["response"]["error_map"] = {{"quota", "quota"}};
     request.configuration.interfaces = nlohmann::json::array({first, CustomProfile(), CustomProfile()});
-    request.configuration.proxyMode = "custom";
-    request.configuration.proxyAddress = "localhost:8765";
+    request.configuration.interfaces[1]["network"]["proxy_mode"] = "direct";
+    request.configuration.interfaces[0]["network"] = {{"proxy_mode", "custom"}, {"proxy_address", "localhost:8765"}};
     std::uint64_t id{};
     TranslationError error{};
     ASSERT_TRUE(client.Submit(request, id, error));
     request.text = "later edit";
-    request.configuration.proxyMode = "system";
+    request.configuration.interfaces[0]["network"]["proxy_mode"] = "system";
     request.configuration.interfaces.clear();
     const TranslationSnapshot snapshot = Finish(client);
     ASSERT_EQ(snapshot.phase, TranslationPhase::Succeeded);
     ASSERT_EQ(snapshot.attempts.size(), 2U);
     EXPECT_EQ(snapshot.attempts[0].error, TranslationError::Quota);
     ASSERT_EQ(transport->requests.size(), 2U);
+    EXPECT_EQ(transport->requests[0].proxy.mode, http::ProxyMode::Custom);
+    EXPECT_EQ(transport->requests[0].proxy.address, L"localhost:8765");
+    EXPECT_EQ(transport->requests[1].proxy.mode, http::ProxyMode::Direct);
+    EXPECT_TRUE(transport->requests[1].proxy.address.empty());
     for (const http::Request& sent : transport->requests)
     {
-        EXPECT_EQ(sent.proxy.mode, http::ProxyMode::Custom);
-        EXPECT_EQ(sent.proxy.address, L"localhost:8765");
         EXPECT_EQ(nlohmann::json::parse(sent.body).at("text"), "hello");
         EXPECT_EQ(sent.maxResponseBytes, 1048576U);
         EXPECT_EQ(sent.maxErrorBytes, 16384U);

@@ -21,8 +21,8 @@
 #include <ocr_client.h>
 #endif
 #ifdef OPEN_ST_HAS_TRANSLATION
-#include <translation_client.h>
 #include <http_transport.h>
+#include <translation_client.h>
 #endif
 
 namespace open_st
@@ -212,9 +212,9 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
         }
     };
     // 接口测试捕获未保存的单项和代理草稿，临时启用只存在于本次不可变请求。
-    // 入参：profile/proxyMode/proxyAddress 为编辑草稿。返回：身份或安全拒绝信息。
-    callbacks.submitTranslationTest = [this](const nlohmann::json& profile, std::string_view proxyMode,
-                                             std::string_view proxyAddress, const SettingsTranslationTestSample& sample,
+    // 入参：profile为包含网络配置的编辑草稿，sample为测试样本，localQualityPresets为本地档位。
+    // 返回：身份或安全拒绝信息。
+    callbacks.submitTranslationTest = [this](const nlohmann::json& profile, const SettingsTranslationTestSample& sample,
                                              const nlohmann::json& localQualityPresets)
     {
         SettingsTranslationTestStatus status;
@@ -243,8 +243,6 @@ SettingsWindowCallbacks App::MakeSettingsCallbacks()
             candidate["enabled"] = true;
             request.configuration.interfaces = nlohmann::json::array({std::move(candidate)});
             request.configuration.localQualityPresets = localQualityPresets;
-            request.configuration.proxyMode = proxyMode;
-            request.configuration.proxyAddress = proxyAddress;
             request.diagnostic = true;
             // 先建立独立补收计时器，避免正常文字会话空闲时移除自身timer导致测试无刷新。
             if (!SetTimer(this->messageWindow_, TranslationPollTimer, 100, nullptr))

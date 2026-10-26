@@ -244,4 +244,23 @@ TEST(TranslationProtocol, custom_editor_choices_match_supported_configuration)
         EXPECT_EQ(ValidateTranslationProfile(profile), TranslationError::None) << category;
     }
 }
+// 验证相同供应商的独立条目使用各自网络配置，保留地址不泄漏到直连或系统请求。
+// 入参：无。返回：断言结果。
+TEST(TranslationProtocol, ProfileNetworkSelectsExplicitRoute)
+{
+    TranslationRequest input = Input("google");
+    for (const std::string mode : {"system", "direct", "custom"})
+    {
+        input.configuration.interfaces[0]["network"] = {{"proxy_mode", mode}, {"proxy_address", "localhost:7897"}};
+        http::Request request;
+        ASSERT_EQ(Build(input, "salt", request), TranslationError::None);
+        EXPECT_EQ(request.proxy.mode, mode == "custom"   ? http::ProxyMode::Custom
+                                      : mode == "direct" ? http::ProxyMode::Direct
+                                                         : http::ProxyMode::System);
+        EXPECT_EQ(request.proxy.address, mode == "custom" ? L"localhost:7897" : L"");
+    }
+    input.configuration.interfaces[0]["network"]["proxy_mode"] = "unknown";
+    http::Request request;
+    EXPECT_EQ(Build(input, "salt", request), TranslationError::InvalidConfiguration);
+}
 } // namespace open_st

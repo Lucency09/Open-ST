@@ -75,9 +75,9 @@ bool Url(std::string_view value, bool base)
 // 返回：静态目录。
 std::span<const std::string_view> TranslationSettingKeys() noexcept
 {
-    static constexpr std::array<std::string_view, 6> KEYS{
-        "translation.interfaces",         "translation.source_language",       "translation.target_language",
-        "translation.network.proxy_mode", "translation.network.proxy_address", "translation.local_quality_presets"};
+    static constexpr std::array<std::string_view, 4> KEYS{"translation.interfaces", "translation.source_language",
+                                                          "translation.target_language",
+                                                          "translation.local_quality_presets"};
     return KEYS;
 }
 // 发布领域候选以供设置和执行共用。
@@ -91,7 +91,7 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
     static constexpr std::array<std::string_view, 3> TARGETS{"zh-CN", "en", "ja"};
     static constexpr std::array<std::string_view, 3> LOCAL_QUALITY{"fast", "balanced", "quality"};
     static constexpr std::array<std::string_view, 2> SERVICES{"free", "pro"};
-    static constexpr std::array<std::string_view, 2> PROXIES{"system", "custom"};
+    static constexpr std::array<std::string_view, 3> PROXIES{"system", "direct", "custom"};
     static constexpr std::array<std::string_view, 4> METHODS{"GET", "POST", "PUT", "PATCH"};
     static constexpr std::array<std::string_view, 4> BODY_MODES{"none", "json", "form", "raw"};
     static constexpr std::array<std::string_view, 2> RESPONSE_MODES{"text", "json"};
@@ -121,7 +121,7 @@ std::span<const std::string_view> TranslationChoices(std::string_view fieldKey) 
         return LOCAL_QUALITY;
     if (fieldKey == "deepl.service")
         return SERVICES;
-    if (fieldKey == "translation.network.proxy_mode")
+    if (fieldKey == "profile.network.proxy_mode")
         return PROXIES;
     return {};
 }
@@ -161,7 +161,8 @@ nlohmann::json CreateTranslationProfile(std::string_view kind, const nlohmann::j
                    {"enabled", false},
                    {"kind", kind},
                    {"configuration", translation_detail::DefaultCustomConfiguration()},
-                   {"secrets", {{"api_key", ""}}}};
+                   {"secrets", {{"api_key", ""}}},
+                   {"network", {{"proxy_mode", "system"}, {"proxy_address", ""}}}};
     }
     else
     {
@@ -197,7 +198,7 @@ try
         return std::find(choices.begin(), choices.end(), value) != choices.end()
                    ? TranslationError::None
                    : TranslationError::InvalidConfiguration;
-    if (fieldKey != "translation.network.proxy_address")
+    if (fieldKey != "profile.network.proxy_address")
         return TranslationError::InvalidConfiguration;
     if (value.empty())
         return TranslationError::None;
@@ -217,7 +218,7 @@ TranslationError ValidateTranslationProfile(const nlohmann::json& profile) noexc
 try
 {
     if (!translation_detail::BoundedJson(profile, 65536) ||
-        !Keys(profile, {"id", "name", "enabled", "kind", "configuration", "secrets"}) || profile.size() != 6 ||
+        !Keys(profile, {"id", "name", "enabled", "kind", "configuration", "secrets", "network"}) ||
         !profile.at("enabled").is_boolean())
         return TranslationError::InvalidConfiguration;
     const std::string id = profile.at("id").get<std::string>();
@@ -230,6 +231,26 @@ try
     const std::span<const std::string_view> kinds = TranslationChoices("translation.kind");
     if (std::find(kinds.begin(), kinds.end(), kind) == kinds.end())
         return TranslationError::InvalidConfiguration;
+    if (kind == "ctranslate2_local")
+    {
+        if (profile.size() != 6 || profile.contains("network"))
+            return TranslationError::InvalidConfiguration;
+    }
+    else
+    {
+        if (profile.size() != 7)
+            return TranslationError::InvalidConfiguration;
+        const nlohmann::json& network = profile.at("network");
+        if (!Keys(network, {"proxy_mode", "proxy_address"}) || network.size() != 2 ||
+            !network.at("proxy_mode").is_string() || !network.at("proxy_address").is_string())
+            return TranslationError::InvalidConfiguration;
+        const std::string& mode = network.at("proxy_mode").get_ref<const std::string&>();
+        const std::string& address = network.at("proxy_address").get_ref<const std::string&>();
+        if (ValidateTranslationField("profile.network.proxy_mode", mode) != TranslationError::None ||
+            ValidateTranslationField("profile.network.proxy_address", address) != TranslationError::None ||
+            (mode == "custom" && address.empty()))
+            return TranslationError::InvalidConfiguration;
+    }
     const nlohmann::json& config = profile.at("configuration");
     const nlohmann::json& secrets = profile.at("secrets");
     if (!config.is_object() || !secrets.is_object() || secrets.size() > 16)
@@ -391,11 +412,9 @@ TranslationSettings ReadTranslationSettings(const std::function<std::optional<nl
     if (!presets)
         throw std::invalid_argument("local translation quality presets missing");
     settings.configuration.localQualityPresets = *presets;
-    const std::array<std::pair<std::string_view, std::string*>, 4> fields{
+    const std::array<std::pair<std::string_view, std::string*>, 2> fields{
         {{"translation.source_language", &settings.options.sourceLanguage},
-         {"translation.target_language", &settings.options.targetLanguage},
-         {"translation.network.proxy_mode", &settings.configuration.proxyMode},
-         {"translation.network.proxy_address", &settings.configuration.proxyAddress}}};
+         {"translation.target_language", &settings.options.targetLanguage}}};
     for (const auto& [key, destination] : fields)
     {
         const std::optional<nlohmann::json> value = read(key);
@@ -414,11 +433,7 @@ TranslationError ValidateTranslationConfiguration(const TranslationConfiguration
                                                   const TranslationOptions& options) noexcept
 {
     if (ValidateTranslationField("translation.source_language", options.sourceLanguage) != TranslationError::None ||
-        ValidateTranslationField("translation.target_language", options.targetLanguage) != TranslationError::None ||
-        ValidateTranslationField("translation.network.proxy_mode", configuration.proxyMode) != TranslationError::None ||
-        ValidateTranslationField("translation.network.proxy_address", configuration.proxyAddress) !=
-            TranslationError::None ||
-        (configuration.proxyMode == "custom" && configuration.proxyAddress.empty()))
+        ValidateTranslationField("translation.target_language", options.targetLanguage) != TranslationError::None)
         return TranslationError::InvalidConfiguration;
     const TranslationError catalogError = ValidateLocalQualityPresets(configuration.localQualityPresets);
     if (catalogError != TranslationError::None)

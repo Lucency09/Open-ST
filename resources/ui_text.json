@@ -1441,15 +1441,10 @@
       "en-US": "Keys are stored as plain text in data/settings.json beside the program. Masking only hides the display; users with read access to that directory can read them.",
       "ja-JP": "キーはプログラム横のdata/settings.jsonに平文で保存されます。伏字は表示のみを隠します。フォルダーの読み取り権限がある利用者はキーを読めます。"
     },
-    "settings.translation.network.title": {
-      "zh-CN": "翻译网络",
-      "en-US": "Translation network",
-      "ja-JP": "翻訳のネットワーク"
-    },
     "settings.translation.network.proxy_mode": {
-      "zh-CN": "代理方式",
-      "en-US": "Proxy mode",
-      "ja-JP": "プロキシ方式"
+      "zh-CN": "连接方式",
+      "en-US": "Connection mode",
+      "ja-JP": "接続方式"
     },
     "settings.translation.network.proxy_address": {
       "zh-CN": "HTTP 代理地址",
@@ -1457,9 +1452,9 @@
       "ja-JP": "HTTPプロキシのアドレス"
     },
     "settings.translation.network.help": {
-      "zh-CN": "跟随系统或填写 host:port／http://host:port。代理失败不会自动直连；本地翻译不使用代理。",
-      "en-US": "Follow system settings or enter host:port / http://host:port. Proxy failures never fall back to direct access. Local translation does not use a proxy.",
-      "ja-JP": "システム設定に従うかhost:port／http://host:portを入力します。プロキシ失敗時に直接接続へ切り替えません。ローカル翻訳はプロキシを使いません。"
+      "zh-CN": "代理地址仅在“自定义 HTTP 代理”时生效。可填写 host:port／http://host:port；代理失败不会自动直连。",
+      "en-US": "The address applies only to Custom HTTP proxy. Enter host:port or http://host:port. Proxy failures never fall back to direct access.",
+      "ja-JP": "アドレスは「カスタムHTTPプロキシ」の場合のみ有効です。host:port／http://host:portを入力します。失敗時に直接接続へ切り替えません。"
     },
     "settings.translation.profile_name": {
       "zh-CN": "接口名称",
@@ -2345,6 +2340,11 @@
       "zh-CN": "截图参数无效。请检查 settings.json 中的 HDR 高光上限：必须是 1000～10000 nit 的整数。",
       "en-US": "Screenshot parameters are invalid. Check the HDR highlight ceiling in settings.json: it must be an integer from 1000 to 10000 nit.",
       "ja-JP": "撮影パラメーターが無効です。settings.json の HDR ハイライト上限を確認してください。1000～10000 nit の整数が必要です。"
+    },
+    "translation.choice.direct": {
+      "zh-CN": "直连",
+      "en-US": "Direct connection",
+      "ja-JP": "直接接続"
     }
   }
 }

@@ -103,6 +103,8 @@ nlohmann::json Profile(std::string_view kind)
                  {"enabled", false},
                  {"configuration", Json::object()},
                  {"secrets", {{"api_key", "original-secret"}}}};
+    if (kind != "ctranslate2_local")
+        profile["network"] = {{"proxy_mode", "system"}, {"proxy_address", ""}};
     if (kind == "custom_http")
         profile["configuration"] = {{"method", "POST"},
                                     {"url", "https://example.invalid/translate"},
@@ -194,6 +196,8 @@ class TranslationProfileDialogTest : public testing::Test
             std::vector<std::string> values;
             if (key == "translation.kind")
                 values = {"test", "custom_http"};
+            else if (key == "profile.network.proxy_mode")
+                values = {"system", "direct", "custom"};
             else if (key == "custom.method")
                 values = {"GET", "POST", "PUT", "PATCH"};
             else if (key == "custom.body_mode")
@@ -230,8 +234,8 @@ class TranslationProfileDialogTest : public testing::Test
         this->deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         this->timer_ = SetTimer(this->owner_, 901, 15, Drive);
         EXPECT_NE(this->timer_, 0U);
-        const bool accepted = open_st::EditTranslationProfile(this->owner_, nullptr, profile, callbacks, creating,
-                                                              "manual", "http://127.0.0.1:7897", this->presets_);
+        const bool accepted =
+            open_st::EditTranslationProfile(this->owner_, nullptr, profile, callbacks, creating, this->presets_);
         EXPECT_TRUE(this->visited_);
         EXPECT_FALSE(this->timedOut_);
         return accepted;
@@ -359,9 +363,9 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
     {
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
-        callbacks.submitTranslationTest =
-            [&](const nlohmann::json& candidate, std::string_view mode, std::string_view address,
-                const open_st::SettingsTranslationTestSample& sample, const nlohmann::json&)
+        callbacks.submitTranslationTest = [&](const nlohmann::json& candidate,
+                                              const open_st::SettingsTranslationTestSample& sample,
+                                              const nlohmann::json&)
         {
             ++submitted;
             EXPECT_EQ(sample.text, "配置中的测试原文");
@@ -370,8 +374,8 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
             EXPECT_EQ(candidate["name"], "Unsaved");
             EXPECT_EQ(candidate["secrets"]["api_key"], "draft-secret");
             EXPECT_FALSE(candidate["enabled"].get<bool>());
-            EXPECT_EQ(mode, "manual");
-            EXPECT_EQ(address, "http://127.0.0.1:7897");
+            EXPECT_EQ(candidate["network"]["proxy_mode"], "custom");
+            EXPECT_EQ(candidate["network"]["proxy_address"], "http://127.0.0.1:7897");
             return open_st::SettingsTranslationTestStatus{91, true, L"working"};
         };
         callbacks.translationTestStatus = [](std::uint64_t id)
@@ -385,6 +389,8 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
     this->action_ = [](HWND window)
     {
         SetWindowTextW(Field(window, L"settings.translation.profile_name", L"EDIT"), L"Unsaved");
+        Select(Field(window, L"settings.translation.network.proxy_mode", L"COMBOBOX"), L"custom");
+        SetWindowTextW(Field(window, L"settings.translation.network.proxy_address", L"EDIT"), L"http://127.0.0.1:7897");
         SetWindowTextW(Field(window, L"settings.translation.field.api_key", L"EDIT"), L"draft-secret");
         EXPECT_NE(Control(window, L"STATIC", L"配置样本说明"), nullptr);
         const HWND test = Control(window, L"BUTTON", L"translation.test.start");
@@ -394,7 +400,7 @@ TEST_F(TranslationProfileDialogTest, connection_test_uses_unsaved_disabled_draft
         ASSERT_NE(output, nullptr);
         EXPECT_NE(GetWindowLongPtrW(output, GWL_STYLE) & ES_READONLY, 0);
         EXPECT_EQ(Value(output), L"working");
-        SetWindowTextW(Field(window, L"settings.translation.profile_name", L"EDIT"), L"Changed after test");
+        SetWindowTextW(Field(window, L"settings.translation.network.proxy_address", L"EDIT"), L"http://127.0.0.1:7898");
         EXPECT_NE(Value(output).find(L"translation.test.previous"), std::wstring::npos);
         EXPECT_NE(Control(window, L"BUTTON", L"translation.test.cancel"), nullptr);
         PostMessageW(window, WM_CLOSE, 0, 0);
@@ -417,8 +423,8 @@ TEST_F(TranslationProfileDialogTest, connection_result_is_polled_after_host_disp
     {
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return open_st::SettingsTranslationTestSample{"配置中的测试原文", "zh-CN", "en", L"配置样本说明"}; };
-        callbacks.submitTranslationTest = [](const nlohmann::json&, std::string_view, std::string_view,
-                                             const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
+        callbacks.submitTranslationTest =
+            [](const nlohmann::json&, const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
         { return open_st::SettingsTranslationTestStatus{72, true, L"pending"}; };
         callbacks.cancelTranslationTest = [](std::uint64_t id) { EXPECT_EQ(id, 72U); };
         callbacks.translationTestStatus = [&](std::uint64_t id)
@@ -464,8 +470,8 @@ TEST_F(TranslationProfileDialogTest, missing_configured_sample_disables_connecti
     {
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return std::nullopt; };
-        callbacks.submitTranslationTest = [&](const nlohmann::json&, std::string_view, std::string_view,
-                                              const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
+        callbacks.submitTranslationTest =
+            [&](const nlohmann::json&, const open_st::SettingsTranslationTestSample&, const nlohmann::json&)
         {
             ++submitted;
             return open_st::SettingsTranslationTestStatus{};
@@ -550,7 +556,7 @@ TEST_F(TranslationProfileDialogTest, local_quality_selection_and_probe_use_same_
         };
         callbacks.translationTestSample = []() -> std::optional<open_st::SettingsTranslationTestSample>
         { return open_st::SettingsTranslationTestSample{"test", "en", "zh-CN", L"sample"}; };
-        callbacks.submitTranslationTest = [&](const nlohmann::json& profile, std::string_view, std::string_view,
+        callbacks.submitTranslationTest = [&](const nlohmann::json& profile,
                                               const open_st::SettingsTranslationTestSample&,
                                               const nlohmann::json& presets)
         {
@@ -577,4 +583,87 @@ TEST_F(TranslationProfileDialogTest, local_quality_selection_and_probe_use_same_
     EXPECT_TRUE(this->Run(profile));
     EXPECT_EQ(submissions, 1U);
     EXPECT_EQ(profile["configuration"]["quality"], "quality");
+}
+
+// 在线类型共用网络草稿，本地隐藏后切回仍保留；取消不触碰父候选。
+// 入参：无。
+// 返回：无。
+TEST_F(TranslationProfileDialogTest, network_draft_survives_kind_switch_and_local_omits_network)
+{
+    this->configure_ = [](open_st::SettingsWindowCallbacks& callbacks)
+    {
+        const auto choices = callbacks.translationChoices;
+        callbacks.translationChoices = [choices](std::string_view key)
+        {
+            if (key == "translation.kind")
+                return std::vector<open_st::SettingsOption>{
+                    {"test", L"test"}, {"custom_http", L"custom_http"}, {"ctranslate2_local", L"local"}};
+            return choices(key);
+        };
+    };
+    this->action_ = [](HWND window)
+    {
+        const HWND type = Field(window, L"settings.translation.profile_type", L"COMBOBOX");
+        const HWND address = Field(window, L"settings.translation.network.proxy_address", L"EDIT");
+        ASSERT_NE(address, nullptr);
+        EXPECT_TRUE(IsWindowEnabled(address));
+        SetWindowTextW(address, L"http://127.0.0.1:7897");
+        Select(Field(window, L"settings.translation.network.proxy_mode", L"COMBOBOX"), L"direct");
+        Select(type, L"custom_http");
+        EXPECT_EQ(Value(address), L"http://127.0.0.1:7897");
+        Select(type, L"local");
+        EXPECT_FALSE(IsWindowVisible(address));
+        Select(type, L"test");
+        EXPECT_TRUE(IsWindowVisible(address));
+        EXPECT_EQ(Value(address), L"http://127.0.0.1:7897");
+        Select(type, L"local");
+        SendMessageW(Control(window, L"BUTTON", L"dialog.ok"), BM_CLICK, 0, 0);
+    };
+    nlohmann::json profile = Profile("test");
+    EXPECT_TRUE(this->Run(profile, true));
+    EXPECT_EQ(profile["kind"], "ctranslate2_local");
+    EXPECT_FALSE(profile.contains("network"));
+}
+
+// 非法网络原值不得被默认值替换，用户修复后才可确认。
+// 入参：无。
+// 返回：无。
+TEST_F(TranslationProfileDialogTest, malformed_network_is_editable_and_requires_explicit_repair)
+{
+    this->configure_ = [](open_st::SettingsWindowCallbacks& callbacks)
+    {
+        callbacks.validateTranslationProfile = [](const nlohmann::json& profile)
+        {
+            const nlohmann::json& network = profile.at("network");
+            return network.is_object() && network.size() == 2 && network.contains("proxy_mode") &&
+                           network["proxy_mode"] == "direct" && network.contains("proxy_address") &&
+                           network["proxy_address"].is_string()
+                       ? L""
+                       : L"invalid";
+        };
+    };
+    this->action_ = [](HWND window)
+    {
+        const HWND accept = Control(window, L"BUTTON", L"dialog.ok");
+        EXPECT_FALSE(IsWindowEnabled(accept));
+        const HWND address = Field(window, L"settings.translation.network.proxy_address", L"EDIT");
+        ASSERT_NE(address, nullptr);
+        EXPECT_TRUE(IsWindowEnabled(address));
+        Select(Field(window, L"settings.translation.network.proxy_mode", L"COMBOBOX"), L"direct");
+        SetWindowTextW(address, L"http://127.0.0.1:7897");
+        EXPECT_TRUE(IsWindowEnabled(accept));
+        SendMessageW(accept, BM_CLICK, 0, 0);
+    };
+    for (const nlohmann::json& network :
+         {nlohmann::json(nullptr),
+          nlohmann::json{{"proxy_mode", "system"}, {"proxy_address", ""}, {"unexpected", true}}})
+    {
+        this->visited_ = false;
+        nlohmann::json profile = Profile("test");
+        profile["network"] = network;
+        EXPECT_TRUE(this->Run(profile));
+        EXPECT_EQ(profile["network"].size(), 2U);
+        EXPECT_EQ(profile["network"]["proxy_mode"], "direct");
+        EXPECT_EQ(profile["network"]["proxy_address"], "http://127.0.0.1:7897");
+    }
 }

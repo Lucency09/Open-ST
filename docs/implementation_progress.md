@@ -1,8 +1,26 @@
 # Open-ST 实现进度
 
 更新时间：2026-10-26
-当前版本：`1.2.0`；发行页面：[v1.2.0](https://github.com/Lucency09/Open-ST/releases/tag/v1.2.0)，公开状态以该页面为准。
+当前源码版本：`1.3.0`；发行页面：[v1.3.0](https://github.com/Lucency09/Open-ST/releases/tag/v1.3.0)，公开状态以该页面为准。
 系统视觉样式更新：2026-09-09，已启用 Common Controls v6，Debug/Release 构建和 62 项设置测试通过。
+
+## 2026-10-26 v1.3.0发行准备
+
+- [x] 用户授权提交并发布；本版包含已提交自动分段与接口独立代理，按旧例排除.gitignore。
+- [x] 工程、manifest及中英文说明版本统一1.3.0；沿用分段95项及接口代理268项定向验证，不重复已通过业务回归。
+- 发布采用本次提交的Release安装包、ZIP和SHA256SUMS，核对版本、模式、模型/许可证和清单后公开；构建记录位于artifacts/1.3.0，实际公开状态以GitHub发行页为准。
+- 新页面完整视觉验收、Windows10/多账户安装矩阵等限制继续保留，未以发布授权追认为已验证。
+
+## 2026-10-26 翻译接口独立代理
+
+- [x] 按[已批准方案](design/per-interface-translation-proxy.md)完成每个在线接口独立system/direct/custom及地址；移除全局翻译网络页，测试连接冻结未保存完整条目，正式翻译按当前接口选择路由。
+- [x] Settings只在Common现有Write回调中搬移旧字段；Common文件锁、冲突检测和原子写入实现不变。已有network不覆盖，缺接口列表时承接旧全局值，迁移未完成不补入改变路由的新默认接口；非法值允许逐条修复草稿，主窗口应用前全表校验。
+- [x] 范围为19个既有生产/资源文件、9个测试文件；无新增产品模块/CMake/依赖，Local、Segmentation及Translation调度实现未修改。
+- [x] 268个不同定向用例通过：Http 13、Translation 67、Settings 158、Application 30；另1个欢迎窗口人工用例默认跳过。未运行全量；去重汇总见testing/testoutput/proxy-verification-summary.json。
+- [x] 修复实际回归发现的网络说明节点缺id及多条非法接口无法逐条修复问题，对应14项失败用例复跑全部通过。沙箱内PDB、WinHTTP回环和文件提交受限，外部同命令/用例对比通过；未为此修改构建脚本、文件事务或网络行为。
+- [x] 最终Debug /W4 /WX构建通过，产物build/Debug/src/Launcher/Open-ST.exe；Astra监督复核通过，UTF-8/CRLF和diff检查通过，.gitignore原有内容保持不变。
+- [ ] 实际页面视觉验收未完成：Computer Use启动隔离验收副本时授权超时；真实窗口自动化用例已通过，但不代替DPI和人工视觉检查。
+- [x] 用户于2026-10-26授权提交并发布，纳入v1.3.0；验收缺口仍如上记录。
 
 ## 2026-10-26 固定长度自动分段（10月25日批准）
 

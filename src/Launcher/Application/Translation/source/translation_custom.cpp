@@ -389,8 +389,9 @@ try
             return TranslationError::MissingCredentials;
     if (!contentType && !type.empty())
         request.headers.push_back({L"Content-Type", std::move(type)});
-    request.proxy = {input.configuration.proxyMode == "custom" ? http::ProxyMode::Custom : http::ProxyMode::System,
-                     Wide(input.configuration.proxyAddress)};
+    const TranslationError proxyError = ResolveProxy(profile, request.proxy);
+    if (proxyError != TranslationError::None)
+        return proxyError;
     request.maxResponseBytes = 1048576;
     request.maxErrorBytes = 16384;
     const TranslationError budget = RequestBudget(request);

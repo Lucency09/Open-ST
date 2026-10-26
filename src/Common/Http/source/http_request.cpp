@@ -42,10 +42,13 @@ bool IsValidRequest(const Request& request) noexcept
                 return false;
             }
         }
-        if (request.proxy.mode != ProxyMode::System && request.proxy.mode != ProxyMode::Custom)
+        if (request.proxy.mode != ProxyMode::System && request.proxy.mode != ProxyMode::Direct &&
+            request.proxy.mode != ProxyMode::Custom)
         {
             return false;
         }
+        if (request.proxy.mode == ProxyMode::Direct && !request.proxy.address.empty())
+            return false;
         if (request.proxy.mode == ProxyMode::Custom)
         {
             const std::wstring proxyUrl = request.proxy.address.find(L"://") == std::wstring::npos

@@ -467,8 +467,8 @@ TEST_F(TextTranslationInteractionTest, configuration_change_preserves_stale_tran
     this->TranslateSucceeded("translated");
     this->ClickTranslate();
     const std::uint64_t oldRevision = this->state_.request.configurationRevision;
-    this->settings_["translation.network.proxy_mode"] = "custom";
-    this->settings_["translation.network.proxy_address"] = "localhost:3456";
+    this->settings_["translation.interfaces"][0]["network"]["proxy_mode"] = "custom";
+    this->settings_["translation.interfaces"][0]["network"]["proxy_address"] = "localhost:3456";
     this->session_->ConfigurationChanged();
     EXPECT_EQ(this->TranslationValue(), L"translated");
     EXPECT_TRUE(this->HasText(L"translation.stale"));
@@ -478,8 +478,8 @@ TEST_F(TextTranslationInteractionTest, configuration_change_preserves_stale_tran
     EXPECT_EQ(this->state_.translationSubmissions, 2U);
     this->ClickTranslate();
     EXPECT_GT(this->state_.request.configurationRevision, oldRevision);
-    EXPECT_EQ(this->state_.request.configuration.proxyMode, "custom");
-    EXPECT_EQ(this->state_.request.configuration.proxyAddress, "localhost:3456");
+    EXPECT_EQ(this->state_.request.configuration.interfaces[0]["network"]["proxy_mode"], "custom");
+    EXPECT_EQ(this->state_.request.configuration.interfaces[0]["network"]["proxy_address"], "localhost:3456");
 }
 // 旧任务取消未收尾时重开窗口仍禁用翻译按钮，迟到旧译文不得进入新截图。
 // 入参：无。返回：断言结果。

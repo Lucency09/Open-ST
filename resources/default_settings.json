@@ -22,6 +22,10 @@
         },
         "secrets": {
           "api_key": ""
+        },
+        "network": {
+          "proxy_mode": "system",
+          "proxy_address": ""
         }
       },
       {
@@ -30,7 +34,11 @@
         "enabled": false,
         "kind": "google",
         "configuration": {},
-        "secrets": {}
+        "secrets": {},
+        "network": {
+          "proxy_mode": "system",
+          "proxy_address": ""
+        }
       },
       {
         "id": "default-openai",
@@ -43,6 +51,10 @@
         },
         "secrets": {
           "api_key": ""
+        },
+        "network": {
+          "proxy_mode": "system",
+          "proxy_address": ""
         }
       },
       {
@@ -55,6 +67,10 @@
         },
         "secrets": {
           "api_key": ""
+        },
+        "network": {
+          "proxy_mode": "system",
+          "proxy_address": ""
         }
       },
       {
@@ -67,6 +83,10 @@
         },
         "secrets": {
           "api_key": ""
+        },
+        "network": {
+          "proxy_mode": "system",
+          "proxy_address": ""
         }
       },
       {
@@ -83,8 +103,6 @@
     ],
     "translation.source_language": "auto",
     "translation.target_language": "zh-CN",
-    "translation.network.proxy_mode": "system",
-    "translation.network.proxy_address": "",
     "translation.test_sample": {
       "text": "Hello, world!",
       "source_language": "en",

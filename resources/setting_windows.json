@@ -411,34 +411,6 @@
       }
     },
     {
-      "id": "translationNetwork",
-      "titleKey": "settings.translation.network.title",
-      "content": {
-        "type": "column",
-        "id": "translationNetworkContent",
-        "padding": 16,
-        "gap": 12,
-        "children": [
-          {
-            "type": "select",
-            "id": "translation.network.proxy_mode",
-            "labelKey": "settings.translation.network.proxy_mode"
-          },
-          {
-            "type": "edit",
-            "id": "translation.network.proxy_address",
-            "labelKey": "settings.translation.network.proxy_address",
-            "maxLength": 2048
-          },
-          {
-            "type": "text",
-            "id": "translationNetworkHelp",
-            "textKey": "settings.translation.network.help"
-          }
-        ]
-      }
-    },
-    {
       "id": "maintenance",
       "titleKey": "settings.maintenance.title",
       "content": {
