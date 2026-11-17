@@ -51,6 +51,65 @@ void PumpMessages()
         DispatchMessageW(&message);
     }
 }
+// 复制当前客户区的已有像素，故意不调用会触发重新绘制的 PrintWindow。
+// 入参：window 为可见测试窗口；pixels 接收按行排列的 32 位 RGB 像素。
+// 返回：复制成功为 true；GDI 分配或读取失败为 false，资源始终在函数退出时释放。
+bool ReadPaintedPixels(HWND window, std::vector<DWORD>& pixels)
+{
+    RECT client{};
+    if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
+        return false;
+    struct Capture
+    {
+        HWND window;
+        HDC source;
+        HDC memory;
+        HBITMAP bitmap;
+        HGDIOBJ previous;
+        // 回收本次像素复制拥有的 GDI 资源，并归还借用的窗口 DC。
+        // 入参：无。
+        // 返回：无返回值。
+        ~Capture()
+        {
+            if (this->previous != nullptr)
+                SelectObject(this->memory, this->previous);
+            if (this->bitmap != nullptr)
+                DeleteObject(this->bitmap);
+            if (this->memory != nullptr)
+                DeleteDC(this->memory);
+            if (this->source != nullptr)
+                ReleaseDC(this->window, this->source);
+        }
+    };
+    // 不指定 DCX_CLIPCHILDREN，读取最终呈现的子控件及其间隙。
+    Capture capture{window, GetDCEx(window, nullptr, DCX_CACHE), nullptr, nullptr, nullptr};
+    if (capture.source == nullptr)
+        return false;
+    capture.memory = CreateCompatibleDC(capture.source);
+    capture.bitmap = CreateCompatibleBitmap(capture.source, client.right, client.bottom);
+    if (capture.memory == nullptr || capture.bitmap == nullptr)
+        return false;
+    capture.previous = SelectObject(capture.memory, capture.bitmap);
+    if (capture.previous == nullptr || capture.previous == HGDI_ERROR)
+    {
+        capture.previous = nullptr;
+        return false;
+    }
+    if (!BitBlt(capture.memory, 0, 0, client.right, client.bottom, capture.source, 0, 0, SRCCOPY))
+        return false;
+    SelectObject(capture.memory, capture.previous);
+    capture.previous = nullptr;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = client.right;
+    info.bmiHeader.biHeight = -client.bottom;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    pixels.resize(static_cast<std::size_t>(client.right) * static_cast<std::size_t>(client.bottom));
+    return GetDIBits(capture.memory, capture.bitmap, 0, static_cast<UINT>(client.bottom), pixels.data(), &info,
+                     DIB_RGB_COLORS) == client.bottom;
+}
 class RendererBindingTest : public testing::Test
 {
   protected:
@@ -481,6 +540,84 @@ TEST_F(RendererBindingTest, scrollbar_range_matches_wrapped_content_on_first_ref
     EXPECT_EQ(SendMessageW(combo, CB_GETCURSEL, 0, 0), 1);
     EXPECT_EQ(this->draft_, "b");
     EXPECT_EQ(this->changes_, 0);
+}
+// 验证已滚动表单反复改变状态与字段错误后，正常消息绘制与完整刷新得到相同画面。
+// 入参：无；使用独立草稿和可见但不激活的测试窗口，不发送系统输入或保存数据。
+// 返回：无返回值；以完整刷新前后的实际像素差异发现子控件残影，而非只检查最终几何。
+TEST_F(RendererBindingTest, scrolled_relayout_repaints_final_child_pixels)
+{
+    nlohmann::json document = WindowDocument();
+    nlohmann::json& children = document["pages"][0]["content"]["children"];
+    children.push_back({{"type", "edit"}, {"id", "endpoint"}, {"labelKey", "endpoint"}, {"readOnly", true}});
+    children.push_back({{"type", "text"}, {"id", "help"}, {"textKey", "help"}});
+    children.push_back({{"type", "button"}, {"id", "probe"}, {"textKey", "probe"}});
+    children.push_back({{"type", "text"}, {"id", "result"}, {"textKey", "result"}});
+    children.push_back({{"type", "text"}, {"id", "hint"}, {"textKey", "hint"}});
+    children.push_back(
+        {{"type", "edit"}, {"id", "output"}, {"multiline", true}, {"visibleLines", 8}, {"readOnly", true}});
+    this->Prepare(std::move(document));
+    // 提供无副作用的固定输入，字段错误由测试显式设置。
+    // 入参：无。
+    // 返回：成功读取空地址草稿。
+    ASSERT_TRUE(this->renderer_.BindString("endpoint", []() { return open_st::RendererStringResult{true, "", {}}; }));
+    // 固定多行内容使移位复制的旧文字与空白区域具备可比较差异。
+    // 入参：无。
+    // 返回：成功读取八行不同的测试内容。
+    ASSERT_TRUE(this->renderer_.BindString("output",
+                                           []()
+                                           {
+                                               return open_st::RendererStringResult{
+                                                   true,
+                                                   "first line\r\nsecond line\r\nthird line\r\nfourth line\r\n"
+                                                   "fifth line\r\nsixth line\r\nseventh line\r\neighth line",
+                                                   {}};
+                                           }));
+    // 仅满足表单按钮绑定，不触发任何外部动作。
+    // 入参：无。
+    // 返回：无返回值。
+    ASSERT_TRUE(this->renderer_.BindAction("probe", []() {}));
+    this->Show();
+    const HWND window = this->renderer_.NativeHandle();
+    RECT outer{0, 0, 480, 300};
+    ASSERT_TRUE(AdjustWindowRectExForDpi(&outer, static_cast<DWORD>(GetWindowLongPtrW(window, GWL_STYLE)), FALSE,
+                                         static_cast<DWORD>(GetWindowLongPtrW(window, GWL_EXSTYLE)),
+                                         GetDpiForWindow(window)));
+    ASSERT_TRUE(SetWindowPos(window, HWND_TOPMOST, 20, 20, outer.right - outer.left, outer.bottom - outer.top,
+                             SWP_NOACTIVATE | SWP_SHOWWINDOW));
+    const HWND combo = this->Combo();
+    ASSERT_NE(combo, nullptr);
+    const HWND viewport = GetParent(combo);
+    ASSERT_NE(GetWindowLongPtrW(viewport, GWL_STYLE) & WS_VSCROLL, 0);
+    // 不授予编辑控件焦点，避免插入符闪烁进入两次像素测量。
+    ASSERT_NE(GetFocus(), FindWindowExW(viewport, nullptr, L"EDIT", nullptr));
+    PumpMessages();
+    SendMessageW(viewport, WM_VSCROLL, SB_LINEDOWN, 0);
+    PumpMessages();
+    SCROLLINFO scroll{sizeof(scroll), SIF_POS};
+    ASSERT_TRUE(GetScrollInfo(viewport, SB_VERT, &scroll));
+    ASSERT_GT(scroll.nPos, 0);
+
+    for (int step = 0; step < 4; ++step)
+    {
+        SCOPED_TRACE(step);
+        ASSERT_TRUE(this->renderer_.SetStatus(step % 2 == 0 ? L"Invalid address. Check the required fields." : L""));
+        ASSERT_TRUE(this->renderer_.SetFieldError("endpoint", step % 2 == 0 ? L"An address is required." : L""));
+        // 实际图仅正常排空 WM_PAINT，禁止在此之前强制重绘来掩盖残影。
+        PumpMessages();
+        std::vector<DWORD> actual;
+        ASSERT_TRUE(ReadPaintedPixels(viewport, actual));
+        ASSERT_TRUE(
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW));
+        PumpMessages();
+        std::vector<DWORD> expected;
+        ASSERT_TRUE(ReadPaintedPixels(viewport, expected));
+        ASSERT_EQ(actual.size(), expected.size());
+        std::size_t differences = 0;
+        for (std::size_t index = 0; index < actual.size(); ++index)
+            if ((actual[index] & 0x00ffffffU) != (expected[index] & 0x00ffffffU))
+                ++differences;
+        EXPECT_EQ(differences, 0U) << "Normal layout painting left pixels repaired by a complete repaint";
+    }
 }
 // 验证DPI 重排只改变几何与字体，144/192 DPI 下保持当前草稿及选择。
 // 入参：无运行入参；测试宏中的套件名和用例名用于 GoogleTest 注册。

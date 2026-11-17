@@ -780,6 +780,10 @@ void WindowRenderer::Impl::Arrange()
             if (child != nullptr)
                 ShowWindow(child, visible ? SW_SHOWNA : SW_HIDE);
     }
+    // 逐个移动时可能复制随后被其他控件覆盖的旧像素；最终几何确定后统一重绘视口及子控件。
+    // 仅修补可见视口，避免影响隐藏窗口的首次显示；连续重排只合并无效区域，不额外同步刷新。
+    if (IsWindowVisible(this->viewport))
+        RedrawWindow(this->viewport, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
 }
 
 // 按照布局顺序创建原生控件并初始化显示草稿。
