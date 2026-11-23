@@ -10,10 +10,13 @@
 #include <selection_model.h>
 #include <sdr_selection_frame.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <format>
+#include <iterator>
 #include <string>
 #include <windows.h>
 
@@ -64,10 +67,10 @@ class HiddenWindow final
 {
   public:
     // 创建供 GPU 绘制与回读测试使用的隐藏无边框窗口。
-    // 入参：width、height：客户区宽高，单位物理像素。
+    // 入参：width、height 为客户区宽高，left、top 为虚拟桌面左上角坐标，单位均为物理像素。
     // 返回：无返回值；窗口创建失败时 Get() 返回 nullptr。
-    HiddenWindow(int width, int height)
-        : window_(CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP, 0, 0, width, height, nullptr, nullptr,
+    HiddenWindow(int width, int height, int left = 0, int top = 0)
+        : window_(CreateWindowExW(WS_EX_TOOLWINDOW, L"STATIC", L"", WS_POPUP, left, top, width, height, nullptr, nullptr,
                                   GetModuleHandleW(nullptr), nullptr))
     {
     }
@@ -101,6 +104,42 @@ class HiddenWindow final
 
   private:
     HWND window_{};
+};
+
+class PhysicalPixelsScope final
+{
+  public:
+    // 将当前测试线程设为 Per-Monitor V2，使窗口坐标使用物理像素。
+    // 入参：无。返回：无返回值；可通过 IsActive 确认是否成功。
+    PhysicalPixelsScope() : previous_(SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {}
+
+    // 恢复测试线程原有的 DPI 上下文。
+    // 入参：无。返回：无返回值；切换失败时无需恢复。
+    ~PhysicalPixelsScope()
+    {
+        if (this->previous_ != nullptr)
+        {
+            SetThreadDpiAwarenessContext(this->previous_);
+        }
+    }
+
+    // 防止多个对象恢复同一个线程上下文。
+    // 入参：拟复制的作用域。返回：删除的拷贝构造函数。
+    PhysicalPixelsScope(const PhysicalPixelsScope&) = delete;
+
+    // 防止赋值覆盖需要恢复的线程上下文。
+    // 入参：拟复制的作用域。返回：删除的拷贝赋值运算符。
+    PhysicalPixelsScope& operator=(const PhysicalPixelsScope&) = delete;
+
+    // 确认当前作用域已切换 DPI 上下文。
+    // 入参：无。返回：切换成功时为 true。
+    bool IsActive() const noexcept
+    {
+        return this->previous_ != nullptr;
+    }
+
+  private:
+    DPI_AWARENESS_CONTEXT previous_{};
 };
 
 // 生成边框位于测试窗口外的跨屏选区，使像素回读不受暗层和描边影响。
@@ -229,6 +268,69 @@ TEST_F(OverlayRendererIntegrationTest, rejects_stale_output_identity)
     EXPECT_NE(errorMessage.find(L"显示输出与冻结帧不一致"), std::wstring::npos);
     source.colorMetadata = {};
     EXPECT_TRUE(renderer.Initialize(window.Get(), source, std::nullopt, errorMessage)) << errorMessage;
+}
+
+// 用每个活动显示器的物理边界与名称建立交换链并呈现空白 SDR 图像，校验同名输出的错误边界会被拒绝。
+// 入参：无。返回：初始化、呈现及目标与实际输出诊断的断言。
+TEST_F(OverlayRendererIntegrationTest, initialize_every_attached_output)
+{
+    const PhysicalPixelsScope dpi;
+    ASSERT_TRUE(dpi.IsActive()) << GetLastError();
+    bool hasAttachedOutput = false;
+    for (DWORD index = 0;; ++index)
+    {
+        DISPLAY_DEVICEW device{};
+        device.cb = sizeof(device);
+        if (!EnumDisplayDevicesW(nullptr, index, &device, 0))
+        {
+            break;
+        }
+        if ((device.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0 ||
+            (device.StateFlags & DISPLAY_DEVICE_MIRRORING_DRIVER) != 0)
+        {
+            continue;
+        }
+        hasAttachedOutput = true;
+        SCOPED_TRACE(testing::Message{} << device.DeviceName);
+
+        DEVMODEW mode{};
+        mode.dmSize = static_cast<WORD>(sizeof(mode));
+        ASSERT_TRUE(EnumDisplaySettingsExW(device.DeviceName, ENUM_CURRENT_SETTINGS, &mode, 0));
+        const int width = static_cast<int>(mode.dmPelsWidth);
+        const int height = static_cast<int>(mode.dmPelsHeight);
+        const int left = static_cast<int>(mode.dmPosition.x);
+        const int top = static_cast<int>(mode.dmPosition.y);
+        ASSERT_GT(width, 0);
+        ASSERT_GT(height, 0);
+        HiddenWindow window(width, height, left, top);
+        ASSERT_NE(window.Get(), nullptr) << GetLastError();
+
+        open_st::OutputPreviewFrame source{};
+        source.bounds = {left, top, left + width, top + height};
+        std::copy(std::begin(device.DeviceName), std::end(device.DeviceName), source.colorMetadata.deviceName.begin());
+        source.stride = static_cast<std::uint32_t>(width) * 4U;
+        source.pixels.resize(static_cast<std::size_t>(source.stride) * static_cast<std::size_t>(height));
+
+        open_st::OverlayRenderer renderer;
+        std::wstring errorMessage;
+        ASSERT_TRUE(renderer.Initialize(window.Get(), source, std::nullopt, errorMessage)) << errorMessage;
+        ASSERT_TRUE(renderer.Render({}, errorMessage)) << errorMessage;
+
+        // 平移一像素并保留尺寸与像素，确保拒绝来自输出身份校验。
+        ++source.bounds.left;
+        ++source.bounds.right;
+        EXPECT_FALSE(renderer.Initialize(window.Get(), source, std::nullopt, errorMessage));
+        const std::wstring expected =
+            std::format(L"目标={} [{},{},{},{}]", device.DeviceName, left + 1, top, left + width + 1, top + height);
+        const std::wstring actual =
+            std::format(L"实际={} [{},{},{},{}]", device.DeviceName, left, top, left + width, top + height);
+        EXPECT_NE(errorMessage.find(expected), std::wstring::npos) << errorMessage;
+        EXPECT_NE(errorMessage.find(actual), std::wstring::npos) << errorMessage;
+    }
+    if (!hasAttachedOutput)
+    {
+        GTEST_SKIP() << "当前 Windows 会话没有附着到桌面的真实显示输出。";
+    }
 }
 
 // 验证标注预览在 HDR 目标解码 sRGB 并按参考白缩放，底图未覆盖位置保留原生半浮点。

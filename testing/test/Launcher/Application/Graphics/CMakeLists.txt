@@ -29,12 +29,14 @@ add_executable(
     source/annotation_text_mosaic_tests.cpp
     source/desktop_preview_tests.cpp
     source/outside_mask_layout_tests.cpp
+    source/overlay_output_lookup_tests.cpp
     source/overlay_settings_tests.cpp
 )
 target_link_libraries(
     open_st_graphics_tests
     PRIVATE
         OpenST::Graphics
+        OpenST::Common
         GTest::gtest_main
 )
 target_include_directories(

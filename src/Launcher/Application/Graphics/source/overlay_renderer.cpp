@@ -12,6 +12,7 @@
 #include "annotation_drawing.h"
 #include "outside_mask_layout.h"
 #include "overlay_settings.h"
+#include "overlay_output_lookup.h"
 
 #include <d2d1_1.h>
 #include <d2d1helper.h>
@@ -27,9 +28,42 @@
 #include <cstring>
 #include <cwchar>
 #include <exception>
+#include <format>
 #include <vector>
 
 using Microsoft::WRL::ComPtr;
+
+namespace open_st::detail
+{
+// 将当前活动输出与冻结时的设备名和虚拟桌面物理边界逐项核对。
+// 入参：output 为 DXGI 输出描述，frame 为相同截图会话的单屏预览。
+// 返回：输出仍附着于桌面且身份、四条物理边界均匹配时为 true。
+bool MatchesOverlayOutput(const DXGI_OUTPUT_DESC& output, const open_st::OutputPreviewFrame& frame) noexcept
+{
+    const RECT& rect = output.DesktopCoordinates;
+    return output.AttachedToDesktop && std::wcscmp(output.DeviceName, frame.colorMetadata.deviceName.data()) == 0 &&
+           rect.left == frame.bounds.left && rect.top == frame.bounds.top &&
+           rect.right == frame.bounds.right && rect.bottom == frame.bounds.bottom;
+}
+
+// 将冻结输出或实时输出的身份格式化为日志可辨识的设备名与坐标。
+// 入参：name 为显示源名称，bounds 为虚拟桌面物理像素边界。
+// 返回：包含设备名及四条边界的诊断文本。
+std::wstring DescribeOutput(const wchar_t* name, open_st::RectI bounds)
+{
+    return std::format(L"{} [{},{},{},{}]", name, bounds.left, bounds.top, bounds.right, bounds.bottom);
+}
+
+// 将系统查询到的实时显示输出描述用于失效诊断。
+// 入参：output 为 DXGI 返回的显示源、物理坐标及连接状态。
+// 返回：带桌面连接状态的实际输出描述。
+std::wstring DescribeOutput(const DXGI_OUTPUT_DESC& output)
+{
+    const RECT& rect = output.DesktopCoordinates;
+    return DescribeOutput(output.DeviceName, {rect.left, rect.top, rect.right, rect.bottom}) +
+           (output.AttachedToDesktop ? L"" : L"（已断开）");
+}
+} // namespace open_st::detail
 
 namespace
 {
@@ -211,8 +245,28 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     constexpr std::array featureLevels{D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
     D3D_FEATURE_LEVEL selectedLevel{};
     const UINT deviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-    // 优先使用硬件设备；硬件初始化失败时用 WARP 软件光栅器保证覆盖窗口仍有可用后端。
-    HRESULT result = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, deviceFlags, featureLevels.data(),
+    ComPtr<IDXGIAdapter1> sourceAdapter;
+    const bool hasOutputIdentity = frame.colorMetadata.deviceName[0] != L'\0';
+    if (hasOutputIdentity)
+    {
+        ComPtr<IDXGIFactory1> lookupFactory;
+        const HRESULT created = CreateDXGIFactory1(IID_PPV_ARGS(lookupFactory.GetAddressOf()));
+        if (FAILED(created))
+        {
+            errorMessage = FormatHResult(L"CreateDXGIFactory1", created) +
+                           L"，目标=" + detail::DescribeOutput(frame.colorMetadata.deviceName.data(), frame.bounds);
+            this->Reset();
+            return false;
+        }
+        if (!detail::FindOverlayAdapter(*lookupFactory.Get(), frame, sourceAdapter, errorMessage))
+        {
+            this->Reset();
+            return false;
+        }
+    }
+    // GetContainingOutput 只返回设备所属适配器的输出；双显卡分别接屏时必须在目标屏的适配器上创建设备。
+    HRESULT result = D3D11CreateDevice(sourceAdapter.Get(), sourceAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+                                       nullptr, deviceFlags, featureLevels.data(),
                                        static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION,
                                        this->impl_->d3dDevice.GetAddressOf(), &selectedLevel,
                                        this->impl_->d3dContext.GetAddressOf());
@@ -226,6 +280,8 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     if (FAILED(result))
     {
         errorMessage = FormatHResult(L"创建覆盖窗口 D3D11 设备", result);
+        if (hasOutputIdentity)
+            errorMessage += L"，目标=" + detail::DescribeOutput(frame.colorMetadata.deviceName.data(), frame.bounds);
         this->Reset();
         return false;
     }
@@ -349,21 +405,25 @@ bool OverlayRenderer::Initialize(HWND window, const OutputPreviewFrame& frame,
     }
 
     // 工厂创建可能晚于捕获；再核对 HWND 实际关联的输出，封住捕获与初始化之间的配置变化窗口。
-    if (frame.colorMetadata.deviceName[0] != L'\0')
+    if (hasOutputIdentity)
     {
         ComPtr<IDXGIOutput> containingOutput;
         DXGI_OUTPUT_DESC outputDescription{};
         result = this->impl_->swapChain->GetContainingOutput(containingOutput.GetAddressOf());
-        if (SUCCEEDED(result))
+        if (FAILED(result))
         {
-            result = containingOutput->GetDesc(&outputDescription);
+            errorMessage = FormatHResult(L"IDXGISwapChain::GetContainingOutput", result) +
+                           L"，目标=" + detail::DescribeOutput(frame.colorMetadata.deviceName.data(), frame.bounds);
+            this->Reset();
+            return false;
         }
-        const RECT& desktop = outputDescription.DesktopCoordinates;
-        if (FAILED(result) || std::wcscmp(outputDescription.DeviceName, frame.colorMetadata.deviceName.data()) != 0 ||
-            desktop.left != frame.bounds.left || desktop.top != frame.bounds.top ||
-            desktop.right != frame.bounds.right || desktop.bottom != frame.bounds.bottom)
+        result = containingOutput->GetDesc(&outputDescription);
+        if (FAILED(result) || !detail::MatchesOverlayOutput(outputDescription, frame))
         {
-            errorMessage = L"覆盖交换链关联的显示输出与冻结帧不一致，请重新截图。";
+            errorMessage = FAILED(result) ? FormatHResult(L"IDXGIOutput::GetDesc", result)
+                                          : L"覆盖交换链关联的显示输出与冻结帧不一致，请重新截图。实际=" +
+                                                detail::DescribeOutput(outputDescription);
+            errorMessage += L"，目标=" + detail::DescribeOutput(frame.colorMetadata.deviceName.data(), frame.bounds);
             this->Reset();
             return false;
         }

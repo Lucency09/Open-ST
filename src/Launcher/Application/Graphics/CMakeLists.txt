@@ -24,6 +24,7 @@ target_sources(open_st_graphics
         source/overlay_settings.cpp
         source/selection_model.cpp
         private/outside_mask_layout.h
+        private/overlay_output_lookup.h
         private/overlay_settings.h
     PUBLIC
         FILE_SET HEADERS
